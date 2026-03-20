@@ -4,7 +4,7 @@
 
 A locally-installed web application for ThoughtSpot administrators. Replaces
 the CS Tools CLI with a web UI. Admins install it with `pip install`, run
-`ts-admin serve`, and get a browser-based admin control plane.
+`ts-admin-toolkit serve`, and get a browser-based admin control plane.
 
 ## Stack
 
@@ -28,7 +28,7 @@ Read [docs/dev/DECISIONS.md](docs/dev/DECISIONS.md) for full rationale. Short ve
   independently. Never force a full sync.
 - **Multi-cluster in v1.** Every SQLite table has a `cluster_id` FK.
 - **No web auth in v1.** Binds to 127.0.0.1. Single-admin local use.
-- **All config via web UI.** `ts-admin serve` is the only CLI command. Setup,
+- **All config via web UI.** `ts-admin-toolkit serve` is the only CLI command. Setup,
   connection management, and cluster switching are all in-app.
 - **Dry-run required** for all destructive operations. Non-negotiable UX pattern.
 

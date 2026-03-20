@@ -33,7 +33,7 @@ pip install ts-admin-toolkit
 ## Step 2: Start the app
 
 ```bash
-ts-admin serve
+ts-admin-toolkit serve
 ```
 
 This opens `http://localhost:8080` in your browser. Keep the terminal window open
@@ -85,7 +85,7 @@ See [How sync works](SYNC.md) for more detail.
 
 ## Stopping the app
 
-Press `Ctrl+C` in the terminal window where `ts-admin serve` is running.
+Press `Ctrl+C` in the terminal window where `ts-admin-toolkit serve` is running.
 
 Your data (local cache, settings, job history) is preserved between sessions.
 

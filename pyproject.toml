@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-ts-admin = "ts_admin.cli:main"
+ts-admin-toolkit = "ts_admin.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ts_admin"]

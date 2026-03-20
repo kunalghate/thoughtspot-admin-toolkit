@@ -1,0 +1,181 @@
+import { useState } from "react";
+import { ChevronDown, RefreshCw } from "lucide-react";
+import type { Org, SyncLog } from "@/lib/types";
+
+interface TopbarProps {
+  pageTitle: string;
+  clusterName: string;
+  activeOrg: Org | null;
+  orgs: Org[];
+  syncLog: SyncLog | null;         // sync status for the current entity
+  onOrgChange: (org: Org) => void;
+  onSync: () => void;
+  isSyncing: boolean;
+}
+
+export default function Topbar({
+  pageTitle, clusterName, activeOrg, orgs,
+  syncLog, onOrgChange, onSync, isSyncing,
+}: TopbarProps) {
+  const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
+
+  const syncLabel = getSyncLabel(syncLog, isSyncing);
+  const syncColor = getSyncColor(syncLog, isSyncing);
+
+  return (
+    <header style={{
+      height: 52, background: "#FAF8F4",
+      borderBottom: "1px solid #E8E1D5",
+      display: "flex", alignItems: "center",
+      padding: "0 24px", gap: 12, flexShrink: 0,
+    }}>
+      {/* Page title */}
+      <h1 style={{
+        flex: 1, margin: 0, fontSize: 15, fontWeight: 600,
+        color: "#1A1714", fontFamily: "Geist, sans-serif",
+      }}>
+        {pageTitle}
+      </h1>
+
+      {/* Sync indicator */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
+        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+          {syncLabel}
+        </span>
+      </div>
+
+      {/* Sync button */}
+      <button
+        onClick={onSync}
+        disabled={isSyncing}
+        style={{
+          display: "flex", alignItems: "center", gap: 5,
+          padding: "5px 11px", borderRadius: 5, border: "none",
+          background: "#8B5CF6", color: "white", cursor: isSyncing ? "default" : "pointer",
+          fontSize: 12, fontWeight: 500, fontFamily: "Geist, sans-serif",
+          opacity: isSyncing ? 0.7 : 1,
+        }}
+      >
+        <RefreshCw size={12} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />
+        {isSyncing ? "Syncing…" : "Sync"}
+      </button>
+
+      {/* Org selector */}
+      <div style={{ position: "relative" }}>
+        <button
+          onClick={() => setOrgDropdownOpen((o) => !o)}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "5px 10px", borderRadius: 5, cursor: "pointer",
+            border: "1px solid #E8E1D5", background: "#FAF8F4",
+            fontFamily: "Geist, sans-serif",
+          }}
+        >
+          {/* Cluster name — static, non-clickable */}
+          <span style={{ fontSize: 11, color: "#7A7068", fontWeight: 400 }}>
+            {clusterName}
+          </span>
+          <span style={{ color: "#E8E1D5" }}>·</span>
+          {/* Active org — clickable */}
+          <span style={{ fontSize: 12, color: "#1A1714", fontWeight: 500 }}>
+            {activeOrg?.name ?? "All Orgs"}
+          </span>
+          <ChevronDown size={12} style={{ color: "#7A7068" }} />
+        </button>
+
+        {orgDropdownOpen && (
+          <OrgDropdown
+            orgs={orgs}
+            activeOrg={activeOrg}
+            onSelect={(org) => { onOrgChange(org); setOrgDropdownOpen(false); }}
+            onClose={() => setOrgDropdownOpen(false)}
+          />
+        )}
+      </div>
+    </header>
+  );
+}
+
+function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
+  orgs: Org[];
+  activeOrg: Org | null;
+  onSelect: (org: Org) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{ position: "fixed", inset: 0, zIndex: 10 }}
+      />
+      <div style={{
+        position: "absolute", right: 0, top: "calc(100% + 6px)",
+        background: "#FAF8F4", border: "1px solid #E8E1D5",
+        borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+        minWidth: 200, zIndex: 20, overflow: "hidden",
+        fontFamily: "Geist, sans-serif",
+      }}>
+        <div style={{ padding: "8px 12px 6px", borderBottom: "1px solid #F0EBE3" }}>
+          <span style={{ fontSize: 10, color: "#7A7068", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500 }}>
+            Switch Org
+          </span>
+        </div>
+        {orgs.map((org) => {
+          const active = activeOrg?.org_id === org.org_id;
+          return (
+            <button
+              key={org.org_id}
+              onClick={() => onSelect(org)}
+              style={{
+                width: "100%", display: "flex", alignItems: "center",
+                justifyContent: "space-between", padding: "8px 12px",
+                background: active ? "#EDE9FE" : "transparent",
+                border: "none", cursor: "pointer", textAlign: "left",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: active ? "#6D28D9" : "#1A1714" }}>
+                  {org.name}
+                </div>
+                {org.org_id === 0 && (
+                  <div style={{ fontSize: 10, color: "#7A7068" }}>Primary org</div>
+                )}
+              </div>
+              {active && <span style={{ fontSize: 12, color: "#8B5CF6" }}>✓</span>}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getSyncLabel(log: SyncLog | null, isSyncing: boolean): string {
+  if (isSyncing) return "Syncing…";
+  if (!log || log.status === "NOT_SYNCED") return "Never synced";
+  if (log.status === "FAILED") return "Sync failed";
+  if (!log.synced_at) return "Unknown";
+
+  const minutes = Math.floor((Date.now() - new Date(log.synced_at).getTime()) / 60_000);
+  if (minutes < 2)  return "Synced just now";
+  if (minutes < 60) return `Synced ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)   return `Synced ${hours}h ago`;
+  return `Synced ${Math.floor(hours / 24)}d ago`;
+}
+
+function getSyncColor(log: SyncLog | null, isSyncing: boolean): string {
+  if (isSyncing) return "#8B5CF6";
+  if (!log || log.status === "NOT_SYNCED") return "#DC2626";
+  if (log.status === "FAILED") return "#DC2626";
+  if (!log.synced_at) return "#7A7068";
+
+  const hours = (Date.now() - new Date(log.synced_at).getTime()) / 3_600_000;
+  if (hours < 1) return "#059669";
+  if (hours < 6) return "#7A7068";
+  return "#D97706";
+}
