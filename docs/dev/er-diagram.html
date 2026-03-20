@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ER Diagram — TS Admin Toolkit</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Geist', sans-serif;
+      background: #F2EDE3;
+      color: #1A1714;
+      padding: 40px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    .sub {
+      font-size: 13px; color: #7A7068; margin-bottom: 32px;
+      display: flex; align-items: center; gap: 20px;
+    }
+    .legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #7A7068; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+    .diagram-wrap {
+      background: #FAF8F4;
+      border: 1px solid #E8E1D5;
+      border-radius: 12px;
+      padding: 32px;
+      overflow-x: auto;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+
+    /* Override Mermaid default font */
+    .mermaid svg {
+      font-family: 'Geist Mono', monospace !important;
+      max-width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Database ER Diagram</h1>
+<div class="sub">
+  ThoughtSpot Admin Toolkit · All SQLite tables
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#8B5CF6"></div> Core</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#0F766E"></div> Cache</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#E8703A"></div> Junction</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#7A7068"></div> Operational</div>
+  </div>
+</div>
+
+<div class="diagram-wrap">
+  <div class="mermaid">
+erDiagram
+
+    %% ── Core ──────────────────────────────────────────────
+
+    CLUSTERS {
+        string  id          PK  "slug e.g. production"
+        string  name
+        string  url
+        string  username
+        string  auth_type       "basic | trusted | bearer"
+        datetime created_at
+        datetime last_used_at
+    }
+
+    %% ── Operational ───────────────────────────────────────
+
+    SYNC_LOG {
+        int     id          PK
+        string  cluster_id  FK
+        int     org_id      FK  "logical → ts_orgs (composite)"
+        string  entity_type     "users|groups|metadata|tags|orgs"
+        datetime synced_at
+        int     record_count
+        int     duration_ms
+        string  status          "SUCCESS|FAILED|IN_PROGRESS"
+        string  error
+    }
+
+    AUDIT_LOG {
+        int     id          PK
+        string  cluster_id  FK
+        string  action_type     "archive|share|delete|tag..."
+        string  entity_type
+        int     items_affected
+        string  parameters      "JSON"
+        string  status          "SUCCESS|FAILED|PARTIAL"
+        string  error
+        datetime executed_at
+    }
+
+    JOBS {
+        string  id          PK  "UUID"
+        string  cluster_id  FK
+        string  job_type        "archive|share|sync..."
+        string  status          "QUEUED|RUNNING|COMPLETE|FAILED|PARTIAL"
+        int     progress
+        int     total
+        string  parameters      "JSON"
+        string  result          "JSON"
+        string  error
+        datetime created_at
+        datetime started_at
+        datetime completed_at
+    }
+
+    %% ── Cache: cluster-scoped ─────────────────────────────
+
+    TS_USERS {
+        int     id          PK
+        string  cluster_id  FK
+        string  ts_guid         "ThoughtSpot GUID"
+        string  username
+        string  display_name
+        string  email
+        string  status          "ACTIVE|INACTIVE"
+        datetime created_at
+        datetime modified_at
+        datetime synced_at
+    }
+
+    TS_ORGS {
+        int     id          PK
+        string  cluster_id  FK
+        int     ts_org_id       "ThoughtSpot numeric org ID"
+        string  name
+        string  description
+        string  status          "ACTIVE|INACTIVE"
+        bool    is_primary
+    }
+
+    %% ── Cache: org-scoped ────────────────────────────────
+
+    TS_GROUPS {
+        int     id          PK
+        string  cluster_id  FK
+        int     org_id      FK  "logical → ts_orgs (composite)"
+        string  ts_guid
+        string  name
+        string  display_name
+        string  description
+        string  privileges      "JSON list"
+        datetime created_at
+        datetime modified_at
+        datetime synced_at
+    }
+
+    TS_METADATA {
+        int     id          PK
+        string  cluster_id  FK
+        int     org_id      FK  "logical → ts_orgs (composite)"
+        string  ts_guid
+        string  name
+        string  object_type     "LIVEBOARD|ANSWER|LOGICAL_TABLE..."
+        string  owner_id
+        string  author_name
+        string  tag_ids         "JSON list"
+        datetime created_at
+        datetime modified_at
+        datetime last_accessed
+        int     view_count
+        datetime synced_at
+    }
+
+    TS_TAGS {
+        int     id          PK
+        string  cluster_id  FK
+        int     org_id      FK  "logical → ts_orgs (composite)"
+        string  ts_guid
+        string  name
+        string  color
+    }
+
+    %% ── Junction tables ──────────────────────────────────
+
+    USER_ORG_MEMBERSHIPS {
+        int     id          PK
+        string  cluster_id  FK
+        string  ts_guid     FK  "→ ts_users.ts_guid"
+        int     org_id      FK  "logical → ts_orgs (composite)"
+        datetime synced_at
+    }
+
+    USER_GROUP_MEMBERSHIPS {
+        int     id          PK
+        string  cluster_id  FK
+        int     org_id      FK  "logical → ts_orgs (composite)"
+        string  user_guid   FK  "→ ts_users.ts_guid"
+        string  group_guid  FK  "→ ts_groups.ts_guid"
+        datetime synced_at
+    }
+
+    CONTENT_PERMISSIONS {
+        int     id             PK
+        string  cluster_id     FK
+        int     org_id         FK  "logical → ts_orgs (composite)"
+        string  metadata_guid  FK  "→ ts_metadata.ts_guid"
+        string  principal_type     "user | group"
+        string  principal_guid FK  "→ ts_users or ts_groups"
+        string  permission         "READ_ONLY | MODIFY"
+        datetime synced_at
+    }
+
+    %% ── Relationships ────────────────────────────────────
+
+    CLUSTERS        ||--o{ SYNC_LOG              : "tracks sync for"
+    CLUSTERS        ||--o{ AUDIT_LOG             : "records actions for"
+    CLUSTERS        ||--o{ JOBS                  : "runs jobs for"
+    CLUSTERS        ||--o{ TS_USERS              : "caches users for"
+    CLUSTERS        ||--o{ TS_ORGS               : "caches orgs for"
+    CLUSTERS        ||--o{ TS_GROUPS             : "caches groups for"
+    CLUSTERS        ||--o{ TS_METADATA           : "caches content for"
+    CLUSTERS        ||--o{ TS_TAGS               : "caches tags for"
+    CLUSTERS        ||--o{ USER_ORG_MEMBERSHIPS  : "tracks membership for"
+    CLUSTERS        ||--o{ USER_GROUP_MEMBERSHIPS: "tracks membership for"
+
+    TS_USERS        ||--o{ USER_ORG_MEMBERSHIPS  : "belongs to orgs via"
+    TS_ORGS         ||--o{ USER_ORG_MEMBERSHIPS  : "has members via"
+
+    TS_USERS        ||--o{ USER_GROUP_MEMBERSHIPS : "belongs to groups via"
+    TS_GROUPS       ||--o{ USER_GROUP_MEMBERSHIPS : "has members via"
+
+    TS_METADATA     ||--o{ CONTENT_PERMISSIONS    : "shared via"
+    CLUSTERS        ||--o{ CONTENT_PERMISSIONS    : "scoped to"
+
+    TS_ORGS         ||--o{ TS_GROUPS              : "contains (logical)"
+    TS_ORGS         ||--o{ TS_METADATA            : "contains (logical)"
+    TS_ORGS         ||--o{ TS_TAGS                : "contains (logical)"
+    TS_ORGS         ||--o{ USER_ORG_MEMBERSHIPS   : "has members via (logical)"
+    TS_ORGS         ||--o{ USER_GROUP_MEMBERSHIPS : "scopes membership (logical)"
+    TS_ORGS         ||--o{ SYNC_LOG               : "tracks sync for (logical)"
+  </div>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#EDE9FE',
+      primaryTextColor: '#1A1714',
+      primaryBorderColor: '#8B5CF6',
+      lineColor: '#A89E96',
+      secondaryColor: '#F2EDE3',
+      tertiaryColor: '#FAF8F4',
+      fontFamily: 'Geist Mono, monospace',
+      fontSize: '13px',
+      edgeLabelBackground: '#FAF8F4',
+    },
+    er: {
+      diagramPadding: 32,
+      layoutDirection: 'TB',
+      minEntityWidth: 100,
+      minEntityHeight: 75,
+      entityPadding: 15,
+      useMaxWidth: true,
+    }
+  });
+</script>
+
+</body>
+</html>

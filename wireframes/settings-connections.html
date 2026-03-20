@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings: Connections — TS Admin Toolkit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', sans-serif; background: #F2EDE3; color: #1A1714; display: flex; height: 100vh; overflow: hidden; font-size: 13px; }
+
+    /* Sidebar */
+    .sidebar { width: 220px; flex-shrink: 0; background: #FAF8F4; border-right: 1px solid #E8E1D5; display: flex; flex-direction: column; height: 100vh; }
+    .sidebar-logo { padding: 18px 16px 14px; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; gap: 10px; }
+    .logo-mark { width: 30px; height: 30px; background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; font-family: 'Geist Mono', monospace; }
+    .logo-text .name { font-size: 13px; font-weight: 600; }
+    .logo-text .sub  { font-size: 11px; color: #7A7068; }
+    nav { padding: 10px 8px; flex: 1; }
+    .nav-section-label { font-size: 10px; font-weight: 600; color: #A89E96; text-transform: uppercase; letter-spacing: 0.07em; padding: 10px 10px 4px; }
+    .nav-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #7A7068; font-size: 13px; text-decoration: none; margin-bottom: 1px; }
+    .nav-item:hover { background: #F5F5F4; }
+    .nav-item.active { background: #EDE9FE; color: #6D28D9; font-weight: 500; }
+    .nav-item .icon { width: 16px; text-align: center; font-size: 14px; opacity: 0.75; }
+    .nav-divider { border: none; border-top: 1px solid #F0EBE3; margin: 6px 0; }
+    .sidebar-footer { padding: 10px 8px 12px; border-top: 1px solid #E8E1D5; }
+    .cluster-active { padding: 8px 10px; border: 1px solid #8B5CF6; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; background: #F5F3FF; }
+    .cluster-active .label { font-size: 10px; color: #6D28D9; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+    .cluster-active .value { font-size: 12px; font-weight: 600; color: #6D28D9; margin-top: 1px; }
+    .cluster-active .dot { width: 7px; height: 7px; border-radius: 50%; background: #059669; }
+
+    /* Main */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Topbar */
+    .topbar { height: 52px; background: #FAF8F4; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; padding: 0 24px; justify-content: space-between; flex-shrink: 0; }
+    .topbar-breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .breadcrumb-parent { color: #A89E96; cursor: pointer; }
+    .breadcrumb-sep { color: #D4D0CB; }
+    .breadcrumb-current { font-weight: 600; color: #1A1714; }
+    .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+    /* Org selector — top right */
+    .org-selector {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 12px; border: 1px solid #E8E1D5; border-radius: 6px;
+      cursor: pointer; background: #FAF8F4; user-select: none;
+    }
+    .org-selector:hover { border-color: #D4D0CB; background: #F2EDE3; }
+    .org-selector .org-label { font-size: 10px; color: #A89E96; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+    .org-selector .org-name  { font-size: 13px; font-weight: 500; color: #1A1714; }
+    .org-selector .chevron   { color: #A89E96; font-size: 11px; margin-left: 2px; }
+
+    .btn-primary { padding: 6px 13px; background: #8B5CF6; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; display: flex; align-items: center; gap: 5px; }
+
+    /* Settings layout */
+    .settings-layout { flex: 1; display: flex; overflow: hidden; }
+
+    /* Settings nav */
+    .settings-nav { width: 200px; flex-shrink: 0; border-right: 1px solid #E8E1D5; background: #FAF8F4; padding: 16px 10px; }
+    .settings-nav-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #7A7068; font-size: 13px; margin-bottom: 1px; text-decoration: none; }
+    .settings-nav-item:hover { background: #F5F5F4; }
+    .settings-nav-item.active { background: #F5F5F4; color: #1A1714; font-weight: 500; }
+    .settings-nav-section { font-size: 10px; font-weight: 600; color: #A89E96; text-transform: uppercase; letter-spacing: 0.07em; padding: 10px 10px 4px; }
+
+    /* Settings content */
+    .settings-content { flex: 1; overflow-y: auto; padding: 28px 32px; }
+    .settings-title { font-size: 18px; font-weight: 700; color: #1A1714; margin-bottom: 4px; }
+    .settings-sub { font-size: 13px; color: #7A7068; margin-bottom: 24px; }
+
+    /* Cluster cards */
+    .clusters-grid { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+
+    .cluster-card {
+      background: #FAF8F4; border: 1px solid #E8E1D5; border-radius: 10px;
+      padding: 18px 20px; display: flex; align-items: center; gap: 16px;
+      transition: border-color 0.15s;
+    }
+    .cluster-card:hover { border-color: #D4D0CB; }
+    .cluster-card.current { border-color: #8B5CF6; box-shadow: 0 0 0 3px #EDE9FE; }
+
+    .cluster-icon {
+      width: 40px; height: 40px; border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; flex-shrink: 0;
+    }
+    .cluster-icon.prod    { background: #D1FAE5; }
+    .cluster-icon.staging { background: #E0F2FE; }
+    .cluster-icon.dev     { background: #EDE9FE; }
+
+    .cluster-info { flex: 1; min-width: 0; }
+    .cluster-name { font-size: 14px; font-weight: 600; color: #1A1714; display: flex; align-items: center; gap: 8px; }
+    .current-badge { font-size: 10px; font-weight: 600; background: #EDE9FE; color: #6D28D9; padding: 2px 7px; border-radius: 99px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .cluster-url  { font-size: 12px; color: #7A7068; margin-top: 3px; font-family: 'Geist Mono', monospace; }
+    .cluster-meta { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+    .cluster-stat { font-size: 11px; color: #A89E96; }
+    .cluster-stat strong { color: #7A7068; font-weight: 500; }
+
+    .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; }
+    .status-dot.connected    { background: #059669; }
+    .status-dot.disconnected { background: #DC2626; }
+    .status-dot.unknown      { background: #A89E96; }
+
+    .cluster-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .btn-sm { padding: 5px 11px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; border: 1px solid #E8E1D5; background: #FAF8F4; color: #7A7068; }
+    .btn-sm:hover { background: #F5F5F4; }
+    .btn-sm.switch { background: #1A1714; color: #fff; border-color: #1A1714; }
+    .btn-sm.switch:hover { background: #292524; }
+    .btn-sm.danger { color: #DC2626; border-color: #FECACA; }
+    .btn-sm.danger:hover { background: #FEF2F2; }
+
+    /* Add cluster button */
+    .add-cluster {
+      border: 1.5px dashed #D4D0CB; border-radius: 10px; padding: 18px 20px;
+      display: flex; align-items: center; gap: 12px;
+      cursor: pointer; color: #7A7068; font-size: 13px;
+      background: transparent; width: 100%;
+      font-family: 'Geist', sans-serif;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .add-cluster:hover { border-color: #8B5CF6; color: #8B5CF6; }
+    .add-icon { width: 36px; height: 36px; border-radius: 8px; background: #F5F5F4; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #A89E96; }
+
+    /* Slide-in panel */
+    .panel-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.2); z-index: 200;
+      display: flex; justify-content: flex-end;
+    }
+    .slide-panel {
+      width: 440px; height: 100vh; background: #FAF8F4;
+      border-left: 1px solid #E8E1D5;
+      display: flex; flex-direction: column;
+      box-shadow: -8px 0 32px rgba(0,0,0,0.1);
+    }
+    .panel-header {
+      padding: 20px 24px; border-bottom: 1px solid #E8E1D5;
+      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .panel-title { font-size: 15px; font-weight: 600; }
+    .panel-close { color: #A89E96; cursor: pointer; font-size: 18px; line-height: 1; padding: 2px; }
+    .panel-body { flex: 1; overflow-y: auto; padding: 24px; }
+    .form-field { margin-bottom: 18px; }
+    .form-label { display: block; font-size: 11px; font-weight: 600; color: #7A7068; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    .form-input {
+      width: 100%; padding: 8px 11px; border: 1px solid #E8E1D5; border-radius: 7px;
+      font-size: 13px; font-family: 'Geist', sans-serif; color: #1A1714;
+      background: #F2EDE3; outline: none;
+    }
+    .form-input:focus { border-color: #8B5CF6; background: #FAF8F4; box-shadow: 0 0 0 3px #EDE9FE; }
+    .form-hint { font-size: 11px; color: #A89E96; margin-top: 5px; }
+    .form-divider { border: none; border-top: 1px solid #F0EBE3; margin: 20px 0; }
+    .form-section-title { font-size: 12px; font-weight: 600; color: #1A1714; margin-bottom: 14px; }
+
+    /* Auth method tabs */
+    .auth-tabs { display: flex; border: 1px solid #E8E1D5; border-radius: 7px; overflow: hidden; margin-bottom: 14px; }
+    .auth-tab { flex: 1; padding: 7px; text-align: center; font-size: 12px; font-weight: 500; cursor: pointer; color: #7A7068; background: #F2EDE3; border-right: 1px solid #E8E1D5; }
+    .auth-tab:last-child { border-right: none; }
+    .auth-tab.active { background: #FAF8F4; color: #1A1714; font-weight: 600; }
+
+    /* Test connection result */
+    .test-result {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-radius: 7px; font-size: 12px; margin-top: 12px;
+      background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0;
+    }
+    .test-result .icon { font-size: 14px; }
+
+    .panel-footer {
+      padding: 16px 24px; border-top: 1px solid #E8E1D5; flex-shrink: 0;
+      display: flex; gap: 8px;
+    }
+    .btn-save { flex: 1; padding: 9px; background: #8B5CF6; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-cancel-panel { flex: 1; padding: 9px; background: #FAF8F4; color: #7A7068; border: 1px solid #E8E1D5; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-test { width: 100%; padding: 8px; background: #F5F5F4; color: #1A1714; border: 1px solid #E8E1D5; border-radius: 7px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+
+    /* Wireframe nav */
+    .wireframe-nav { position: fixed; bottom: 16px; right: 460px; display: flex; gap: 8px; z-index: 300; }
+    .wireframe-nav a { padding: 8px 14px; background: #1A1714; color: #fff; border-radius: 6px; font-size: 12px; font-weight: 500; text-decoration: none; opacity: 0.85; }
+    .wireframe-nav a:hover { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">TS</div>
+    <div class="logo-text"><div class="name">Admin Toolkit</div><div class="sub">v1.0</div></div>
+  </div>
+  <nav>
+    <div class="nav-section-label">Overview</div>
+    <a class="nav-item" href="dashboard.html"><span class="icon">⊞</span> Dashboard</a>
+    <div class="nav-section-label">Management</div>
+    <a class="nav-item" href="users.html"><span class="icon">👤</span> Users</a>
+    <a class="nav-item" href="#"><span class="icon">👥</span> Groups</a>
+    <a class="nav-item" href="#"><span class="icon">🗂</span> Metadata</a>
+    <div class="nav-section-label">Operations</div>
+    <a class="nav-item" href="archiver.html"><span class="icon">📦</span> Archiver</a>
+    <a class="nav-item" href="#"><span class="icon">↗</span> Bulk Sharing</a>
+    <a class="nav-item" href="#"><span class="icon">⬡</span> Relationships</a>
+    <hr class="nav-divider" />
+    <a class="nav-item" href="#"><span class="icon">⏱</span> Jobs</a>
+    <a class="nav-item active" href="#"><span class="icon">⚙</span> Settings</a>
+  </nav>
+  <div class="sidebar-footer">
+    <!-- Active cluster shown with highlight when on settings page -->
+    <div class="cluster-active">
+      <div>
+        <div class="label">Active cluster</div>
+        <div class="value">Production</div>
+      </div>
+      <div class="dot"></div>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-breadcrumb">
+      <span class="breadcrumb-parent">Settings</span>
+      <span class="breadcrumb-sep">›</span>
+      <span class="breadcrumb-current">Connections</span>
+    </div>
+    <div class="topbar-right">
+      <!-- Org selector always in top right -->
+      <div class="org-selector">
+        <div>
+          <div class="org-label">Org</div>
+          <div class="org-name">Finance</div>
+        </div>
+        <span class="chevron">▾</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Settings layout -->
+  <div class="settings-layout">
+
+    <!-- Settings sidebar nav -->
+    <div class="settings-nav">
+      <div class="settings-nav-section">General</div>
+      <a class="settings-nav-item active" href="#">🔗 Connections</a>
+      <a class="settings-nav-item" href="#">🔄 Sync</a>
+      <a class="settings-nav-item" href="#">📋 Audit Log</a>
+      <div class="settings-nav-section">Preferences</div>
+      <a class="settings-nav-item" href="#">🎨 Appearance</a>
+      <a class="settings-nav-item" href="#">🔔 Notifications</a>
+    </div>
+
+    <!-- Settings content -->
+    <div class="settings-content">
+      <div class="settings-title">Connections</div>
+      <div class="settings-sub">Manage your ThoughtSpot cluster connections. Switch the active cluster at any time.</div>
+
+      <div class="clusters-grid">
+
+        <!-- Production — current -->
+        <div class="cluster-card current">
+          <div class="cluster-icon prod">🟢</div>
+          <div class="cluster-info">
+            <div class="cluster-name">
+              Production
+              <span class="current-badge">Active</span>
+            </div>
+            <div class="cluster-url">company.thoughtspot.cloud</div>
+            <div class="cluster-meta">
+              <span class="cluster-stat"><span class="status-dot connected"></span>Connected</span>
+              <span class="cluster-stat"><strong>5</strong> orgs</span>
+              <span class="cluster-stat">Last used <strong>now</strong></span>
+            </div>
+          </div>
+          <div class="cluster-actions">
+            <button class="btn-sm">Test</button>
+            <button class="btn-sm">Edit</button>
+          </div>
+        </div>
+
+        <!-- Staging -->
+        <div class="cluster-card">
+          <div class="cluster-icon staging">🔵</div>
+          <div class="cluster-info">
+            <div class="cluster-name">Staging</div>
+            <div class="cluster-url">company-staging.thoughtspot.cloud</div>
+            <div class="cluster-meta">
+              <span class="cluster-stat"><span class="status-dot connected"></span>Connected</span>
+              <span class="cluster-stat"><strong>3</strong> orgs</span>
+              <span class="cluster-stat">Last used <strong>2 days ago</strong></span>
+            </div>
+          </div>
+          <div class="cluster-actions">
+            <button class="btn-sm">Test</button>
+            <button class="btn-sm">Edit</button>
+            <button class="btn-sm switch">Switch to</button>
+          </div>
+        </div>
+
+        <!-- Dev -->
+        <div class="cluster-card">
+          <div class="cluster-icon dev">🟣</div>
+          <div class="cluster-info">
+            <div class="cluster-name">Dev / QA</div>
+            <div class="cluster-url">company-dev.thoughtspot.cloud</div>
+            <div class="cluster-meta">
+              <span class="cluster-stat"><span class="status-dot disconnected"></span>Unreachable</span>
+              <span class="cluster-stat"><strong>1</strong> org</span>
+              <span class="cluster-stat">Last used <strong>1 week ago</strong></span>
+            </div>
+          </div>
+          <div class="cluster-actions">
+            <button class="btn-sm">Test</button>
+            <button class="btn-sm">Edit</button>
+            <button class="btn-sm danger">Remove</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Add cluster -->
+      <button class="add-cluster">
+        <div class="add-icon">+</div>
+        <div>
+          <div style="font-weight:600;font-size:13px;">Add cluster</div>
+          <div style="font-size:12px;margin-top:2px;color:#A89E96;">Connect another ThoughtSpot instance</div>
+        </div>
+      </button>
+
+    </div>
+  </div>
+</div>
+
+<!-- Slide-in panel: Edit / Add cluster -->
+<div class="panel-overlay">
+  <div class="slide-panel">
+    <div class="panel-header">
+      <div class="panel-title">Edit connection — Production</div>
+      <span class="panel-close">✕</span>
+    </div>
+    <div class="panel-body">
+
+      <div class="form-field">
+        <label class="form-label">Cluster name</label>
+        <input class="form-input" type="text" value="Production" />
+        <div class="form-hint">A label for your own reference (e.g. "Production", "Client A")</div>
+      </div>
+
+      <div class="form-field">
+        <label class="form-label">ThoughtSpot URL</label>
+        <input class="form-input" type="text" value="https://company.thoughtspot.cloud" />
+        <div class="form-hint">Must be HTTPS. No trailing slash.</div>
+      </div>
+
+      <hr class="form-divider" />
+      <div class="form-section-title">Authentication</div>
+
+      <div class="auth-tabs">
+        <div class="auth-tab active">Basic (Password)</div>
+        <div class="auth-tab">Trusted Auth</div>
+        <div class="auth-tab">Bearer Token</div>
+      </div>
+
+      <div class="form-field">
+        <label class="form-label">Username</label>
+        <input class="form-input" type="text" value="admin@company.com" />
+      </div>
+
+      <div class="form-field">
+        <label class="form-label">Password</label>
+        <input class="form-input" type="password" value="••••••••••••" />
+        <div class="form-hint">Stored securely in your OS keychain — never saved to disk.</div>
+      </div>
+
+      <button class="btn-test">⚡ Test connection</button>
+
+      <div class="test-result">
+        <span class="icon">✓</span>
+        Connected as <strong style="margin:0 3px">admin@company.com</strong> · 5 orgs found · ThoughtSpot 10.4.0
+      </div>
+
+    </div>
+    <div class="panel-footer">
+      <button class="btn-cancel-panel">Cancel</button>
+      <button class="btn-save">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<div class="wireframe-nav">
+  <a href="dashboard.html">← Dashboard</a>
+  <a href="org-switcher.html">Org Switcher →</a>
+</div>
+
+</body>
+</html>

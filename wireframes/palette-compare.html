@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Palette Comparison — TS Admin Toolkit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Geist', sans-serif;
+      background: #ECEAE4;
+      color: #1A1714;
+      font-size: 13px;
+      padding: 40px 32px;
+      min-height: 100vh;
+    }
+
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    .page-sub { font-size: 13px; color: #7A7068; margin-bottom: 40px; }
+
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .option-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; margin-bottom: 14px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .option-label .pill {
+      padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 700;
+    }
+
+    /* ══════════════════════════════════════
+       OPTION A — Aurora Gradient
+    ══════════════════════════════════════ */
+    .aurora {
+      --bg:      #F2EDE3;
+      --surface: #FAF8F4;
+      --border:  #E8E1D5;
+      --border-light: #F0EBE3;
+      --text:    #1A1714;
+      --muted:   #7A7068;
+      --faint:   #A89E96;
+      /* Gradient accent */
+      --grad: linear-gradient(135deg, #06B6D4 0%, #818CF8 50%, #EC4899 100%);
+      --grad-soft: linear-gradient(135deg, #CFFAFE 0%, #E0E7FF 50%, #FCE7F3 100%);
+      --acc-text: #4338CA;  /* readable label color */
+      --acc-ring: rgba(99,102,241,0.18);
+      --success: #059669;
+      --success-bg: #D1FAE5;
+      --danger: #DC2626;
+    }
+
+    /* ══════════════════════════════════════
+       OPTION C — Claude Copper
+    ══════════════════════════════════════ */
+    .copper {
+      --bg:      #F2EDE3;
+      --surface: #FAF8F4;
+      --border:  #E8E1D5;
+      --border-light: #F0EBE3;
+      --text:    #1A1714;
+      --muted:   #7A7068;
+      --faint:   #A89E96;
+      --acc:     #E8703A;
+      --acc-dark:#C2410C;
+      --acc-light:#FEF0E7;
+      --acc-ring: rgba(232,112,58,0.15);
+      --acc-border: #FBD0B8;
+      --success: #059669;
+      --success-bg: #D1FAE5;
+      --danger: #DC2626;
+    }
+
+    /* ── Shared card shell ── */
+    .demo-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    /* ── Topbar ── */
+    .topbar {
+      height: 50px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center;
+      padding: 0 18px;
+      justify-content: space-between;
+    }
+    .topbar-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    .topbar-right { display: flex; align-items: center; gap: 8px; }
+
+    /* Sync pill */
+    .sync-pill {
+      display: flex; align-items: center; gap: 5px;
+      padding: 3px 8px; background: var(--bg);
+      border-radius: 99px; border: 1px solid var(--border);
+    }
+    .sync-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
+    .sync-text { font-size: 11px; color: var(--muted); }
+
+    /* ── ORG SELECTOR — Aurora ── */
+    .aurora .org-selector {
+      display: flex; align-items: center;
+      border-radius: 7px; overflow: hidden;
+      border: 1.5px solid transparent;
+      background: linear-gradient(var(--surface), var(--surface)) padding-box,
+                  var(--grad) border-box;
+    }
+    .aurora .org-cluster-part {
+      padding: 5px 11px;
+      background: var(--grad-soft);
+      border-right: 1px solid rgba(99,102,241,0.15);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .aurora .cluster-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .aurora .cluster-label { font-size: 12px; font-weight: 500; color: var(--muted); }
+    .aurora .org-name-part {
+      padding: 5px 9px; background: transparent;
+      display: flex; align-items: center; gap: 5px; cursor: pointer;
+    }
+    .aurora .org-name-text {
+      font-size: 13px; font-weight: 700;
+      background: var(--grad);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .aurora .chevron { font-size: 10px; color: #818CF8; }
+
+    /* ── ORG SELECTOR — Copper ── */
+    .copper .org-selector {
+      display: flex; align-items: center;
+      border: 1px solid var(--acc-border); border-radius: 7px;
+      overflow: hidden;
+      box-shadow: 0 0 0 3px var(--acc-ring);
+    }
+    .copper .org-cluster-part {
+      padding: 5px 11px; background: var(--acc-light);
+      border-right: 1px solid var(--acc-border);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .copper .cluster-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .copper .cluster-label { font-size: 12px; font-weight: 500; color: var(--muted); }
+    .copper .org-name-part {
+      padding: 5px 9px; background: #FFF7F3;
+      display: flex; align-items: center; gap: 5px; cursor: pointer;
+    }
+    .copper .org-name-text { font-size: 13px; font-weight: 700; color: var(--acc-dark); }
+    .copper .chevron { font-size: 10px; color: var(--acc); }
+
+    /* ── Sidebar nav item ── */
+    .nav-demo {
+      padding: 10px 14px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .nav-item-demo {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 9px; border-radius: 6px; font-size: 13px;
+    }
+    .nav-item-demo.inactive { color: var(--muted); }
+
+    .aurora .nav-item-demo.active {
+      background: var(--grad-soft); color: var(--acc-text); font-weight: 500;
+    }
+    .copper .nav-item-demo.active {
+      background: var(--acc-light); color: var(--acc-dark); font-weight: 500;
+    }
+
+    /* ── Stat cards ── */
+    .stat-row {
+      display: grid; grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px; padding: 14px;
+      background: var(--bg); border-bottom: 1px solid var(--border);
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 16px;
+    }
+    .stat-label { font-size: 10px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }
+    .stat-value { font-size: 26px; font-weight: 700; font-family: 'Geist Mono', monospace; color: var(--text); line-height: 1; }
+    .stat-sub { font-size: 11px; color: var(--faint); margin-top: 4px; }
+
+    .aurora .stat-value.accent {
+      background: var(--grad);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .copper .stat-value.accent { color: var(--acc); }
+
+    /* ── Buttons ── */
+    .btn-row {
+      display: flex; gap: 8px; padding: 14px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      align-items: center;
+    }
+    .btn { padding: 6px 14px; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: 'Geist', sans-serif; border: none; }
+    .btn-ghost { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+
+    .aurora .btn-primary {
+      background: var(--grad); color: #fff;
+    }
+    .aurora .btn-active-chip {
+      padding: 4px 10px; border-radius: 99px; font-size: 11px; font-weight: 600;
+      background: var(--grad-soft); color: var(--acc-text);
+      border: 1px solid rgba(99,102,241,0.2);
+    }
+
+    .copper .btn-primary { background: var(--acc); color: #fff; }
+    .copper .btn-active-chip {
+      padding: 4px 10px; border-radius: 99px; font-size: 11px; font-weight: 600;
+      background: var(--acc-light); color: var(--acc-dark);
+      border: 1px solid var(--acc-border);
+    }
+
+    /* ── Table ── */
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: var(--bg); font-size: 10px; font-weight: 600; color: var(--faint);
+      text-transform: uppercase; letter-spacing: 0.07em;
+      padding: 8px 14px; text-align: left; border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid var(--border-light); }
+    tbody tr:hover { background: var(--bg); }
+    tbody td { padding: 10px 14px; font-size: 13px; color: var(--text); }
+
+    .aurora tbody tr.sel { background: linear-gradient(90deg, #CFFAFE22, #E0E7FF22); }
+    .copper tbody tr.sel { background: #FFF7F3; }
+
+    .user-cell { display: flex; align-items: center; gap: 9px; }
+    .avatar { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+
+    .aurora .avatar-acc { background: var(--grad-soft); color: var(--acc-text); }
+    .copper .avatar-acc { background: var(--acc-light); color: var(--acc-dark); }
+
+    .uname { font-weight: 500; font-size: 13px; }
+    .uemail { font-size: 11px; color: var(--faint); }
+    .muted { color: var(--faint); font-size: 12px; }
+
+    .badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 99px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .badge-ok   { background: var(--success-bg); color: #065F46; }
+    .badge-off  { background: var(--border-light); color: var(--muted); }
+
+    .aurora .badge-group { background: var(--grad-soft); color: var(--acc-text); font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .copper .badge-group { background: var(--acc-light); color: var(--acc-dark); font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+    input[type="checkbox"] { width: 14px; height: 14px; cursor: pointer; }
+    .aurora input[type="checkbox"] { accent-color: #818CF8; }
+    .copper input[type="checkbox"] { accent-color: var(--acc); }
+
+    /* ── Logo mark ── */
+    .aurora .logo-mark {
+      width: 28px; height: 28px; border-radius: 7px;
+      background: var(--grad);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: #fff;
+      font-family: 'Geist Mono', monospace;
+    }
+    .copper .logo-mark {
+      width: 28px; height: 28px; border-radius: 7px;
+      background: var(--acc);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: #fff;
+      font-family: 'Geist Mono', monospace;
+    }
+    .logo-row { display: flex; align-items: center; gap: 9px; padding: 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
+    .logo-name { font-size: 13px; font-weight: 600; color: var(--text); }
+    .logo-sub  { font-size: 11px; color: var(--muted); }
+
+    /* ── Focus ring demo ── */
+    .input-demo {
+      padding: 10px 14px;
+      background: var(--bg);
+    }
+    .input-label { font-size: 10px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }
+    .demo-input {
+      width: 100%; padding: 7px 10px;
+      border: 1px solid var(--border); border-radius: 6px;
+      font-size: 13px; font-family: 'Geist', sans-serif;
+      color: var(--text); background: var(--surface); outline: none;
+    }
+    .aurora .demo-input { box-shadow: 0 0 0 3px rgba(99,102,241,0.18); border-color: #818CF8; }
+    .copper .demo-input { box-shadow: 0 0 0 3px var(--acc-ring); border-color: var(--acc); }
+  </style>
+</head>
+<body>
+
+<h1>Palette Comparison</h1>
+<div class="page-sub">Same components, two AI-inspired palettes — Anthropic cream base in both.</div>
+
+<div class="compare-grid">
+
+  <!-- ══ OPTION A: Aurora ══ -->
+  <div>
+    <div class="option-label">
+      <span class="pill" style="background:linear-gradient(135deg,#CFFAFE,#E0E7FF,#FCE7F3);color:#4338CA;">A</span>
+      Aurora Gradient — Apple Intelligence feel
+    </div>
+    <div class="demo-card aurora">
+
+      <!-- Logo -->
+      <div class="logo-row">
+        <div class="logo-mark">TS</div>
+        <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+      </div>
+
+      <!-- Topbar -->
+      <div class="topbar">
+        <span class="topbar-title">Dashboard</span>
+        <div class="topbar-right">
+          <div class="sync-pill"><div class="sync-dot"></div><span class="sync-text">Synced 2h ago</span></div>
+          <div class="org-selector">
+            <div class="org-cluster-part">
+              <div class="cluster-dot"></div>
+              <span class="cluster-label">Production</span>
+            </div>
+            <div class="org-name-part">
+              <span class="org-name-text">Finance</span>
+              <span class="chevron">▾</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Nav items -->
+      <div class="nav-demo">
+        <div class="nav-item-demo active">⊞ &nbsp;Dashboard</div>
+        <div class="nav-item-demo inactive">👤 &nbsp;Users</div>
+        <div class="nav-item-demo inactive">📦 &nbsp;Archiver</div>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-label">Users</div>
+          <div class="stat-value">1,203</div>
+          <div class="stat-sub">48 inactive</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Stale Content</div>
+          <div class="stat-value accent">342</div>
+          <div class="stat-sub">90+ days</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Content</div>
+          <div class="stat-value">47,832</div>
+          <div class="stat-sub">objects</div>
+        </div>
+      </div>
+
+      <!-- Buttons -->
+      <div class="btn-row">
+        <button class="btn btn-primary">⟳ Sync now</button>
+        <button class="btn btn-ghost">↓ Export CSV</button>
+        <span class="btn-active-chip">4 selected</span>
+      </div>
+
+      <!-- Table -->
+      <table>
+        <thead>
+          <tr>
+            <th style="padding-left:14px;width:36px"><input type="checkbox" /></th>
+            <th>User</th>
+            <th>Status</th>
+            <th>Groups</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="sel">
+            <td style="padding-left:14px"><input type="checkbox" checked /></td>
+            <td><div class="user-cell"><div class="avatar avatar-acc">JD</div><div><div class="uname">Jane Doe</div><div class="uemail">jane.doe@acme.com</div></div></div></td>
+            <td><span class="badge badge-ok">Active</span></td>
+            <td><span class="badge badge-group">Sales</span></td>
+          </tr>
+          <tr>
+            <td style="padding-left:14px"><input type="checkbox" /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:#D1FAE5;color:#065F46">MK</div><div><div class="uname">Mike Kim</div><div class="uemail">m.kim@acme.com</div></div></div></td>
+            <td><span class="badge badge-ok">Active</span></td>
+            <td><span class="badge badge-group">Eng</span></td>
+          </tr>
+          <tr>
+            <td style="padding-left:14px"><input type="checkbox" /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:#F3F4F6;color:#6B7280">SR</div><div><div class="uname">Sarah Ruiz</div><div class="uemail">s.ruiz@acme.com</div></div></div></td>
+            <td><span class="badge badge-off">Inactive</span></td>
+            <td><span class="badge badge-group">Mktg</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Input focus state -->
+      <div class="input-demo">
+        <div class="input-label">Input focus state</div>
+        <input class="demo-input" type="text" value="Search users..." />
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══ OPTION C: Copper ══ -->
+  <div>
+    <div class="option-label">
+      <span class="pill" style="background:#FEF0E7;color:#C2410C;">C</span>
+      Claude Copper — Anthropic native feel
+    </div>
+    <div class="demo-card copper">
+
+      <!-- Logo -->
+      <div class="logo-row">
+        <div class="logo-mark">TS</div>
+        <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+      </div>
+
+      <!-- Topbar -->
+      <div class="topbar">
+        <span class="topbar-title">Dashboard</span>
+        <div class="topbar-right">
+          <div class="sync-pill"><div class="sync-dot"></div><span class="sync-text">Synced 2h ago</span></div>
+          <div class="org-selector">
+            <div class="org-cluster-part">
+              <div class="cluster-dot"></div>
+              <span class="cluster-label">Production</span>
+            </div>
+            <div class="org-name-part">
+              <span class="org-name-text">Finance</span>
+              <span class="chevron">▾</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Nav items -->
+      <div class="nav-demo">
+        <div class="nav-item-demo active">⊞ &nbsp;Dashboard</div>
+        <div class="nav-item-demo inactive">👤 &nbsp;Users</div>
+        <div class="nav-item-demo inactive">📦 &nbsp;Archiver</div>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-label">Users</div>
+          <div class="stat-value">1,203</div>
+          <div class="stat-sub">48 inactive</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Stale Content</div>
+          <div class="stat-value accent">342</div>
+          <div class="stat-sub">90+ days</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Content</div>
+          <div class="stat-value">47,832</div>
+          <div class="stat-sub">objects</div>
+        </div>
+      </div>
+
+      <!-- Buttons -->
+      <div class="btn-row">
+        <button class="btn btn-primary">⟳ Sync now</button>
+        <button class="btn btn-ghost">↓ Export CSV</button>
+        <span class="btn-active-chip">4 selected</span>
+      </div>
+
+      <!-- Table -->
+      <table>
+        <thead>
+          <tr>
+            <th style="padding-left:14px;width:36px"><input type="checkbox" /></th>
+            <th>User</th>
+            <th>Status</th>
+            <th>Groups</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="sel">
+            <td style="padding-left:14px"><input type="checkbox" checked /></td>
+            <td><div class="user-cell"><div class="avatar avatar-acc">JD</div><div><div class="uname">Jane Doe</div><div class="uemail">jane.doe@acme.com</div></div></div></td>
+            <td><span class="badge badge-ok">Active</span></td>
+            <td><span class="badge badge-group">Sales</span></td>
+          </tr>
+          <tr>
+            <td style="padding-left:14px"><input type="checkbox" /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:#D1FAE5;color:#065F46">MK</div><div><div class="uname">Mike Kim</div><div class="uemail">m.kim@acme.com</div></div></div></td>
+            <td><span class="badge badge-ok">Active</span></td>
+            <td><span class="badge badge-group">Eng</span></td>
+          </tr>
+          <tr>
+            <td style="padding-left:14px"><input type="checkbox" /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:#F3F4F6;color:#6B7280">SR</div><div><div class="uname">Sarah Ruiz</div><div class="uemail">s.ruiz@acme.com</div></div></div></td>
+            <td><span class="badge badge-off">Inactive</span></td>
+            <td><span class="badge badge-group">Mktg</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Input focus state -->
+      <div class="input-demo">
+        <div class="input-label">Input focus state</div>
+        <input class="demo-input" type="text" value="Search users..." />
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

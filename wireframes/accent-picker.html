@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Accent Picker — TS Admin Toolkit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Geist', sans-serif;
+      background: #EAE5DC;
+      color: #1A1714;
+      font-size: 13px;
+      padding: 36px 40px;
+    }
+
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+    .sub { font-size: 13px; color: #7A7068; margin-bottom: 36px; }
+
+    /* Base palette stays the same across all */
+    :root {
+      --bg:      #F2EDE3;
+      --surface: #FAF8F4;
+      --border:  #E8E1D5;
+      --bl:      #F0EBE3;
+      --text:    #1A1714;
+      --muted:   #7A7068;
+      --faint:   #A89E96;
+      --success: #059669;
+      --success-bg: #D1FAE5;
+    }
+
+    .options-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      max-width: 960px;
+    }
+
+    .option {
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .option:hover {
+      border-color: var(--a);
+      box-shadow: 0 0 0 3px var(--al);
+    }
+
+    /* Label */
+    .opt-label {
+      padding: 10px 14px 0;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .color-swatch {
+      width: 14px; height: 14px; border-radius: 3px;
+      background: var(--a);
+    }
+    .opt-name { font-size: 12px; font-weight: 600; color: var(--text); }
+    .opt-hex  { font-size: 11px; color: var(--faint); font-family: 'Geist Mono', monospace; }
+
+    /* Mini topbar */
+    .mini-topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 14px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      background: var(--surface); margin-top: 10px;
+    }
+    .mini-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .org-pill {
+      display: flex; align-items: center;
+      border-radius: 6px; overflow: hidden;
+      border: 1px solid var(--a);
+      box-shadow: 0 0 0 2px var(--al);
+      font-size: 12px;
+    }
+    .org-left {
+      padding: 4px 9px; background: var(--al);
+      border-right: 1px solid var(--ab);
+      color: var(--ad); font-weight: 500;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .org-left .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
+    .org-right {
+      padding: 4px 8px; background: var(--surface);
+      color: var(--ad); font-weight: 700;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .org-right .chev { color: var(--a); font-size: 9px; }
+
+    /* Nav + components */
+    .mini-body { padding: 10px 14px; background: var(--bg); display: flex; flex-direction: column; gap: 6px; }
+
+    .nav-active {
+      display: flex; align-items: center; gap: 7px;
+      padding: 5px 8px; border-radius: 5px;
+      background: var(--al); color: var(--ad);
+      font-size: 12px; font-weight: 500;
+    }
+    .nav-inactive {
+      display: flex; align-items: center; gap: 7px;
+      padding: 5px 8px; border-radius: 5px;
+      color: var(--muted); font-size: 12px;
+    }
+
+    .comp-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+
+    .btn-acc {
+      padding: 5px 12px; border-radius: 6px; border: none;
+      background: var(--a); color: #fff;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      font-family: 'Geist', sans-serif;
+    }
+    .btn-ghost-sm {
+      padding: 5px 11px; border-radius: 6px;
+      background: var(--surface); color: var(--muted);
+      border: 1px solid var(--border); font-size: 12px;
+      font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif;
+    }
+    .chip {
+      padding: 3px 9px; border-radius: 99px;
+      background: var(--al); color: var(--ad);
+      border: 1px solid var(--ab);
+      font-size: 11px; font-weight: 600;
+    }
+
+    /* Logo */
+    .logo-row {
+      padding: 10px 14px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .logo-mark {
+      width: 26px; height: 26px; border-radius: 6px;
+      background: var(--a);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700; color: #fff;
+      font-family: 'Geist Mono', monospace; flex-shrink: 0;
+    }
+    .logo-name { font-size: 12px; font-weight: 600; color: var(--text); }
+    .logo-sub  { font-size: 10px; color: var(--muted); }
+
+    /* stat number in accent */
+    .acc-num { color: var(--a); font-family: 'Geist Mono', monospace; font-weight: 700; font-size: 15px; }
+
+    /* Input focus */
+    .focus-input {
+      padding: 5px 9px; border-radius: 6px; font-size: 12px;
+      border: 1px solid var(--a); background: var(--surface);
+      box-shadow: 0 0 0 2px var(--al);
+      font-family: 'Geist', sans-serif; color: var(--text);
+      outline: none; flex: 1;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Pick an accent</h1>
+<div class="sub">Everything else stays the same — background, type, borders. Just the accent changes.</div>
+
+<div class="options-grid">
+
+  <!-- 1. Indigo -->
+  <div class="option" style="--a:#4F46E5;--ad:#3730A3;--al:#EEF2FF;--ab:#C7D2FE;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Indigo</span>
+      <span class="opt-hex">#4F46E5</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Teal -->
+  <div class="option" style="--a:#0F766E;--ad:#115E59;--al:#CCFBF1;--ab:#99F6E4;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Teal</span>
+      <span class="opt-hex">#0F766E</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Copper / Claude -->
+  <div class="option" style="--a:#E8703A;--ad:#C2410C;--al:#FEF0E7;--ab:#FBD0B8;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Copper</span>
+      <span class="opt-hex">#E8703A</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Slate Blue -->
+  <div class="option" style="--a:#2563EB;--ad:#1D4ED8;--al:#DBEAFE;--ab:#BFDBFE;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Blue</span>
+      <span class="opt-hex">#2563EB</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Emerald -->
+  <div class="option" style="--a:#059669;--ad:#065F46;--al:#D1FAE5;--ab:#A7F3D0;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Emerald</span>
+      <span class="opt-hex">#059669</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Rose -->
+  <div class="option" style="--a:#E11D48;--ad:#9F1239;--al:#FFE4E6;--ab:#FECDD3;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Rose</span>
+      <span class="opt-hex">#E11D48</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. Terracotta -->
+  <div class="option" style="--a:#B85E3C;--ad:#7C3614;--al:#FAEDE6;--ab:#EEC4AE;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Terracotta</span>
+      <span class="opt-hex">#B85E3C</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. Espresso -->
+  <div class="option" style="--a:#4A2B22;--ad:#2D1910;--al:#F2EAE7;--ab:#D4B5AC;">
+    <div class="opt-label">
+      <div class="color-swatch"></div>
+      <span class="opt-name">Espresso</span>
+      <span class="opt-hex">#4A2B22</span>
+    </div>
+    <div class="logo-row">
+      <div class="logo-mark">TS</div>
+      <div><div class="logo-name">Admin Toolkit</div><div class="logo-sub">v1.0</div></div>
+    </div>
+    <div class="mini-topbar">
+      <span class="mini-title">Dashboard</span>
+      <div class="org-pill">
+        <div class="org-left"><div class="dot"></div>Production</div>
+        <div class="org-right">Finance <span class="chev">▾</span></div>
+      </div>
+    </div>
+    <div class="mini-body">
+      <div class="nav-active">⊞ Dashboard</div>
+      <div class="nav-inactive">👤 Users</div>
+      <div class="comp-row">
+        <button class="btn-acc">Sync now</button>
+        <button class="btn-ghost-sm">Export</button>
+        <span class="chip">4 selected</span>
+      </div>
+      <div class="comp-row">
+        <span style="font-size:11px;color:var(--muted)">Stale content:</span>
+        <span class="acc-num">342</span>
+        <input class="focus-input" value="Search..." readonly />
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

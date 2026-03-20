@@ -1,0 +1,1 @@
+"""Cached ThoughtSpot entity tables."""

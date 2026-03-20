@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Users — TS Admin Toolkit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', sans-serif; background: #F2EDE3; color: #1A1714; display: flex; height: 100vh; overflow: hidden; font-size: 13px; }
+
+    /* Sidebar — same as dashboard */
+    .sidebar { width: 220px; flex-shrink: 0; background: #FAF8F4; border-right: 1px solid #E8E1D5; display: flex; flex-direction: column; height: 100vh; }
+    .sidebar-logo { padding: 18px 16px 14px; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; gap: 10px; }
+    .logo-mark { width: 30px; height: 30px; background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; font-family: 'Geist Mono', monospace; }
+    .logo-text .name { font-size: 13px; font-weight: 600; }
+    .logo-text .sub  { font-size: 11px; color: #7A7068; }
+    nav { padding: 10px 8px; flex: 1; }
+    .nav-section-label { font-size: 10px; font-weight: 600; color: #A89E96; text-transform: uppercase; letter-spacing: 0.07em; padding: 10px 10px 4px; }
+    .nav-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #7A7068; font-size: 13px; text-decoration: none; margin-bottom: 1px; }
+    .nav-item:hover { background: #F5F5F4; }
+    .nav-item.active { background: #EDE9FE; color: #6D28D9; font-weight: 500; }
+    .nav-item .icon { width: 16px; text-align: center; font-size: 14px; opacity: 0.75; }
+    .nav-divider { border: none; border-top: 1px solid #F0EBE3; margin: 6px 0; }
+    .sidebar-footer { padding: 10px 8px 12px; border-top: 1px solid #E8E1D5; }
+    .cluster-picker { padding: 8px 10px; border: 1px solid #E8E1D5; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: #F2EDE3; }
+    .cluster-picker .label { font-size: 10px; color: #A89E96; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
+    .cluster-picker .value { font-size: 12px; font-weight: 500; margin-top: 1px; }
+    .cluster-picker .arrow { color: #A89E96; }
+
+    /* Main */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .topbar { height: 52px; background: #FAF8F4; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; padding: 0 24px; justify-content: space-between; flex-shrink: 0; }
+    .topbar-left { display: flex; align-items: center; gap: 16px; }
+    .topbar-title { font-size: 15px; font-weight: 600; }
+    .sync-pill { display: flex; align-items: center; gap: 5px; padding: 3px 9px; background: #F5F5F4; border-radius: 99px; border: 1px solid #E8E1D5; cursor: pointer; }
+    .sync-dot { width: 5px; height: 5px; border-radius: 50%; background: #059669; }
+    .sync-text { font-size: 11px; color: #7A7068; }
+    .topbar-right { display: flex; gap: 8px; align-items: center; }
+    .btn-primary { padding: 6px 13px; background: #8B5CF6; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-ghost { padding: 6px 12px; background: transparent; color: #7A7068; border: 1px solid #E8E1D5; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-danger { padding: 6px 12px; background: transparent; color: #DC2626; border: 1px solid #FECACA; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+
+    /* Filter bar */
+    .filter-bar {
+      padding: 12px 24px; background: #FAF8F4; border-bottom: 1px solid #E8E1D5;
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    .search-input {
+      display: flex; align-items: center; gap: 7px;
+      border: 1px solid #E8E1D5; border-radius: 6px; padding: 6px 11px;
+      background: #F2EDE3; flex: 1; max-width: 280px;
+    }
+    .search-input input {
+      border: none; background: transparent; font-size: 13px; font-family: 'Geist', sans-serif;
+      color: #1A1714; outline: none; width: 100%;
+    }
+    .search-input .search-icon { color: #A89E96; font-size: 13px; }
+    .filter-chip {
+      display: flex; align-items: center; gap: 6px;
+      border: 1px solid #E8E1D5; border-radius: 6px; padding: 6px 11px;
+      background: #FAF8F4; cursor: pointer; font-size: 12px; color: #7A7068;
+      font-family: 'Geist', sans-serif;
+    }
+    .filter-chip .arrow { color: #A89E96; font-size: 10px; }
+    .filter-spacer { flex: 1; }
+    .result-count { font-size: 12px; color: #A89E96; white-space: nowrap; }
+
+    /* Bulk action bar */
+    .bulk-bar {
+      padding: 10px 24px; background: #1A1714; color: #fff;
+      display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+    }
+    .bulk-count { font-size: 13px; font-weight: 500; }
+    .bulk-divider { width: 1px; height: 18px; background: #1A1714; }
+    .bulk-action {
+      padding: 5px 12px; background: transparent; color: #D4D4D4;
+      border: 1px solid #1A1714; border-radius: 6px; font-size: 12px; font-weight: 500;
+      cursor: pointer; font-family: 'Geist', sans-serif;
+    }
+    .bulk-action:hover { background: #292524; color: #fff; }
+    .bulk-action.primary { background: #8B5CF6; color: #fff; border-color: #8B5CF6; }
+    .bulk-spacer { flex: 1; }
+    .bulk-clear { font-size: 12px; color: #A89E96; cursor: pointer; }
+
+    /* Table */
+    .table-wrap { flex: 1; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      position: sticky; top: 0; background: #F2EDE3;
+      font-size: 10px; font-weight: 600; color: #A89E96;
+      text-transform: uppercase; letter-spacing: 0.07em;
+      padding: 10px 16px; text-align: left;
+      border-bottom: 1px solid #E8E1D5;
+      white-space: nowrap; cursor: pointer; user-select: none;
+    }
+    thead th:first-child { padding-left: 24px; width: 40px; }
+    thead th.sorted { color: #8B5CF6; }
+    thead th .sort-icon { margin-left: 4px; opacity: 0.5; }
+    thead th.sorted .sort-icon { opacity: 1; }
+
+    tbody tr { border-bottom: 1px solid #F0EBE3; }
+    tbody tr:hover { background: #F2EDE3; }
+    tbody tr.selected { background: #F5F3FF; }
+    tbody td { padding: 11px 16px; font-size: 13px; color: #1A1714; vertical-align: middle; }
+    tbody td:first-child { padding-left: 24px; }
+
+    .user-cell { display: flex; align-items: center; gap: 10px; }
+    .avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 600; flex-shrink: 0;
+    }
+    .user-name { font-weight: 500; font-size: 13px; }
+    .user-email { font-size: 11px; color: #A89E96; margin-top: 1px; }
+
+    .badge {
+      display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 99px;
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .badge.active   { background: #D1FAE5; color: #065F46; }
+    .badge.inactive { background: #F3F4F6; color: #6B7280; }
+    .badge.group    { background: #EDE9FE; color: #5B21B6; font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500; padding: 2px 7px; margin-right: 4px; }
+
+    .more-groups { font-size: 11px; color: #A89E96; }
+    .muted { color: #A89E96; font-size: 12px; }
+
+    input[type="checkbox"] { width: 15px; height: 15px; accent-color: #8B5CF6; cursor: pointer; }
+
+    /* Wireframe nav */
+    .wireframe-nav { position: fixed; bottom: 16px; right: 16px; display: flex; gap: 8px; z-index: 100; }
+    .wireframe-nav a { padding: 8px 14px; background: #1A1714; color: #fff; border-radius: 6px; font-size: 12px; font-weight: 500; text-decoration: none; opacity: 0.85; }
+    .wireframe-nav a:hover { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">TS</div>
+    <div class="logo-text">
+      <div class="name">Admin Toolkit</div>
+      <div class="sub">v1.0</div>
+    </div>
+  </div>
+  <nav>
+    <div class="nav-section-label">Overview</div>
+    <a class="nav-item" href="dashboard.html"><span class="icon">⊞</span> Dashboard</a>
+    <div class="nav-section-label">Management</div>
+    <a class="nav-item active" href="users.html"><span class="icon">👤</span> Users</a>
+    <a class="nav-item" href="#"><span class="icon">👥</span> Groups</a>
+    <a class="nav-item" href="#"><span class="icon">🗂</span> Metadata</a>
+    <div class="nav-section-label">Operations</div>
+    <a class="nav-item" href="archiver.html"><span class="icon">📦</span> Archiver</a>
+    <a class="nav-item" href="#"><span class="icon">↗</span> Bulk Sharing</a>
+    <a class="nav-item" href="#"><span class="icon">⬡</span> Relationships</a>
+    <hr class="nav-divider" />
+    <a class="nav-item" href="#"><span class="icon">⏱</span> Jobs</a>
+    <a class="nav-item" href="#"><span class="icon">⚙</span> Settings</a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="cluster-picker">
+      <div><div class="label">Cluster</div><div class="value">Production</div></div>
+      <div class="arrow">⇅</div>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="topbar-title">Users</span>
+      <div class="sync-pill">
+        <div class="sync-dot"></div>
+        <span class="sync-text">Synced 2h ago</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <button class="btn-ghost">⟳ Refresh users</button>
+      <button class="btn-ghost">↓ Export CSV</button>
+    </div>
+  </header>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <div class="search-input">
+      <span class="search-icon">🔍</span>
+      <input type="text" placeholder="Search by name or email..." />
+    </div>
+    <div class="filter-chip">Status <span class="arrow">▾</span></div>
+    <div class="filter-chip">Group <span class="arrow">▾</span></div>
+    <div class="filter-chip">Last login <span class="arrow">▾</span></div>
+    <div class="filter-spacer"></div>
+    <div class="result-count">1,203 users</div>
+  </div>
+
+  <!-- Bulk action bar (shown when rows selected) -->
+  <div class="bulk-bar">
+    <span class="bulk-count">4 users selected</span>
+    <div class="bulk-divider"></div>
+    <button class="bulk-action">Add to group</button>
+    <button class="bulk-action">Remove from group</button>
+    <button class="bulk-action">Transfer content</button>
+    <button class="bulk-action primary">Deactivate</button>
+    <div class="bulk-spacer"></div>
+    <span class="bulk-clear">✕ Clear selection</span>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" /></th>
+          <th>User <span class="sort-icon">↑</span></th>
+          <th class="sorted">Status <span class="sort-icon">↑</span></th>
+          <th>Groups</th>
+          <th>Last login <span class="sort-icon">↕</span></th>
+          <th>Content owned <span class="sort-icon">↕</span></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Selected rows -->
+        <tr class="selected">
+          <td><input type="checkbox" checked /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#EDE9FE;color:#6D28D9">JD</div>
+              <div><div class="user-name">Jane Doe</div><div class="user-email">jane.doe@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge active">Active</span></td>
+          <td><span class="badge group">Sales</span><span class="badge group">Finance</span></td>
+          <td class="muted">Today</td>
+          <td class="muted">142</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <tr class="selected">
+          <td><input type="checkbox" checked /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#D1FAE5;color:#065F46">MK</div>
+              <div><div class="user-name">Mike Kim</div><div class="user-email">m.kim@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge active">Active</span></td>
+          <td><span class="badge group">Engineering</span></td>
+          <td class="muted">Yesterday</td>
+          <td class="muted">38</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <tr class="selected">
+          <td><input type="checkbox" checked /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#EDE9FE;color:#5B21B6">SR</div>
+              <div><div class="user-name">Sarah Ruiz</div><div class="user-email">s.ruiz@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge inactive">Inactive</span></td>
+          <td><span class="badge group">Marketing</span><span class="badge group">Ops</span><span class="more-groups">+1</span></td>
+          <td class="muted">45 days ago</td>
+          <td class="muted">7</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <tr class="selected">
+          <td><input type="checkbox" checked /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#FEE2E2;color:#991B1B">TL</div>
+              <div><div class="user-name">Tom Lee</div><div class="user-email">t.lee@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge inactive">Inactive</span></td>
+          <td><span class="badge group">Finance</span></td>
+          <td class="muted">92 days ago</td>
+          <td class="muted">0</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <!-- Unselected rows -->
+        <tr>
+          <td><input type="checkbox" /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#F0FDF4;color:#166534">AP</div>
+              <div><div class="user-name">Alice Park</div><div class="user-email">a.park@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge active">Active</span></td>
+          <td><span class="badge group">Sales</span></td>
+          <td class="muted">3 days ago</td>
+          <td class="muted">23</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#FFF7ED;color:#C2410C">RB</div>
+              <div><div class="user-name">Ryan Brown</div><div class="user-email">r.brown@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge active">Active</span></td>
+          <td><span class="badge group">Engineering</span><span class="badge group">Product</span></td>
+          <td class="muted">1 hour ago</td>
+          <td class="muted">89</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#F0F9FF;color:#075985">LN</div>
+              <div><div class="user-name">Lisa Nguyen</div><div class="user-email">l.nguyen@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge active">Active</span></td>
+          <td><span class="badge group">HR</span></td>
+          <td class="muted">2 days ago</td>
+          <td class="muted">14</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" /></td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar" style="background:#F2EDE3;color:#7A7068">GW</div>
+              <div><div class="user-name">Greg Wilson</div><div class="user-email">g.wilson@acme.com</div></div>
+            </div>
+          </td>
+          <td><span class="badge inactive">Inactive</span></td>
+          <td><span class="badge group">Ops</span></td>
+          <td class="muted">180 days ago</td>
+          <td class="muted">2</td>
+          <td><span style="color:#A89E96;cursor:pointer">···</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+
+<div class="wireframe-nav">
+  <a href="dashboard.html">← Dashboard</a>
+  <a href="users.html">Users</a>
+  <a href="archiver.html">Archiver →</a>
+</div>
+
+</body>
+</html>

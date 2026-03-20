@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Palette Demo — AI Theme</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /*
+    ═══════════════════════════════════════════════════
+    AI PALETTE
+    Inspired by: Anthropic (warm cream base) +
+                 Apple Intelligence (soft violet accent)
+    ═══════════════════════════════════════════════════
+
+    Background ........  #F2EDE3   warm sandy cream
+    Surface ...........  #FAF8F4   card / sidebar surface
+    Border ............  #E8E1D5   warm beige
+    Border light ......  #F0EBE3   subtle dividers
+
+    Text primary ......  #1A1714   warm near-black
+    Text muted ........  #7A7068   warm brown-gray
+
+    Accent ............  #8B5CF6   violet (Apple Intelligence)
+    Accent light ......  #EDE9FE   lavender tint
+    Accent dark .......  #6D28D9   deep violet
+    Accent bg .........  #F5F3FF   near-white + violet
+
+    Success ...........  #059669
+    Danger ............  #DC2626
+    Warning ...........  #D97706
+    */
+
+    :root {
+      --bg:           #F2EDE3;
+      --surface:      #FAF8F4;
+      --border:       #E8E1D5;
+      --border-light: #F0EBE3;
+      --text:         #1A1714;
+      --muted:        #7A7068;
+      --faint:        #A89E96;
+      --accent:       #8B5CF6;
+      --accent-light: #EDE9FE;
+      --accent-dark:  #6D28D9;
+      --accent-bg:    #F5F3FF;
+      --success:      #059669;
+      --success-bg:   #D1FAE5;
+      --danger:       #DC2626;
+      --danger-bg:    #FEE2E2;
+      --warning:      #D97706;
+      --warning-bg:   #FEF3C7;
+    }
+
+    body {
+      font-family: 'Geist', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 220px; flex-shrink: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; height: 100vh;
+    }
+    .sidebar-logo {
+      padding: 18px 16px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px;
+    }
+    .logo-mark {
+      width: 30px; height: 30px; border-radius: 7px;
+      background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: #fff;
+      font-family: 'Geist Mono', monospace;
+    }
+    .logo-text .name { font-size: 13px; font-weight: 600; color: var(--text); }
+    .logo-text .sub  { font-size: 11px; color: var(--muted); }
+
+    nav { padding: 10px 8px; flex: 1; }
+    .nav-section-label {
+      font-size: 10px; font-weight: 600; color: var(--faint);
+      text-transform: uppercase; letter-spacing: 0.07em; padding: 10px 10px 4px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 9px;
+      padding: 7px 10px; border-radius: 6px; cursor: pointer;
+      color: var(--muted); font-size: 13px; margin-bottom: 1px;
+      text-decoration: none;
+    }
+    .nav-item:hover { background: var(--border-light); }
+    .nav-item.active {
+      background: var(--accent-light); color: var(--accent-dark); font-weight: 500;
+    }
+    .nav-item .icon { width: 16px; text-align: center; font-size: 14px; opacity: 0.7; }
+    .nav-divider { border: none; border-top: 1px solid var(--border-light); margin: 6px 0; }
+
+    .sidebar-footer { padding: 10px 8px 12px; border-top: 1px solid var(--border); }
+    .cluster-info-pill {
+      padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--bg); display: flex; align-items: center; gap: 8px;
+    }
+    .cdot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); flex-shrink: 0; }
+    .cname { font-size: 12px; font-weight: 500; color: var(--text); flex: 1; }
+    .clink { font-size: 10px; color: var(--accent); font-weight: 500; cursor: pointer; }
+
+    /* ── Main ── */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* ── Topbar ── */
+    .topbar {
+      height: 52px; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 24px;
+      justify-content: space-between; flex-shrink: 0;
+    }
+    .topbar-title { font-size: 15px; font-weight: 600; color: var(--text); }
+    .topbar-right { display: flex; align-items: center; gap: 10px; }
+
+    .sync-pill {
+      display: flex; align-items: center; gap: 5px;
+      padding: 3px 9px; background: var(--bg);
+      border-radius: 99px; border: 1px solid var(--border);
+    }
+    .sync-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
+    .sync-text { font-size: 11px; color: var(--muted); }
+
+    /* Org selector — [Production · Finance ▾] */
+    .org-selector {
+      display: flex; align-items: center;
+      border: 1px solid var(--border); border-radius: 7px;
+      overflow: hidden; cursor: pointer;
+    }
+    .org-selector:hover .org-name-part { background: var(--accent-light); }
+
+    .org-cluster-part {
+      padding: 6px 11px;
+      background: var(--border-light);
+      border-right: 1px solid var(--border);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .cluster-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .cluster-label { font-size: 13px; font-weight: 500; color: var(--muted); }
+
+    .org-name-part {
+      padding: 6px 10px; background: var(--surface);
+      display: flex; align-items: center; gap: 6px;
+      transition: background 0.1s;
+    }
+    .org-name-text { font-size: 13px; font-weight: 600; color: var(--accent-dark); }
+    .chevron { color: var(--accent); font-size: 10px; }
+
+    /* Org dropdown (open state) */
+    .org-dropdown-wrap { position: relative; }
+    .org-dropdown {
+      position: absolute; top: calc(100% + 6px); right: 0;
+      width: 300px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(26,23,20,0.10), 0 2px 8px rgba(26,23,20,0.06);
+      overflow: hidden; z-index: 50;
+    }
+    .dropdown-header {
+      padding: 12px 14px; border-bottom: 1px solid var(--border-light);
+    }
+    .cluster-line {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--muted); margin-bottom: 8px;
+    }
+    .dropdown-search {
+      display: flex; align-items: center; gap: 6px;
+      border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px;
+      background: var(--bg);
+    }
+    .dropdown-search input {
+      border: none; background: transparent; font-size: 12px;
+      font-family: 'Geist', sans-serif; color: var(--text); outline: none; width: 100%;
+    }
+    .dropdown-list { padding: 6px; }
+    .org-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px; border-radius: 7px; cursor: pointer;
+    }
+    .org-item:hover { background: var(--border-light); }
+    .org-item.selected { background: var(--accent-bg); }
+    .org-icon {
+      width: 28px; height: 28px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; flex-shrink: 0;
+      font-family: 'Geist Mono', monospace;
+    }
+    .org-item-body { flex: 1; }
+    .org-item-name { font-size: 13px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 6px; }
+    .org-item.selected .org-item-name { color: var(--accent-dark); font-weight: 600; }
+    .org-item-sub  { font-size: 11px; color: var(--faint); margin-top: 1px; }
+    .check { color: var(--accent); font-size: 13px; }
+    .org-badge {
+      font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .badge-primary { background: var(--accent-light); color: var(--accent-dark); }
+    .dropdown-footer {
+      padding: 8px 14px; border-top: 1px solid var(--border-light);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .footer-hint { font-size: 11px; color: var(--faint); }
+    .footer-link { font-size: 11px; color: var(--accent); font-weight: 500; cursor: pointer; }
+
+    /* ── Content ── */
+    .content { flex: 1; overflow-y: auto; padding: 28px; }
+
+    /* Stat cards */
+    .stat-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 24px; }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 9px; padding: 18px 20px;
+    }
+    .stat-label { font-size: 10px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 8px; }
+    .stat-value { font-size: 30px; font-weight: 700; color: var(--text); font-family: 'Geist Mono', monospace; line-height: 1; }
+    .stat-value.accent { color: var(--accent); }
+    .stat-sub { font-size: 11px; color: var(--faint); margin-top: 5px; }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 10px; margin-bottom: 24px; align-items: center; }
+    .btn {
+      padding: 7px 14px; border-radius: 7px; font-size: 13px; font-weight: 500;
+      cursor: pointer; font-family: 'Geist', sans-serif; border: none;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-dark); }
+    .btn-ghost {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--border-light); }
+    .btn-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid #FECACA; }
+
+    /* Bulk action bar */
+    .bulk-bar {
+      padding: 10px 24px; margin-bottom: 24px;
+      background: var(--text); color: #fff; border-radius: 9px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .bulk-count { font-size: 13px; font-weight: 500; }
+    .bulk-div { width: 1px; height: 18px; background: #3D3733; }
+    .bulk-action {
+      padding: 5px 12px; background: transparent; color: #C8C4BF;
+      border: 1px solid #3D3733; border-radius: 6px; font-size: 12px; font-weight: 500;
+      cursor: pointer; font-family: 'Geist', sans-serif;
+    }
+    .bulk-action.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .bulk-spacer { flex: 1; }
+    .bulk-clear { font-size: 12px; color: #7A7068; cursor: pointer; }
+
+    /* Table */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: var(--bg);
+      font-size: 10px; font-weight: 600; color: var(--faint);
+      text-transform: uppercase; letter-spacing: 0.07em;
+      padding: 9px 16px; text-align: left; border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid var(--border-light); }
+    tbody tr:hover { background: var(--bg); }
+    tbody tr.sel { background: var(--accent-bg); }
+    tbody td { padding: 11px 16px; font-size: 13px; color: var(--text); }
+    .user-cell { display: flex; align-items: center; gap: 10px; }
+    .avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+    .uname { font-weight: 500; }
+    .uemail { font-size: 11px; color: var(--faint); margin-top: 1px; }
+    .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .badge-active   { background: var(--success-bg); color: #065F46; }
+    .badge-inactive { background: var(--border-light); color: var(--muted); }
+    .badge-group { background: var(--accent-light); color: var(--accent-dark); font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500; margin-right: 3px; }
+    .muted { color: var(--faint); font-size: 12px; }
+    input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+
+    /* Palette swatches */
+    .swatches { display: flex; gap: 8px; margin-bottom: 24px; }
+    .swatch { width: 40px; height: 40px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.08); }
+    .swatch-label { font-size: 9px; color: var(--faint); margin-top: 4px; text-align: center; font-family: 'Geist Mono', monospace; }
+    .swatch-group { text-align: center; }
+
+    /* Section headers */
+    .section-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">TS</div>
+    <div class="logo-text">
+      <div class="name">Admin Toolkit</div>
+      <div class="sub">v1.0</div>
+    </div>
+  </div>
+  <nav>
+    <div class="nav-section-label">Overview</div>
+    <a class="nav-item active" href="#"><span class="icon">⊞</span> Dashboard</a>
+    <div class="nav-section-label">Management</div>
+    <a class="nav-item" href="#"><span class="icon">👤</span> Users</a>
+    <a class="nav-item" href="#"><span class="icon">👥</span> Groups</a>
+    <a class="nav-item" href="#"><span class="icon">🗂</span> Metadata</a>
+    <div class="nav-section-label">Operations</div>
+    <a class="nav-item" href="#"><span class="icon">📦</span> Archiver</a>
+    <a class="nav-item" href="#"><span class="icon">↗</span> Bulk Sharing</a>
+    <a class="nav-item" href="#"><span class="icon">⬡</span> Relationships</a>
+    <hr class="nav-divider" />
+    <a class="nav-item" href="#"><span class="icon">⏱</span> Jobs</a>
+    <a class="nav-item" href="#"><span class="icon">⚙</span> Settings</a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="cluster-info-pill">
+      <div class="cdot"></div>
+      <span class="cname">Production</span>
+      <span class="clink">Switch →</span>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <span class="topbar-title">Dashboard</span>
+    <div class="topbar-right">
+      <div class="sync-pill">
+        <div class="sync-dot"></div>
+        <span class="sync-text">Synced 2h ago</span>
+      </div>
+      <!-- Org selector — open -->
+      <div class="org-dropdown-wrap">
+        <div class="org-selector">
+          <div class="org-cluster-part">
+            <div class="cluster-dot"></div>
+            <span class="cluster-label">Production</span>
+          </div>
+          <div class="org-name-part">
+            <span class="org-name-text">Finance</span>
+            <span class="chevron">▴</span>
+          </div>
+        </div>
+        <!-- Dropdown open -->
+        <div class="org-dropdown">
+          <div class="dropdown-header">
+            <div class="cluster-line">
+              <div class="cdot"></div>
+              <span>Production — company.thoughtspot.cloud</span>
+              <span style="margin-left:auto;font-size:10px;color:var(--accent);font-weight:500;cursor:pointer;">Switch cluster</span>
+            </div>
+            <div class="dropdown-search">
+              <span style="color:var(--faint);font-size:12px;">🔍</span>
+              <input type="text" placeholder="Search orgs..." />
+            </div>
+          </div>
+          <div class="dropdown-list">
+            <div class="org-item">
+              <div class="org-icon" style="background:var(--accent-light);color:var(--accent-dark)">0</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Primary Org <span class="org-badge badge-primary">Org 0</span></div>
+                <div class="org-item-sub">1,203 users · 47,832 objects</div>
+              </div>
+            </div>
+            <div class="org-item selected">
+              <div class="org-icon" style="background:#D1FAE5;color:#065F46">Fi</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Finance</div>
+                <div class="org-item-sub">284 users · 8,412 objects</div>
+              </div>
+              <span class="check">✓</span>
+            </div>
+            <div class="org-item">
+              <div class="org-icon" style="background:#E0F2FE;color:#0369A1">Sa</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Sales</div>
+                <div class="org-item-sub">521 users · 12,890 objects</div>
+              </div>
+            </div>
+            <div class="org-item">
+              <div class="org-icon" style="background:#FCE7F3;color:#9D174D">Mk</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Marketing</div>
+                <div class="org-item-sub">88 users · 2,340 objects</div>
+              </div>
+            </div>
+          </div>
+          <div class="dropdown-footer">
+            <span class="footer-hint">Switching reloads the current page</span>
+            <span class="footer-link">Manage orgs →</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- Palette swatches -->
+    <div class="section-label">Color palette</div>
+    <div class="swatches" style="margin-bottom:28px">
+      <div class="swatch-group"><div class="swatch" style="background:#F2EDE3"></div><div class="swatch-label">#F2EDE3<br>bg</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#FAF8F4"></div><div class="swatch-label">#FAF8F4<br>surface</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#E8E1D5"></div><div class="swatch-label">#E8E1D5<br>border</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#1A1714"></div><div class="swatch-label">#1A1714<br>text</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#7A7068"></div><div class="swatch-label">#7A7068<br>muted</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#8B5CF6"></div><div class="swatch-label">#8B5CF6<br>accent</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#EDE9FE"></div><div class="swatch-label">#EDE9FE<br>acc.light</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#6D28D9"></div><div class="swatch-label">#6D28D9<br>acc.dark</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#059669"></div><div class="swatch-label">#059669<br>success</div></div>
+      <div class="swatch-group"><div class="swatch" style="background:#DC2626"></div><div class="swatch-label">#DC2626<br>danger</div></div>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="section-label">Stat cards</div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Users</div>
+        <div class="stat-value">1,203</div>
+        <div class="stat-sub">48 inactive</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Groups</div>
+        <div class="stat-value">89</div>
+        <div class="stat-sub">12 empty</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Stale Content</div>
+        <div class="stat-value accent">342</div>
+        <div class="stat-sub">unused 90+ days</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Content</div>
+        <div class="stat-value">47,832</div>
+        <div class="stat-sub">Liveboards, Answers</div>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="section-label">Buttons</div>
+    <div class="btn-row">
+      <button class="btn btn-primary">⟳ Sync now</button>
+      <button class="btn btn-ghost">↓ Export CSV</button>
+      <button class="btn btn-ghost">Edit</button>
+      <button class="btn btn-danger">🗑 Delete</button>
+    </div>
+
+    <!-- Bulk action bar -->
+    <div class="section-label">Bulk action bar (row selection)</div>
+    <div class="bulk-bar">
+      <span class="bulk-count">4 users selected</span>
+      <div class="bulk-div"></div>
+      <button class="bulk-action">Add to group</button>
+      <button class="bulk-action">Transfer content</button>
+      <button class="bulk-action accent">Deactivate</button>
+      <div class="bulk-spacer"></div>
+      <span class="bulk-clear">✕ Clear</span>
+    </div>
+
+    <!-- Table -->
+    <div class="section-label">Data table</div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:40px;padding-left:16px"><input type="checkbox" /></th>
+            <th>User</th>
+            <th>Status</th>
+            <th>Groups</th>
+            <th>Last login</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="sel">
+            <td style="padding-left:16px"><input type="checkbox" checked /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:var(--accent-light);color:var(--accent-dark)">JD</div><div><div class="uname">Jane Doe</div><div class="uemail">jane.doe@acme.com</div></div></div></td>
+            <td><span class="badge badge-active">Active</span></td>
+            <td><span class="badge badge-group">Sales</span><span class="badge badge-group">Finance</span></td>
+            <td class="muted">Today</td>
+          </tr>
+          <tr>
+            <td style="padding-left:16px"><input type="checkbox" /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:#D1FAE5;color:#065F46">MK</div><div><div class="uname">Mike Kim</div><div class="uemail">m.kim@acme.com</div></div></div></td>
+            <td><span class="badge badge-active">Active</span></td>
+            <td><span class="badge badge-group">Engineering</span></td>
+            <td class="muted">Yesterday</td>
+          </tr>
+          <tr>
+            <td style="padding-left:16px"><input type="checkbox" /></td>
+            <td><div class="user-cell"><div class="avatar" style="background:#E0F2FE;color:#0369A1">SR</div><div><div class="uname">Sarah Ruiz</div><div class="uemail">s.ruiz@acme.com</div></div></div></td>
+            <td><span class="badge badge-inactive">Inactive</span></td>
+            <td><span class="badge badge-group">Marketing</span></td>
+            <td class="muted">45 days ago</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

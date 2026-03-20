@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Org Switcher — TS Admin Toolkit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', sans-serif; background: #F2EDE3; color: #1A1714; display: flex; height: 100vh; overflow: hidden; font-size: 13px; }
+
+    /* Sidebar */
+    .sidebar { width: 220px; flex-shrink: 0; background: #FAF8F4; border-right: 1px solid #E8E1D5; display: flex; flex-direction: column; height: 100vh; }
+    .sidebar-logo { padding: 18px 16px 14px; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; gap: 10px; }
+    .logo-mark { width: 30px; height: 30px; background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; font-family: 'Geist Mono', monospace; }
+    .logo-text .name { font-size: 13px; font-weight: 600; }
+    .logo-text .sub  { font-size: 11px; color: #7A7068; }
+    nav { padding: 10px 8px; flex: 1; }
+    .nav-section-label { font-size: 10px; font-weight: 600; color: #A89E96; text-transform: uppercase; letter-spacing: 0.07em; padding: 10px 10px 4px; }
+    .nav-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #7A7068; font-size: 13px; text-decoration: none; margin-bottom: 1px; }
+    .nav-item:hover { background: #F5F5F4; }
+    .nav-item.active { background: #EDE9FE; color: #6D28D9; font-weight: 500; }
+    .nav-item .icon { width: 16px; text-align: center; font-size: 14px; opacity: 0.75; }
+    .nav-divider { border: none; border-top: 1px solid #F0EBE3; margin: 6px 0; }
+    .sidebar-footer { padding: 10px 8px 12px; border-top: 1px solid #E8E1D5; }
+    /* Sidebar cluster — static display, click goes to Settings */
+    .cluster-info-pill {
+      padding: 8px 10px; border: 1px solid #E8E1D5; border-radius: 6px;
+      background: #F2EDE3; display: flex; align-items: center; gap: 8px;
+    }
+    .cluster-info-pill .cdot { width: 6px; height: 6px; border-radius: 50%; background: #059669; flex-shrink: 0; }
+    .cluster-info-pill .cname { font-size: 12px; font-weight: 500; color: #1A1714; flex: 1; }
+    .cluster-info-pill .clink { font-size: 10px; color: #8B5CF6; font-weight: 500; cursor: pointer; white-space: nowrap; }
+
+    /* Main */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Topbar */
+    .topbar {
+      height: 52px; background: #FAF8F4; border-bottom: 1px solid #E8E1D5;
+      display: flex; align-items: center; padding: 0 24px;
+      justify-content: space-between; flex-shrink: 0; position: relative; z-index: 10;
+    }
+    .topbar-title { font-size: 15px; font-weight: 600; }
+    .topbar-right { display: flex; align-items: center; gap: 10px; }
+    .sync-pill { display: flex; align-items: center; gap: 5px; padding: 3px 9px; background: #F5F5F4; border-radius: 99px; border: 1px solid #E8E1D5; }
+    .sync-dot { width: 5px; height: 5px; border-radius: 50%; background: #059669; }
+    .sync-text { font-size: 11px; color: #7A7068; }
+
+    /* Org selector — redesigned: cluster=static label, org=clickable */
+    .org-selector-wrap { position: relative; }
+
+    /* The whole pill: [Production · Finance ▾] */
+    .org-selector {
+      display: flex; align-items: center;
+      border: 1px solid #8B5CF6; border-radius: 7px;
+      box-shadow: 0 0 0 3px #EDE9FE;
+      overflow: hidden; user-select: none;
+    }
+
+    /* Left half: cluster name — static, not clickable */
+    .org-cluster-part {
+      padding: 6px 12px; background: #EDE9FE;
+      border-right: 1px solid #C4B5FD;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .cluster-connected-dot { width: 6px; height: 6px; border-radius: 50%; background: #059669; flex-shrink: 0; }
+    .org-cluster-name { font-size: 13px; font-weight: 600; color: #6D28D9; }
+
+    /* Divider between the two halves */
+    .org-divider { color: #C4B5FD; font-size: 14px; font-weight: 300; }
+
+    /* Right half: org name — clickable dropdown trigger */
+    .org-name-part {
+      padding: 6px 10px 6px 12px; background: #F5F3FF;
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+    }
+    .org-name-part:hover { background: #EDE9FE; }
+    .org-name-text { font-size: 13px; font-weight: 600; color: #6D28D9; }
+    .chevron { color: #8B5CF6; font-size: 10px; }
+
+    /* Org dropdown */
+    .org-dropdown {
+      position: absolute; top: calc(100% + 6px); right: 0;
+      width: 300px; background: #FAF8F4;
+      border: 1px solid #E8E1D5; border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06);
+      z-index: 100; overflow: hidden;
+    }
+
+    .dropdown-header {
+      padding: 12px 14px 10px;
+      border-bottom: 1px solid #F0EBE3;
+    }
+    .dropdown-header .cluster-line {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: #7A7068; margin-bottom: 6px;
+    }
+    .cluster-dot { width: 6px; height: 6px; border-radius: 50%; background: #059669; }
+    .dropdown-search {
+      display: flex; align-items: center; gap: 6px;
+      border: 1px solid #E8E1D5; border-radius: 6px; padding: 5px 9px;
+      background: #F2EDE3;
+    }
+    .dropdown-search input {
+      border: none; background: transparent; font-size: 12px;
+      font-family: 'Geist', sans-serif; color: #1A1714; outline: none; width: 100%;
+    }
+    .dropdown-search .search-icon { color: #A89E96; font-size: 12px; }
+
+    .dropdown-list { max-height: 260px; overflow-y: auto; padding: 6px; }
+
+    .org-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px; border-radius: 7px; cursor: pointer;
+      transition: background 0.1s;
+    }
+    .org-item:hover { background: #F5F5F4; }
+    .org-item.selected { background: #F5F3FF; }
+
+    .org-item-icon {
+      width: 28px; height: 28px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; flex-shrink: 0;
+      font-family: 'Geist Mono', monospace;
+    }
+    .org-item-body { flex: 1; min-width: 0; }
+    .org-item-name { font-size: 13px; font-weight: 500; color: #1A1714; display: flex; align-items: center; gap: 6px; }
+    .org-item-sub  { font-size: 11px; color: #A89E96; margin-top: 1px; }
+
+    .org-item.selected .org-item-name { color: #6D28D9; font-weight: 600; }
+    .active-check { color: #8B5CF6; font-size: 13px; margin-left: auto; flex-shrink: 0; }
+
+    .org-badge {
+      font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .org-badge.primary { background: #E0F2FE; color: #0369A1; }
+    .org-badge.admin   { background: #D1FAE5; color: #065F46; }
+
+    .dropdown-footer {
+      padding: 8px 14px; border-top: 1px solid #F0EBE3;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .dropdown-footer .hint { font-size: 11px; color: #A89E96; }
+    .dropdown-footer .manage-link { font-size: 11px; color: #8B5CF6; font-weight: 500; cursor: pointer; }
+
+    /* Blurred content behind */
+    .content { flex: 1; overflow-y: auto; padding: 28px; filter: blur(1px); opacity: 0.5; }
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+    .stat-card { background: #FAF8F4; border: 1px solid #E8E1D5; border-radius: 9px; padding: 18px 20px; }
+    .stat-label { font-size: 10px; font-weight: 600; color: #A89E96; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 8px; }
+    .stat-value { font-size: 30px; font-weight: 700; color: #1A1714; font-family: 'Geist Mono', monospace; }
+    .stat-value.amber { color: #8B5CF6; }
+    .stat-sub { font-size: 11px; color: #A89E96; margin-top: 5px; }
+
+    /* Annotation callouts */
+    .callout {
+      position: fixed; background: #1A1714; color: #fff;
+      padding: 8px 12px; border-radius: 7px; font-size: 11px; font-weight: 500;
+      max-width: 200px; line-height: 1.4; z-index: 200;
+    }
+    .callout::before {
+      content: ''; position: absolute;
+      border: 5px solid transparent;
+    }
+    .callout.arrow-right::before {
+      right: -10px; top: 50%; transform: translateY(-50%);
+      border-left-color: #1A1714;
+    }
+    .callout.arrow-up::before {
+      top: -10px; left: 50%; transform: translateX(-50%);
+      border-bottom-color: #1A1714;
+    }
+
+    /* Wireframe nav */
+    .wireframe-nav { position: fixed; bottom: 16px; right: 16px; display: flex; gap: 8px; z-index: 300; }
+    .wireframe-nav a { padding: 8px 14px; background: #1A1714; color: #fff; border-radius: 6px; font-size: 12px; font-weight: 500; text-decoration: none; opacity: 0.85; }
+    .wireframe-nav a:hover { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">TS</div>
+    <div class="logo-text"><div class="name">Admin Toolkit</div><div class="sub">v1.0</div></div>
+  </div>
+  <nav>
+    <div class="nav-section-label">Overview</div>
+    <a class="nav-item active" href="dashboard.html"><span class="icon">⊞</span> Dashboard</a>
+    <div class="nav-section-label">Management</div>
+    <a class="nav-item" href="users.html"><span class="icon">👤</span> Users</a>
+    <a class="nav-item" href="#"><span class="icon">👥</span> Groups</a>
+    <a class="nav-item" href="#"><span class="icon">🗂</span> Metadata</a>
+    <div class="nav-section-label">Operations</div>
+    <a class="nav-item" href="archiver.html"><span class="icon">📦</span> Archiver</a>
+    <a class="nav-item" href="#"><span class="icon">↗</span> Bulk Sharing</a>
+    <a class="nav-item" href="#"><span class="icon">⬡</span> Relationships</a>
+    <hr class="nav-divider" />
+    <a class="nav-item" href="#"><span class="icon">⏱</span> Jobs</a>
+    <a class="nav-item" href="#"><span class="icon">⚙</span> Settings</a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="cluster-info-pill">
+      <div class="cdot"></div>
+      <span class="cname">Production</span>
+      <a href="settings-connections.html" class="clink">Switch →</a>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+  <header class="topbar">
+    <span class="topbar-title">Dashboard</span>
+    <div class="topbar-right">
+      <div class="sync-pill">
+        <div class="sync-dot"></div>
+        <span class="sync-text">Synced 2h ago</span>
+      </div>
+
+      <!-- Org selector — open state -->
+      <div class="org-selector-wrap">
+        <div class="org-selector">
+          <!-- Left: cluster name — static, no interaction -->
+          <div class="org-cluster-part" title="To switch cluster, go to Settings → Connections">
+            <div class="cluster-connected-dot"></div>
+            <span class="org-cluster-name">Production</span>
+          </div>
+          <!-- Right: org name — clickable dropdown -->
+          <div class="org-name-part">
+            <span class="org-name-text">Finance</span>
+            <span class="chevron">▴</span>
+          </div>
+        </div>
+
+        <!-- Dropdown -->
+        <div class="org-dropdown">
+          <div class="dropdown-header">
+            <div class="cluster-line">
+              <div class="cluster-dot"></div>
+              <span>Production — company.thoughtspot.cloud</span>
+              <span style="margin-left:auto;font-size:10px;color:#8B5CF6;cursor:pointer;font-weight:500;">Switch cluster</span>
+            </div>
+            <div class="dropdown-search">
+              <span class="search-icon">🔍</span>
+              <input type="text" placeholder="Search orgs..." />
+            </div>
+          </div>
+
+          <div class="dropdown-list">
+
+            <!-- Org 0: Primary -->
+            <div class="org-item">
+              <div class="org-item-icon" style="background:#EDE9FE;color:#6D28D9">0</div>
+              <div class="org-item-body">
+                <div class="org-item-name">
+                  Primary Org
+                  <span class="org-badge primary">Org 0</span>
+                </div>
+                <div class="org-item-sub">1,203 users · 47,832 objects</div>
+              </div>
+            </div>
+
+            <!-- Finance — active -->
+            <div class="org-item selected">
+              <div class="org-item-icon" style="background:#D1FAE5;color:#065F46">Fi</div>
+              <div class="org-item-body">
+                <div class="org-item-name">
+                  Finance
+                  <span class="org-badge admin">Admin</span>
+                </div>
+                <div class="org-item-sub">284 users · 8,412 objects</div>
+              </div>
+              <span class="active-check">✓</span>
+            </div>
+
+            <!-- Sales -->
+            <div class="org-item">
+              <div class="org-item-icon" style="background:#E0F2FE;color:#0369A1">Sa</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Sales</div>
+                <div class="org-item-sub">521 users · 12,890 objects</div>
+              </div>
+            </div>
+
+            <!-- Engineering -->
+            <div class="org-item">
+              <div class="org-item-icon" style="background:#EDE9FE;color:#5B21B6">En</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Engineering</div>
+                <div class="org-item-sub">193 users · 4,201 objects</div>
+              </div>
+            </div>
+
+            <!-- Marketing -->
+            <div class="org-item">
+              <div class="org-item-icon" style="background:#FCE7F3;color:#9D174D">Mk</div>
+              <div class="org-item-body">
+                <div class="org-item-name">Marketing</div>
+                <div class="org-item-sub">88 users · 2,340 objects</div>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="dropdown-footer">
+            <span class="hint">Switching reloads the current page</span>
+            <span class="manage-link">Manage orgs →</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Blurred background content -->
+  <div class="content">
+    <div class="stat-grid">
+      <div class="stat-card"><div class="stat-label">Total Users</div><div class="stat-value">284</div><div class="stat-sub">Finance org</div></div>
+      <div class="stat-card"><div class="stat-label">Groups</div><div class="stat-value">24</div><div class="stat-sub">8 empty</div></div>
+      <div class="stat-card"><div class="stat-label">Stale Content</div><div class="stat-value amber">91</div><div class="stat-sub">unused 90+ days</div></div>
+      <div class="stat-card"><div class="stat-label">Total Content</div><div class="stat-value">8,412</div><div class="stat-sub">Liveboards, Answers</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Annotation: cluster part -->
+<div class="callout arrow-right" style="top: 16px; right: 390px; max-width:180px;">
+  Cluster name — static, not clickable. Always visible for context. "Switch cluster" goes to Settings.
+</div>
+
+<!-- Annotation: org part -->
+<div class="callout arrow-right" style="top: 54px; right: 310px; max-width:170px;">
+  Org name — the only interactive part. Click to open the dropdown.
+</div>
+
+<!-- Annotation: Dropdown -->
+<div class="callout arrow-up" style="top: 210px; right: 16px; max-width:190px;">
+  Lists all orgs on this cluster. Shows user + content count per org. Switching reloads data for that org.
+</div>
+
+<div class="wireframe-nav">
+  <a href="settings-connections.html">← Connections</a>
+  <a href="dashboard.html">Dashboard →</a>
+</div>
+
+</body>
+</html>

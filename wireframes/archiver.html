@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Archiver — TS Admin Toolkit</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', sans-serif; background: #F2EDE3; color: #1A1714; display: flex; height: 100vh; overflow: hidden; font-size: 13px; }
+
+    /* Sidebar */
+    .sidebar { width: 220px; flex-shrink: 0; background: #FAF8F4; border-right: 1px solid #E8E1D5; display: flex; flex-direction: column; height: 100vh; }
+    .sidebar-logo { padding: 18px 16px 14px; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; gap: 10px; }
+    .logo-mark { width: 30px; height: 30px; background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; font-family: 'Geist Mono', monospace; }
+    .logo-text .name { font-size: 13px; font-weight: 600; }
+    .logo-text .sub  { font-size: 11px; color: #7A7068; }
+    nav { padding: 10px 8px; flex: 1; }
+    .nav-section-label { font-size: 10px; font-weight: 600; color: #A89E96; text-transform: uppercase; letter-spacing: 0.07em; padding: 10px 10px 4px; }
+    .nav-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #7A7068; font-size: 13px; text-decoration: none; margin-bottom: 1px; }
+    .nav-item:hover { background: #F5F5F4; }
+    .nav-item.active { background: #EDE9FE; color: #6D28D9; font-weight: 500; }
+    .nav-item .icon { width: 16px; text-align: center; font-size: 14px; opacity: 0.75; }
+    .nav-divider { border: none; border-top: 1px solid #F0EBE3; margin: 6px 0; }
+    .sidebar-footer { padding: 10px 8px 12px; border-top: 1px solid #E8E1D5; }
+    .cluster-picker { padding: 8px 10px; border: 1px solid #E8E1D5; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; background: #F2EDE3; }
+    .cluster-picker .label { font-size: 10px; color: #A89E96; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500; }
+    .cluster-picker .value { font-size: 12px; font-weight: 500; margin-top: 1px; }
+    .cluster-picker .arrow { color: #A89E96; }
+
+    /* Main */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .topbar { height: 52px; background: #FAF8F4; border-bottom: 1px solid #E8E1D5; display: flex; align-items: center; padding: 0 24px; justify-content: space-between; flex-shrink: 0; }
+    .topbar-left { display: flex; align-items: center; gap: 8px; }
+    .topbar-title { font-size: 15px; font-weight: 600; }
+    .topbar-sub { font-size: 12px; color: #A89E96; }
+
+    /* Stepper */
+    .stepper {
+      padding: 14px 24px; background: #FAF8F4; border-bottom: 1px solid #E8E1D5;
+      display: flex; align-items: center; gap: 0; flex-shrink: 0;
+    }
+    .step {
+      display: flex; align-items: center; gap: 8px; padding: 0 16px 0 0;
+    }
+    .step:first-child { padding-left: 0; }
+    .step-num {
+      width: 22px; height: 22px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; flex-shrink: 0;
+    }
+    .step-num.done    { background: #D1FAE5; color: #059669; }
+    .step-num.active  { background: #8B5CF6; color: #fff; }
+    .step-num.pending { background: #F5F5F4; color: #A89E96; }
+    .step-label { font-size: 12px; font-weight: 500; color: #1A1714; }
+    .step-label.pending { color: #A89E96; font-weight: 400; }
+    .step-arrow { color: #D4D0CB; font-size: 12px; margin: 0 8px 0 16px; }
+
+    /* Body layout */
+    .body { flex: 1; display: flex; overflow: hidden; }
+
+    /* Left panel — filters / criteria */
+    .left-panel {
+      width: 280px; flex-shrink: 0; border-right: 1px solid #E8E1D5;
+      background: #FAF8F4; display: flex; flex-direction: column; overflow-y: auto;
+    }
+    .panel-section { padding: 18px 18px 0; }
+    .panel-title { font-size: 12px; font-weight: 600; color: #1A1714; margin-bottom: 12px; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-size: 11px; font-weight: 500; color: #7A7068; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .field input, .field select {
+      width: 100%; padding: 7px 10px; border: 1px solid #E8E1D5; border-radius: 6px;
+      font-size: 13px; font-family: 'Geist', sans-serif; color: #1A1714;
+      background: #F2EDE3; outline: none;
+    }
+    .field input:focus, .field select:focus { border-color: #8B5CF6; background: #FAF8F4; }
+    .field .hint { font-size: 11px; color: #A89E96; margin-top: 4px; }
+    .checkbox-group { display: flex; flex-direction: column; gap: 7px; }
+    .checkbox-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #1A1714; cursor: pointer; }
+    .checkbox-item input { width: 14px; height: 14px; accent-color: #8B5CF6; }
+    .panel-divider { border: none; border-top: 1px solid #F0EBE3; margin: 16px 0; }
+    .panel-footer {
+      padding: 14px 18px; border-top: 1px solid #E8E1D5; margin-top: auto;
+    }
+    .btn-full { width: 100%; padding: 8px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-primary-full { background: #8B5CF6; color: #fff; border: none; }
+    .btn-ghost-full { background: transparent; color: #7A7068; border: 1px solid #E8E1D5; margin-top: 8px; }
+
+    /* Right panel — results */
+    .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Results header */
+    .results-header {
+      padding: 14px 20px; border-bottom: 1px solid #E8E1D5;
+      display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+      background: #FAF8F4;
+    }
+    .results-count { font-size: 13px; font-weight: 600; color: #1A1714; }
+    .results-sub { font-size: 12px; color: #A89E96; }
+    .results-spacer { flex: 1; }
+    .btn-sm { padding: 5px 11px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-sm-ghost { background: transparent; color: #7A7068; border: 1px solid #E8E1D5; }
+    .btn-sm-amber { background: #8B5CF6; color: #fff; border: none; }
+    .btn-sm-danger { background: transparent; color: #DC2626; border: 1px solid #FECACA; }
+
+    /* Selection bar */
+    .selection-bar {
+      padding: 9px 20px; background: #F5F3FF; border-bottom: 1px solid #EDE9FE;
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    .selection-bar .count { font-size: 12px; font-weight: 600; color: #6D28D9; }
+    .selection-bar .sel-action {
+      padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500;
+      cursor: pointer; font-family: 'Geist', sans-serif;
+    }
+    .sel-tag   { background: #EDE9FE; color: #6D28D9; border: 1px solid #C4B5FD; }
+    .sel-archive { background: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; }
+    .sel-clear { margin-left: auto; font-size: 11px; color: #A89E96; cursor: pointer; }
+
+    /* Results table */
+    .results-table-wrap { flex: 1; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      position: sticky; top: 0; background: #F2EDE3;
+      font-size: 10px; font-weight: 600; color: #A89E96;
+      text-transform: uppercase; letter-spacing: 0.07em;
+      padding: 9px 14px; text-align: left;
+      border-bottom: 1px solid #E8E1D5; white-space: nowrap;
+    }
+    thead th:first-child { padding-left: 20px; width: 40px; }
+    tbody tr { border-bottom: 1px solid #F0EBE3; }
+    tbody tr:hover { background: #F2EDE3; }
+    tbody tr.selected-row { background: #F5F3FF; }
+    tbody td { padding: 10px 14px; font-size: 13px; color: #1A1714; vertical-align: middle; }
+    tbody td:first-child { padding-left: 20px; }
+
+    .content-name { font-weight: 500; }
+    .content-type {
+      display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px;
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .type-lb   { background: #EDE9FE; color: #5B21B6; }
+    .type-ans  { background: #E0F2FE; color: #0369A1; }
+    .type-ws   { background: #D1FAE5; color: #065F46; }
+    .muted     { color: #A89E96; font-size: 12px; }
+    .days-old  { font-size: 12px; font-weight: 600; color: #8B5CF6; }
+    .days-very { color: #DC2626; }
+    input[type="checkbox"] { width: 14px; height: 14px; accent-color: #8B5CF6; cursor: pointer; }
+
+    /* Dry-run modal overlay */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.3);
+      display: flex; align-items: center; justify-content: center; z-index: 200;
+    }
+    .modal {
+      background: #FAF8F4; border-radius: 12px; width: 520px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.15); overflow: hidden;
+    }
+    .modal-header {
+      padding: 20px 24px 16px; border-bottom: 1px solid #E8E1D5;
+      display: flex; align-items: flex-start; justify-content: space-between;
+    }
+    .modal-title { font-size: 15px; font-weight: 600; }
+    .modal-close { color: #A89E96; cursor: pointer; font-size: 16px; line-height: 1; }
+    .modal-body { padding: 20px 24px; }
+    .impact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+    .impact-item { background: #F2EDE3; border: 1px solid #E8E1D5; border-radius: 7px; padding: 12px 14px; }
+    .impact-num { font-size: 22px; font-weight: 700; color: #1A1714; font-family: 'Geist Mono', monospace; }
+    .impact-num.amber { color: #8B5CF6; }
+    .impact-label { font-size: 11px; color: #7A7068; margin-top: 3px; }
+    .warning-box {
+      background: #F5F3FF; border: 1px solid #C4B5FD; border-radius: 7px;
+      padding: 12px 14px; margin-bottom: 16px;
+      font-size: 12px; color: #6D28D9; line-height: 1.5;
+    }
+    .warning-box strong { font-weight: 600; }
+    .preview-list { margin-bottom: 4px; }
+    .preview-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 7px 0; border-bottom: 1px solid #F0EBE3; font-size: 12px;
+    }
+    .preview-row:last-child { border-bottom: none; }
+    .preview-name { color: #1A1714; font-weight: 500; }
+    .preview-meta { color: #A89E96; }
+    .modal-footer {
+      padding: 14px 24px; border-top: 1px solid #E8E1D5;
+      display: flex; gap: 8px; justify-content: flex-end; background: #F2EDE3;
+    }
+    .btn-cancel { padding: 8px 16px; background: transparent; color: #7A7068; border: 1px solid #E8E1D5; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: 'Geist', sans-serif; }
+    .btn-confirm { padding: 8px 18px; background: #DC2626; color: #fff; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'Geist', sans-serif; }
+
+    /* Wireframe nav */
+    .wireframe-nav { position: fixed; bottom: 16px; right: 16px; display: flex; gap: 8px; z-index: 300; }
+    .wireframe-nav a { padding: 8px 14px; background: #1A1714; color: #fff; border-radius: 6px; font-size: 12px; font-weight: 500; text-decoration: none; opacity: 0.85; }
+    .wireframe-nav a:hover { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">TS</div>
+    <div class="logo-text"><div class="name">Admin Toolkit</div><div class="sub">v1.0</div></div>
+  </div>
+  <nav>
+    <div class="nav-section-label">Overview</div>
+    <a class="nav-item" href="dashboard.html"><span class="icon">⊞</span> Dashboard</a>
+    <div class="nav-section-label">Management</div>
+    <a class="nav-item" href="users.html"><span class="icon">👤</span> Users</a>
+    <a class="nav-item" href="#"><span class="icon">👥</span> Groups</a>
+    <a class="nav-item" href="#"><span class="icon">🗂</span> Metadata</a>
+    <div class="nav-section-label">Operations</div>
+    <a class="nav-item active" href="archiver.html"><span class="icon">📦</span> Archiver</a>
+    <a class="nav-item" href="#"><span class="icon">↗</span> Bulk Sharing</a>
+    <a class="nav-item" href="#"><span class="icon">⬡</span> Relationships</a>
+    <hr class="nav-divider" />
+    <a class="nav-item" href="#"><span class="icon">⏱</span> Jobs</a>
+    <a class="nav-item" href="#"><span class="icon">⚙</span> Settings</a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="cluster-picker">
+      <div><div class="label">Cluster</div><div class="value">Production</div></div>
+      <div class="arrow">⇅</div>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="topbar-title">Archiver</span>
+      <span style="color:#D4D0CB;margin:0 4px">/</span>
+      <span class="topbar-sub">Identify stale content, preview impact, then archive or delete</span>
+    </div>
+  </header>
+
+  <!-- Stepper -->
+  <div class="stepper">
+    <div class="step">
+      <div class="step-num done">✓</div>
+      <span class="step-label">1. Set criteria</span>
+    </div>
+    <span class="step-arrow">›</span>
+    <div class="step">
+      <div class="step-num active">2</div>
+      <span class="step-label">2. Review results</span>
+    </div>
+    <span class="step-arrow">›</span>
+    <div class="step">
+      <div class="step-num pending">3</div>
+      <span class="step-label pending">3. Dry-run preview</span>
+    </div>
+    <span class="step-arrow">›</span>
+    <div class="step">
+      <div class="step-num pending">4</div>
+      <span class="step-label pending">4. Execute</span>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div class="body">
+
+    <!-- Left panel: criteria -->
+    <div class="left-panel">
+      <div class="panel-section">
+        <div class="panel-title">Criteria</div>
+
+        <div class="field">
+          <label>Unused for at least</label>
+          <input type="number" value="90" />
+          <div class="hint">Days since last viewed or modified</div>
+        </div>
+
+        <div class="field">
+          <label>Content type</label>
+          <div class="checkbox-group">
+            <label class="checkbox-item"><input type="checkbox" checked /> Liveboards</label>
+            <label class="checkbox-item"><input type="checkbox" checked /> Answers</label>
+            <label class="checkbox-item"><input type="checkbox" /> Worksheets</label>
+            <label class="checkbox-item"><input type="checkbox" /> Tables</label>
+          </div>
+        </div>
+
+        <hr class="panel-divider" />
+
+        <div class="field">
+          <label>Exclude tagged</label>
+          <input type="text" placeholder="e.g. important, keep" />
+          <div class="hint">Skip content with these tags</div>
+        </div>
+
+        <div class="field">
+          <label>Owner filter</label>
+          <input type="text" placeholder="All owners" />
+        </div>
+
+        <div class="field">
+          <label>Exclude owners</label>
+          <input type="text" placeholder="e.g. admin@company.com" />
+        </div>
+      </div>
+
+      <div class="panel-footer">
+        <button class="btn-full btn-primary-full">⟳ Re-run search</button>
+        <button class="btn-full btn-ghost-full">Reset to defaults</button>
+      </div>
+    </div>
+
+    <!-- Right panel: results -->
+    <div class="right-panel">
+
+      <!-- Results header -->
+      <div class="results-header">
+        <span class="results-count">342 stale objects found</span>
+        <span class="results-sub">unused 90+ days · Liveboards + Answers</span>
+        <div class="results-spacer"></div>
+        <button class="btn-sm btn-sm-ghost">↓ Export CSV</button>
+      </div>
+
+      <!-- Selection bar -->
+      <div class="selection-bar">
+        <span class="count">127 selected</span>
+        <button class="sel-action sel-tag">🏷 Tag as "Stale"</button>
+        <button class="sel-action sel-archive">🗑 Archive / Delete</button>
+        <span class="sel-clear">✕ Clear selection</span>
+      </div>
+
+      <!-- Results table -->
+      <div class="results-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" /></th>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Owner</th>
+              <th>Last accessed</th>
+              <th>Days unused</th>
+              <th>Tags</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="selected-row">
+              <td><input type="checkbox" checked /></td>
+              <td><span class="content-name">Q3 Sales Overview</span></td>
+              <td><span class="content-type type-lb">Liveboard</span></td>
+              <td class="muted">j.smith</td>
+              <td class="muted">Jan 2, 2025</td>
+              <td><span class="days-old days-very">180d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr class="selected-row">
+              <td><input type="checkbox" checked /></td>
+              <td><span class="content-name">Revenue by Region Draft</span></td>
+              <td><span class="content-type type-ans">Answer</span></td>
+              <td class="muted">a.patel</td>
+              <td class="muted">Jan 15, 2025</td>
+              <td><span class="days-old days-very">167d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr class="selected-row">
+              <td><input type="checkbox" checked /></td>
+              <td><span class="content-name">Pipeline Analysis 2024</span></td>
+              <td><span class="content-type type-lb">Liveboard</span></td>
+              <td class="muted">m.jones</td>
+              <td class="muted">Feb 3, 2025</td>
+              <td><span class="days-old">142d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" /></td>
+              <td><span class="content-name">Marketing Spend Test</span></td>
+              <td><span class="content-type type-ans">Answer</span></td>
+              <td class="muted">l.chen</td>
+              <td class="muted">Feb 10, 2025</td>
+              <td><span class="days-old">135d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" /></td>
+              <td><span class="content-name">Churn Prediction v1</span></td>
+              <td><span class="content-type type-lb">Liveboard</span></td>
+              <td class="muted">r.kumar</td>
+              <td class="muted">Mar 1, 2025</td>
+              <td><span class="days-old">116d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" /></td>
+              <td><span class="content-name">HR Headcount (copy)</span></td>
+              <td><span class="content-type type-ans">Answer</span></td>
+              <td class="muted">n.wong</td>
+              <td class="muted">Mar 5, 2025</td>
+              <td><span class="days-old">112d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr class="selected-row">
+              <td><input type="checkbox" checked /></td>
+              <td><span class="content-name">Untitled Liveboard</span></td>
+              <td><span class="content-type type-lb">Liveboard</span></td>
+              <td class="muted">d.ross</td>
+              <td class="muted">Mar 8, 2025</td>
+              <td><span class="days-old">109d</span></td>
+              <td class="muted">—</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" /></td>
+              <td><span class="content-name">Weekly KPIs Old</span></td>
+              <td><span class="content-type type-ans">Answer</span></td>
+              <td class="muted">s.taylor</td>
+              <td class="muted">Mar 12, 2025</td>
+              <td><span class="days-old">105d</span></td>
+              <td class="muted">—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Dry-run modal -->
+<div class="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title">Dry-run preview — Archive 127 objects</div>
+        <div style="font-size:12px;color:#A89E96;margin-top:3px">Review the impact before executing. No changes made yet.</div>
+      </div>
+      <span class="modal-close">✕</span>
+    </div>
+    <div class="modal-body">
+      <div class="impact-grid">
+        <div class="impact-item">
+          <div class="impact-num amber">127</div>
+          <div class="impact-label">Objects to archive</div>
+        </div>
+        <div class="impact-item">
+          <div class="impact-num">84</div>
+          <div class="impact-label">Liveboards</div>
+        </div>
+        <div class="impact-item">
+          <div class="impact-num">43</div>
+          <div class="impact-label">Answers</div>
+        </div>
+      </div>
+
+      <div class="warning-box">
+        ⚠ <strong>3 objects are shared with active users.</strong> Archiving will revoke their access.
+        Affected users: <strong>jane.doe@acme.com</strong>, <strong>m.kim@acme.com</strong>, and 1 other.
+      </div>
+
+      <div style="font-size:11px;font-weight:600;color:#A89E96;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Sample of objects to be archived</div>
+      <div class="preview-list">
+        <div class="preview-row">
+          <span class="preview-name">Q3 Sales Overview</span>
+          <span class="preview-meta">Liveboard · j.smith · 180d unused</span>
+        </div>
+        <div class="preview-row">
+          <span class="preview-name">Revenue by Region Draft</span>
+          <span class="preview-meta">Answer · a.patel · 167d unused</span>
+        </div>
+        <div class="preview-row">
+          <span class="preview-name">Pipeline Analysis 2024</span>
+          <span class="preview-meta">Liveboard · m.jones · 142d unused</span>
+        </div>
+        <div class="preview-row" style="color:#A89E96;font-size:12px;">
+          + 124 more objects
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel">Cancel</button>
+      <button class="btn-confirm">Archive 127 objects</button>
+    </div>
+  </div>
+</div>
+
+<div class="wireframe-nav">
+  <a href="dashboard.html">← Dashboard</a>
+  <a href="users.html">← Users</a>
+  <a href="archiver.html">Archiver</a>
+</div>
+
+</body>
+</html>

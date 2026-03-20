@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+
+# SQLite DB and local config (never commit user data or credentials)
+~/.ts-admin/
+*.sqlite
+*.db
+
+# Distribution
+*.whl
+*.tar.gz
+MANIFEST
+
+# ts_admin static (pre-built frontend — only committed at release time)
+ts_admin/static/*
+!ts_admin/static/.gitkeep
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+frontend/.env.local
+frontend/.env*.local
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Playwright
+test-results/
+playwright-report/
