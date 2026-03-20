@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ts_admin.database import init_db
@@ -83,6 +84,43 @@ def create_app(port: int = 8080) -> FastAPI:
             "Run 'make build' to bundle the frontend, or use 'ts-admin-toolkit serve --dev'.",
             STATIC_DIR,
         )
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def dev_index():
+            return """
+            <!doctype html>
+            <html>
+            <head>
+              <title>TS Admin Toolkit</title>
+              <style>
+                body { font-family: Geist, system-ui, sans-serif; background: #F2EDE3;
+                       display: flex; align-items: center; justify-content: center;
+                       height: 100vh; margin: 0; }
+                .box { background: #FAF8F4; border: 1px solid #E8E1D5; border-radius: 10px;
+                       padding: 40px 48px; max-width: 480px; text-align: center; }
+                .logo { width: 40px; height: 40px; border-radius: 10px; margin: 0 auto 20px;
+                        background: linear-gradient(135deg, #8B5CF6, #6D28D9);
+                        display: flex; align-items: center; justify-content: center;
+                        color: white; font-weight: 700; font-size: 16px; }
+                h1 { font-size: 18px; color: #1A1714; margin: 0 0 8px; }
+                p  { font-size: 13px; color: #7A7068; margin: 0 0 24px; line-height: 1.6; }
+                a  { display: inline-block; padding: 8px 18px; background: #8B5CF6;
+                     color: white; border-radius: 6px; text-decoration: none;
+                     font-size: 13px; font-weight: 500; }
+              </style>
+            </head>
+            <body>
+              <div class="box">
+                <div class="logo">TS</div>
+                <h1>ThoughtSpot Admin Toolkit</h1>
+                <p>The frontend hasn't been built yet.<br>
+                   Run <code>make build</code> to bundle the UI,
+                   or use <code>ts-admin-toolkit serve --dev</code> for hot-reload development.</p>
+                <a href="/api/docs">Open API docs →</a>
+              </div>
+            </body>
+            </html>
+            """
 
     return app
 
