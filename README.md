@@ -44,7 +44,7 @@ pip install ts-admin-toolkit
 ## Run
 
 ```bash
-ts-admin serve
+ts-admin-toolkit serve
 ```
 
 Opens the app at `http://localhost:8080`.
@@ -86,7 +86,7 @@ Each cluster has its own local cache — switching clusters shows that cluster's
 If you have Node.js installed and want hot-reload for UI development:
 
 ```bash
-ts-admin serve --dev
+ts-admin-toolkit serve --dev
 ```
 
 This runs FastAPI on `:8000` and the Next.js dev server on `:3000` with full

@@ -2,9 +2,9 @@
 CLI entrypoint — the only command customers need to know.
 
 Usage:
-  ts-admin serve             # static mode (no Node.js required)
-  ts-admin serve --dev       # dev mode (FastAPI + Next.js hot reload)
-  ts-admin serve --port 9000 # custom port
+  ts-admin-toolkit serve             # static mode (no Node.js required)
+  ts-admin-toolkit serve --dev       # dev mode (FastAPI + Next.js hot reload)
+  ts-admin-toolkit serve --port 9000 # custom port
 """
 
 import logging

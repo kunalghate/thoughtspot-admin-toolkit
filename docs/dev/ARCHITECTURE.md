@@ -45,7 +45,7 @@ Browser → http://localhost:8080
 ```
 thoughtspot-admin-toolkit/
 ├── ts_admin/                    # Python package (pip-installable)
-│   ├── cli.py                   # `ts-admin serve` entrypoint
+│   ├── cli.py                   # `ts-admin-toolkit serve` entrypoint
 │   ├── main.py                  # FastAPI app factory
 │   ├── config.py                # Config loading (TOML + keyring + env vars)
 │   ├── database.py              # SQLite setup, session factory
@@ -233,7 +233,7 @@ shows the impact preview. This is a non-negotiable UX pattern.
 
 ### Standard (default — for end users)
 ```
-ts-admin serve [--port 8080] [--profile production]
+ts-admin-toolkit serve [--port 8080] [--profile production]
 ```
 - FastAPI serves both the API and the pre-built Next.js static files
 - No Node.js required
@@ -241,7 +241,7 @@ ts-admin serve [--port 8080] [--profile production]
 
 ### Dev mode (for developers / advanced users with Node.js)
 ```
-ts-admin serve --dev
+ts-admin-toolkit serve --dev
 ```
 - FastAPI on `:8000` with hot reload
 - Next.js dev server on `:3000` with hot reload

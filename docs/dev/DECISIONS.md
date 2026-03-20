@@ -122,7 +122,7 @@ Each cluster has its own independent local cache in SQLite.
 ## ADR-007: All configuration via web UI (no CLI config commands)
 
 **Decision:** Connection setup, cluster management, and all configuration is done
-through the web UI. The CLI does one thing: `ts-admin serve`.
+through the web UI. The CLI does one thing: `ts-admin-toolkit serve`.
 
 **Rationale:**
 - This is a web application. The configuration experience should be web-native.

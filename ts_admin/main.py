@@ -80,7 +80,7 @@ def create_app(port: int = 8080) -> FastAPI:
     else:
         logger.warning(
             "No static files found at %s. "
-            "Run 'make build' to bundle the frontend, or use 'ts-admin serve --dev'.",
+            "Run 'make build' to bundle the frontend, or use 'ts-admin-toolkit serve --dev'.",
             STATIC_DIR,
         )
 
