@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import { ModuleRegistry, AllCommunityModule } from "ag-grid-community";
 import { Download, Search, X } from "lucide-react";
 import AppShell from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import { metadataApi } from "@/lib/api";
 import type { MetadataObject } from "@/lib/types";
-
-ModuleRegistry.registerModules([AllCommunityModule]);
+import "ag-grid-community/styles/ag-grid.css";
+import "ag-grid-community/styles/ag-theme-alpine.css";
 
 const OBJECT_TYPES = ["LIVEBOARD", "ANSWER", "LOGICAL_TABLE", "WORKSHEET", "TABLE"];
 const TYPE_LABELS: Record<string, string> = {
@@ -146,22 +145,15 @@ export default function MetadataPage() {
         </div>
 
         {/* AG Grid */}
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%" }}>
           <AgGridReact<MetadataObject>
             ref={gridRef}
             rowData={rows}
             columnDefs={METADATA_COLUMNS}
             rowSelection="multiple"
             onSelectionChanged={() => setSelected(gridRef.current?.api.getSelectedRows() ?? [])}
-            loading={loading}
-            noRowsOverlayComponent={() => (
-              <div style={{ textAlign: "center", color: "#7A7068", fontSize: 13, padding: 40, fontFamily: "Geist, sans-serif" }}>
-                {loading ? "Loading…" : "No content found. Sync metadata first."}
-              </div>
-            )}
+            overlayNoRowsTemplate={loading ? "Loading…" : "No content found. Sync metadata first."}
             defaultColDef={{ resizable: true, sortable: true }}
-            theme="legacy"
-            style={{ height: "100%", width: "100%" }}
           />
         </div>
 

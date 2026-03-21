@@ -35,23 +35,19 @@ export const clustersApi = {
   list: () => request<Cluster[]>("/clusters"),
 
   create: (data: {
+    id: string;
     name: string;
     url: string;
     username: string;
     auth_type: string;
-    password?: string;
-    secret_key?: string;
-    token?: string;
+    secret: string;
   }) => request<Cluster>("/clusters", { method: "POST", body: JSON.stringify(data) }),
-
-  update: (id: string, data: Partial<Cluster>) =>
-    request<Cluster>(`/clusters/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
 
   delete: (id: string) =>
     request<void>(`/clusters/${id}`, { method: "DELETE" }),
 
   testConnection: (id: string) =>
-    request<{ ok: boolean; username: string; ts_version: string }>(`/clusters/${id}/test`),
+    request<{ success: boolean; ts_version?: string; error?: string }>(`/clusters/${id}/test`, { method: "POST" }),
 
   listOrgs: (id: string) =>
     request<Org[]>(`/clusters/${id}/orgs`),
