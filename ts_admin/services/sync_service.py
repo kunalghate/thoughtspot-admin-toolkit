@@ -204,15 +204,15 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
                         )
                     ).first()
 
-                    tag_ids = json.dumps([t.id for t in obj.tags])
+                    tag_names = json.dumps([t.name for t in obj.tags])
 
                     if existing:
                         existing.name = obj.name
-                        existing.owner_id = obj.owner_id
-                        existing.author_name = obj.author_name
-                        existing.tag_ids = tag_ids
+                        existing.owner_guid = obj.owner_id
+                        existing.owner_name = obj.author_name
+                        existing.tag_names = tag_names
                         existing.modified_at = obj.modified
-                        existing.last_accessed = obj.last_accessed
+                        existing.last_accessed_at = obj.last_accessed
                         existing.view_count = obj.view_count
                         existing.synced_at = datetime.now(timezone.utc)
                         session.add(existing)
@@ -223,12 +223,12 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
                             ts_guid=obj.id,
                             name=obj.name,
                             object_type=obj.type.value,
-                            owner_id=obj.owner_id,
-                            author_name=obj.author_name,
-                            tag_ids=tag_ids,
+                            owner_guid=obj.owner_id,
+                            owner_name=obj.author_name,
+                            tag_names=tag_names,
                             created_at=obj.created,
                             modified_at=obj.modified,
-                            last_accessed=obj.last_accessed,
+                            last_accessed_at=obj.last_accessed,
                             view_count=obj.view_count,
                             synced_at=datetime.now(timezone.utc),
                         ))

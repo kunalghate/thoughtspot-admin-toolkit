@@ -93,6 +93,13 @@ export interface ApiError {
   detail: string;
 }
 
+export interface MetadataStats {
+  total: number;
+  by_type: Record<string, number>;
+  stale_90d: number;
+  last_synced: string | null;
+}
+
 export interface PaginatedResponse<T> {
   items: T[];
   total: number;

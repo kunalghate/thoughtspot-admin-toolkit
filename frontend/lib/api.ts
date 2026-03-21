@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse } from "./types";
 
 const BASE = "/api/v1";
 
@@ -65,6 +65,40 @@ export const syncApi = {
 
   trigger: (clusterId: string, orgId: number, entityType: EntityType) =>
     request<Job>(`/sync/${clusterId}/${orgId}/${entityType}`, { method: "POST" }),
+};
+
+// ── Metadata ──────────────────────────────────────────────────────────────────
+
+export const metadataApi = {
+  list: (params: {
+    cluster_id: string;
+    org_id: number;
+    types?: string[];
+    owner_guid?: string;
+    tag_names?: string[];
+    search?: string;
+    stale_days?: number;
+    page?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.types)      params.types.forEach((t) => q.append("types", t));
+    if (params.owner_guid) q.set("owner_guid", params.owner_guid);
+    if (params.tag_names)  params.tag_names.forEach((t) => q.append("tag_names", t));
+    if (params.search)     q.set("search", params.search);
+    if (params.stale_days) q.set("stale_days", String(params.stale_days));
+    if (params.page)       q.set("page", String(params.page));
+    if (params.page_size)  q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<MetadataObject>>(`/metadata?${q}`);
+  },
+
+  stats: (clusterId: string, orgId: number) =>
+    request<MetadataStats>(`/metadata/stats?cluster_id=${clusterId}&org_id=${orgId}`),
+
+  get: (guid: string, clusterId: string, orgId: number) =>
+    request<MetadataObject>(`/metadata/${guid}?cluster_id=${clusterId}&org_id=${orgId}`),
 };
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────

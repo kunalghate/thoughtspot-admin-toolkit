@@ -126,9 +126,10 @@ def create_app(port: int = 8080) -> FastAPI:
 
 
 def _register_routers(app: FastAPI) -> None:
-    from ts_admin.api import clusters, sync, jobs, health
+    from ts_admin.api import clusters, sync, jobs, health, metadata
 
-    app.include_router(health.router,   prefix="/api/v1")
-    app.include_router(clusters.router, prefix="/api/v1")
-    app.include_router(sync.router,     prefix="/api/v1")
-    app.include_router(jobs.router,     prefix="/api/v1")
+    app.include_router(health.router,    prefix="/api/v1")
+    app.include_router(clusters.router,  prefix="/api/v1")
+    app.include_router(sync.router,      prefix="/api/v1")
+    app.include_router(jobs.router,      prefix="/api/v1")
+    app.include_router(metadata.router,  prefix="/api/v1")
