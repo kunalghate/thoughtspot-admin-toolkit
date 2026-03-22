@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import { Download, Search, X } from "lucide-react";
-import AppShell from "@/components/Shell";
+import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import { metadataApi } from "@/lib/api";
 import type { MetadataObject } from "@/lib/types";
@@ -14,11 +14,8 @@ const TYPE_LABELS: Record<string, string> = {
   LOGICAL_TABLE: "Worksheet", WORKSHEET: "Worksheet", TABLE: "Table",
 };
 
-// Hardcoded for scaffold — will come from AppShell context in a follow-up
-const CLUSTER_ID = "default";
-const ORG_ID = 0;
-
 export default function MetadataPage() {
+  const { activeCluster, activeOrg } = useShell();
   const gridRef = useRef<AgGridReact<MetadataObject>>(null);
   const [rows, setRows]           = useState<MetadataObject[]>([]);
   const [total, setTotal]         = useState(0);
@@ -32,8 +29,8 @@ export default function MetadataPage() {
     setLoading(true);
     try {
       const res = await metadataApi.list({
-        cluster_id: CLUSTER_ID,
-        org_id: ORG_ID,
+        cluster_id: activeCluster?.id ?? "",
+        org_id: activeOrg?.org_id ?? 0,
         search: search || undefined,
         types: selectedTypes.length ? selectedTypes : undefined,
         stale_days: staleDays,
@@ -46,9 +43,11 @@ export default function MetadataPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, selectedTypes, staleDays]);
+  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, staleDays]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (activeCluster && activeOrg) load();
+  }, [load, activeCluster?.id, activeOrg?.org_id]);
 
   const exportCsv = () => gridRef.current?.api.exportDataAsCsv({ fileName: "metadata.csv" });
 

@@ -144,7 +144,88 @@ def save_cluster(cluster: ClusterConfig, *, secret: str) -> None:
 
     _write_toml(CONFIG_FILE, raw)
     _save_secret(cluster.id, _secret_field_for(cluster.auth_type), secret)
+
+    # Mirror non-sensitive fields to SQLite so FK integrity holds for cache tables
+    from ts_admin.database import get_session
+    from ts_admin.models.cluster import Cluster as ClusterRow
+    from sqlmodel import select
+    with get_session() as session:
+        existing = session.exec(select(ClusterRow).where(ClusterRow.id == cluster.id)).first()
+        if existing:
+            existing.name = cluster.name
+            existing.url = cluster.url
+            existing.username = cluster.username
+            existing.auth_type = cluster.auth_type.value
+            session.add(existing)
+        else:
+            session.add(ClusterRow(
+                id=cluster.id,
+                name=cluster.name,
+                url=cluster.url,
+                username=cluster.username,
+                auth_type=cluster.auth_type.value,
+            ))
+        session.commit()
+
     logger.info("Saved cluster config: %s", cluster.id)
+
+
+def update_cluster(
+    cluster_id: str,
+    *,
+    name: str,
+    url: str,
+    username: str,
+    auth_type: "AuthType",
+    new_secret: str | None,
+) -> "ClusterConfig":
+    """
+    Update an existing cluster's config. If new_secret is provided, rotate the
+    keychain credential (deleting the old one if auth_type changed).
+    If new_secret is None, the existing keychain entry is left untouched.
+    """
+    from ts_admin.ts_client.exceptions import ConfigInvalidError
+
+    config = load_config()
+    existing = config.clusters.get(cluster_id)
+    if not existing:
+        raise ConfigInvalidError(f"Cluster {cluster_id!r} not found")
+
+    old_auth_type = existing.auth_type
+
+    # Update TOML
+    raw = _read_toml(CONFIG_FILE)
+    raw["clusters"][cluster_id].update({
+        "name": name,
+        "url": url,
+        "username": username,
+        "auth_type": auth_type.value,
+    })
+    _write_toml(CONFIG_FILE, raw)
+
+    # Rotate keychain if credential or auth_type changed
+    if new_secret is not None:
+        if old_auth_type != auth_type:
+            # Auth type changed — delete old keychain field, save under new field
+            _delete_secret(cluster_id)
+        _save_secret(cluster_id, _secret_field_for(auth_type), new_secret)
+
+    # Sync to SQLite
+    from ts_admin.database import get_session
+    from ts_admin.models.cluster import Cluster as ClusterRow
+    from sqlmodel import select
+    with get_session() as session:
+        row = session.exec(select(ClusterRow).where(ClusterRow.id == cluster_id)).first()
+        if row:
+            row.name = name
+            row.url = url
+            row.username = username
+            row.auth_type = auth_type.value
+            session.add(row)
+            session.commit()
+
+    logger.info("Updated cluster config: %s", cluster_id)
+    return load_config().clusters[cluster_id]
 
 
 def delete_cluster(cluster_id: str) -> None:
@@ -162,6 +243,17 @@ def delete_cluster(cluster_id: str) -> None:
 
     _write_toml(CONFIG_FILE, raw)
     _delete_secret(cluster_id)
+
+    # Remove from SQLite
+    from ts_admin.database import get_session
+    from ts_admin.models.cluster import Cluster as ClusterRow
+    from sqlmodel import select
+    with get_session() as session:
+        row = session.exec(select(ClusterRow).where(ClusterRow.id == cluster_id)).first()
+        if row:
+            session.delete(row)
+            session.commit()
+
     logger.info("Deleted cluster config: %s", cluster_id)
 
 

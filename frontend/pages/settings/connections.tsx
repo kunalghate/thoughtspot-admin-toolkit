@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, CheckCircle, XCircle, Loader, Radio } from "lucide-react";
+import { Plus, Trash2, CheckCircle, XCircle, Pencil } from "lucide-react";
 import AppShell from "@/components/Shell";
 import { clustersApi } from "@/lib/api";
 import type { Cluster } from "@/lib/types";
@@ -21,9 +21,10 @@ const AUTH_SECRET_LABEL: Record<AuthType, string> = {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ConnectionsPage() {
-  const [clusters, setClusters]   = useState<Cluster[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [showForm, setShowForm]   = useState(false);
+  const [clusters, setClusters]     = useState<Cluster[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [showForm, setShowForm]     = useState(false);
+  const [editingCluster, setEditing] = useState<Cluster | null>(null);
 
   const reload = () => {
     clustersApi.list().then(setClusters).finally(() => setLoading(false));
@@ -85,6 +86,7 @@ export default function ConnectionsPage() {
                 cluster={c}
                 onDelete={() => handleDelete(c.id)}
                 onActivate={() => handleActivate(c.id)}
+                onEdit={() => setEditing(c)}
               />
             ))}
           </div>
@@ -97,6 +99,15 @@ export default function ConnectionsPage() {
             onSaved={() => { setShowForm(false); reload(); }}
           />
         )}
+
+        {/* Edit cluster slide-in panel */}
+        {editingCluster && (
+          <EditClusterPanel
+            cluster={editingCluster}
+            onClose={() => setEditing(null)}
+            onSaved={() => { setEditing(null); reload(); }}
+          />
+        )}
       </div>
     </AppShell>
   );
@@ -104,10 +115,11 @@ export default function ConnectionsPage() {
 
 // ── Cluster row ───────────────────────────────────────────────────────────────
 
-function ClusterRow({ cluster, onDelete, onActivate }: {
+function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
   cluster: Cluster;
   onDelete: () => void;
   onActivate: () => void;
+  onEdit: () => void;
 }) {
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [testError, setTestError] = useState("");
@@ -191,10 +203,20 @@ function ClusterRow({ cluster, onDelete, onActivate }: {
           </button>
         )}
 
+        {/* Edit */}
+        <button
+          onClick={onEdit}
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "#A89E96" }}
+          title="Edit cluster"
+        >
+          <Pencil size={14} />
+        </button>
+
         {/* Delete */}
         <button
           onClick={onDelete}
           style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "#A89E96" }}
+          title="Remove cluster"
         >
           <Trash2 size={14} />
         </button>
@@ -383,6 +405,116 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
           >
             {saving ? "Saving…" : "Save cluster"}
           </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Edit cluster panel ────────────────────────────────────────────────────────
+
+function EditClusterPanel({ cluster, onClose, onSaved }: {
+  cluster: Cluster;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: cluster.name,
+    url: cluster.url,
+    username: cluster.username,
+    auth_type: cluster.auth_type as AuthType,
+    credential: "",   // blank = keep existing
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError]   = useState("");
+
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const handleSave = async () => {
+    setError("");
+    setSaving(true);
+    try {
+      await clustersApi.update(cluster.id, {
+        name: form.name,
+        url: form.url,
+        username: form.username,
+        auth_type: form.auth_type,
+        credential: form.credential || undefined,  // omit if blank → keep existing
+      });
+      onSaved();
+    } catch (e: any) {
+      setError(e.message ?? "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const panelStyle: React.CSSProperties = {
+    position: "fixed", inset: 0, zIndex: 50,
+    display: "flex", justifyContent: "flex-end",
+  };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.2)", zIndex: 49 }} />
+      <div style={panelStyle}>
+        <div style={{
+          width: 420, height: "100%", background: "#FAF8F4",
+          borderLeft: "1px solid #E8E1D5", padding: 28,
+          display: "flex", flexDirection: "column", gap: 20,
+          overflowY: "auto", zIndex: 50, fontFamily: "Geist, sans-serif",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#1A1714" }}>Edit cluster</h3>
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#7A7068", fontSize: 18 }}>✕</button>
+          </div>
+
+          <Field label="Display name">
+            <input value={form.name} onChange={set("name")} placeholder="Production" {...inputStyle} />
+          </Field>
+          <Field label="ThoughtSpot URL">
+            <input value={form.url} onChange={set("url")} placeholder="https://company.thoughtspot.cloud" {...inputStyle} />
+          </Field>
+          <Field label="Username">
+            <input value={form.username} onChange={set("username")} placeholder="admin@company.com" {...inputStyle} />
+          </Field>
+          <Field label="Auth method">
+            <select value={form.auth_type} onChange={set("auth_type")} {...inputStyle}>
+              <option value="basic">Basic (username + password)</option>
+              <option value="trusted">Trusted Auth (secret key)</option>
+              <option value="bearer">Bearer token</option>
+            </select>
+          </Field>
+          <Field
+            label={AUTH_SECRET_LABEL[form.auth_type]}
+            hint="(leave blank to keep existing)"
+          >
+            <input
+              value={form.credential} onChange={set("credential")}
+              type="password" placeholder="Enter new value to rotate…"
+              {...inputStyle}
+            />
+          </Field>
+
+          {error && <p style={{ margin: 0, fontSize: 12, color: "#DC2626" }}>{error}</p>}
+
+          <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+            <button onClick={onClose} style={{
+              flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: "1px solid #E8E1D5", background: "transparent", cursor: "pointer",
+              color: "#1A1714", fontFamily: "Geist, sans-serif",
+            }}>
+              Cancel
+            </button>
+            <button onClick={handleSave} disabled={saving} style={{
+              flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: "none", background: "#8B5CF6", color: "white", cursor: "pointer",
+              fontFamily: "Geist, sans-serif", opacity: saving ? 0.6 : 1,
+            }}>
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+          </div>
         </div>
       </div>
     </>

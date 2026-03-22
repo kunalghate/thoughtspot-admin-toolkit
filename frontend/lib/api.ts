@@ -58,6 +58,14 @@ export const clustersApi = {
     credential: string;
   }) => request<Cluster>("/clusters", { method: "POST", body: JSON.stringify(data) }),
 
+  update: (id: string, data: {
+    name: string;
+    url: string;
+    username: string;
+    auth_type: string;
+    credential?: string;     // omit to keep existing keychain entry
+  }) => request<Cluster>(`/clusters/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+
   delete: (id: string) =>
     request<void>(`/clusters/${id}`, { method: "DELETE" }),
 

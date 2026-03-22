@@ -114,6 +114,44 @@ async def add_cluster(body: ClusterIn) -> ClusterOut:
     )
 
 
+class ClusterUpdate(BaseModel):
+    name: str
+    url: str
+    username: str
+    auth_type: AuthType = AuthType.BASIC
+    credential: str | None = None   # if None, keep existing keychain entry
+
+
+@router.put("/{cluster_id}", response_model=ClusterOut)
+async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
+    """Update a cluster's config and optionally rotate its credential."""
+    from ts_admin.config import load_config, update_cluster as cfg_update
+    from ts_admin.ts_client.exceptions import ConfigInvalidError, TSAdminError
+
+    try:
+        cluster = cfg_update(
+            cluster_id,
+            name=body.name,
+            url=body.url,
+            username=body.username,
+            auth_type=body.auth_type,
+            new_secret=body.credential,   # None = keep existing
+        )
+        config = load_config()
+        return ClusterOut(
+            id=cluster.id,
+            name=cluster.name,
+            url=cluster.url,
+            username=cluster.username,
+            auth_type=cluster.auth_type,
+            is_active=(config.active_cluster_id == cluster.id),
+        )
+    except ConfigInvalidError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except TSAdminError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.delete("/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_cluster(cluster_id: str) -> None:
     """Remove a cluster and delete its keychain entry."""
