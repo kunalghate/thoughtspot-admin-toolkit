@@ -5,7 +5,13 @@
 
 import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse } from "./types";
 
-const BASE = "/api/v1";
+// In dev mode, Next.js static-export config disables rewrites so we
+// hit FastAPI directly on :8000. In production the SPA is served by
+// FastAPI itself so /api/v1 resolves to the same origin.
+const BASE =
+  typeof window !== "undefined" && window.location.port === "3000"
+    ? "http://localhost:8000/api/v1"
+    : "/api/v1";
 
 // ── Generic fetch wrapper ─────────────────────────────────────────────────────
 

@@ -133,3 +133,8 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(sync.router,      prefix="/api/v1")
     app.include_router(jobs.router,      prefix="/api/v1")
     app.include_router(metadata.router,  prefix="/api/v1")
+
+
+# Module-level app instance for uvicorn: uvicorn ts_admin.main:app
+# Must be after _register_routers is defined.
+app = create_app()

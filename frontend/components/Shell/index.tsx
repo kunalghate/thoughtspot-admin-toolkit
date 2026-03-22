@@ -34,11 +34,14 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
     clustersApi.list().then((list) => {
       setClusters(list);
       if (list.length > 0) setActiveCluster(list[0]);
+      // Only redirect if no clusters AND not already on a settings page
+      if (list.length === 0 && !router.pathname.startsWith("/settings")) {
+        router.push("/settings/connections");
+      }
     }).catch(() => {
-      // No clusters configured — send to settings
-      router.push("/settings");
+      // API unreachable — stay on the current page, don't redirect
     });
-  }, []);
+  }, [router.pathname]);
 
   // Load orgs when active cluster changes
   useEffect(() => {
