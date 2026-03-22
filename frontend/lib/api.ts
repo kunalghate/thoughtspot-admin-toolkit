@@ -21,12 +21,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
 
+  // Parse body safely — some endpoints return 204 No Content
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : null;
+
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? `HTTP ${res.status}`);
+    const detail = body?.detail;
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((e: any) => `${e.loc?.slice(-1)[0] ?? "?"}: ${e.msg ?? JSON.stringify(e)}`).join(", ")
+        : `HTTP ${res.status}: ${res.statusText}`;
+    throw new Error(message);
   }
 
-  return res.json() as Promise<T>;
+  return body as T;
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────
@@ -46,7 +55,7 @@ export const clustersApi = {
     url: string;
     username: string;
     auth_type: string;
-    secret: string;
+    credential: string;
   }) => request<Cluster>("/clusters", { method: "POST", body: JSON.stringify(data) }),
 
   delete: (id: string) =>

@@ -6,6 +6,7 @@ export interface Cluster {
   url: string;
   username: string;
   auth_type: "basic" | "trusted" | "bearer";
+  is_active: boolean;
   created_at: string;
 }
 

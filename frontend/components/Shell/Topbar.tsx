@@ -19,8 +19,8 @@ export default function Topbar({
 }: TopbarProps) {
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
 
-  const syncLabel = getSyncLabel(syncLog, isSyncing);
-  const syncColor = getSyncColor(syncLog, isSyncing);
+  const syncLabel = buildSyncLabel(syncLog, isSyncing);
+  const syncColor = buildSyncColor(syncLog, isSyncing);
 
   return (
     <header style={{
@@ -103,18 +103,21 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
   onSelect: (org: Org) => void;
   onClose: () => void;
 }) {
+  const [orgSearch, setOrgSearch] = useState("");
+  const filtered = orgs.filter((o) =>
+    o.name.toLowerCase().includes(orgSearch.toLowerCase())
+  );
+
   return (
     <>
       {/* Backdrop */}
-      <div
-        onClick={onClose}
-        style={{ position: "fixed", inset: 0, zIndex: 10 }}
-      />
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 10 }} />
+
       <div style={{
         position: "absolute", right: 0, top: "calc(100% + 6px)",
         background: "#FAF8F4", border: "1px solid #E8E1D5",
         borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
-        minWidth: 200, zIndex: 20, overflow: "hidden",
+        minWidth: 220, zIndex: 20, overflow: "hidden",
         fontFamily: "Geist, sans-serif",
       }}>
         <div style={{ padding: "8px 12px 6px", borderBottom: "1px solid #F0EBE3" }}>
@@ -122,31 +125,51 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
             Switch Org
           </span>
         </div>
-        {orgs.map((org) => {
-          const active = activeOrg?.org_id === org.org_id;
-          return (
-            <button
-              key={org.org_id}
-              onClick={() => onSelect(org)}
+
+        {orgs.length > 8 && (
+          <div style={{ padding: "6px 10px", borderBottom: "1px solid #F0EBE3" }}>
+            <input
+              autoFocus
+              placeholder="Search orgs…"
+              value={orgSearch}
+              onChange={(e) => setOrgSearch(e.target.value)}
               style={{
-                width: "100%", display: "flex", alignItems: "center",
-                justifyContent: "space-between", padding: "8px 12px",
-                background: active ? "#EDE9FE" : "transparent",
-                border: "none", cursor: "pointer", textAlign: "left",
+                width: "100%", padding: "5px 8px", fontSize: 12,
+                border: "1px solid #E8E1D5", borderRadius: 5,
+                background: "#FFFFFF", color: "#1A1714", outline: "none",
+                fontFamily: "Geist, sans-serif", boxSizing: "border-box",
               }}
-            >
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500, color: active ? "#6D28D9" : "#1A1714" }}>
-                  {org.name}
+            />
+          </div>
+        )}
+
+        <div style={{ maxHeight: 280, overflowY: "auto" }}>
+          {filtered.map((org) => {
+            const active = activeOrg?.org_id === org.org_id;
+            return (
+              <button
+                key={org.org_id}
+                onClick={() => onSelect(org)}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center",
+                  justifyContent: "space-between", padding: "8px 12px",
+                  background: active ? "#EDE9FE" : "transparent",
+                  border: "none", cursor: "pointer", textAlign: "left",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: active ? "#6D28D9" : "#1A1714" }}>
+                    {org.name}
+                  </div>
+                  {org.org_id === 0 && (
+                    <div style={{ fontSize: 10, color: "#7A7068" }}>Primary org</div>
+                  )}
                 </div>
-                {org.org_id === 0 && (
-                  <div style={{ fontSize: 10, color: "#7A7068" }}>Primary org</div>
-                )}
-              </div>
-              {active && <span style={{ fontSize: 12, color: "#8B5CF6" }}>✓</span>}
-            </button>
-          );
-        })}
+                {active && <span style={{ fontSize: 12, color: "#8B5CF6" }}>✓</span>}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </>
   );
@@ -154,7 +177,7 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getSyncLabel(log: SyncLog | null, isSyncing: boolean): string {
+function buildSyncLabel(log: SyncLog | null, isSyncing: boolean): string {
   if (isSyncing) return "Syncing…";
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
   if (log.status === "FAILED") return "Sync failed";
@@ -168,7 +191,7 @@ function getSyncLabel(log: SyncLog | null, isSyncing: boolean): string {
   return `Synced ${Math.floor(hours / 24)}d ago`;
 }
 
-function getSyncColor(log: SyncLog | null, isSyncing: boolean): string {
+function buildSyncColor(log: SyncLog | null, isSyncing: boolean): string {
   if (isSyncing) return "#8B5CF6";
   if (!log || log.status === "NOT_SYNCED") return "#DC2626";
   if (log.status === "FAILED") return "#DC2626";

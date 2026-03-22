@@ -61,7 +61,12 @@ class BasicAuth(AuthStrategy):
         )
         if response.status_code == 401:
             raise TSAuthenticationError("Invalid username or password")
-        response.raise_for_status()
+        if response.status_code == 403:
+            raise TSAuthenticationError("Access denied — check that this user has ADMINISTRATION privilege")
+        if not response.is_success:
+            raise TSAuthenticationError(
+                f"Login failed ({response.status_code}): {response.text[:200]}"
+            )
         self._session_token = response.json()["token"]
 
     def invalidate(self) -> None:
@@ -98,7 +103,12 @@ class TrustedAuth(AuthStrategy):
         )
         if response.status_code == 401:
             raise TSAuthenticationError("Invalid username or secret key")
-        response.raise_for_status()
+        if response.status_code == 403:
+            raise TSAuthenticationError("Access denied — check that Trusted Authentication is enabled in ThoughtSpot Developer settings")
+        if not response.is_success:
+            raise TSAuthenticationError(
+                f"Login failed ({response.status_code}): {response.text[:200]}"
+            )
         self._session_token = response.json()["token"]
 
     def invalidate(self) -> None:

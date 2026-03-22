@@ -56,17 +56,20 @@ export default function ConnectionsPage() {
               Connect to one or more ThoughtSpot instances. Credentials are stored securely in your OS keychain.
             </p>
           </div>
-          <button
-            onClick={() => setShowForm(true)}
-            style={{
-              display: "flex", alignItems: "center", gap: 6, padding: "7px 14px",
-              background: "#8B5CF6", color: "white", border: "none", borderRadius: 6,
-              fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "Geist, sans-serif",
-              flexShrink: 0,
-            }}
-          >
-            <Plus size={14} /> Add cluster
-          </button>
+          {/* Only show when clusters exist — empty state has its own CTA */}
+          {clusters.length > 0 && (
+            <button
+              onClick={() => setShowForm(true)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "7px 14px",
+                background: "#8B5CF6", color: "white", border: "none", borderRadius: 6,
+                fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "Geist, sans-serif",
+                flexShrink: 0,
+              }}
+            >
+              <Plus size={14} /> Add cluster
+            </button>
+          )}
         </div>
 
         {/* Cluster list */}
@@ -214,13 +217,6 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       border: "2px dashed #E8E1D5", borderRadius: 10, padding: "48px 32px",
       textAlign: "center",
     }}>
-      <div style={{
-        width: 40, height: 40, borderRadius: 10, margin: "0 auto 16px",
-        background: "linear-gradient(135deg, #8B5CF6, #6D28D9)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-      }}>
-        <span style={{ color: "white", fontSize: 18, fontWeight: 700 }}>TS</span>
-      </div>
       <h3 style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif", margin: "0 0 8px" }}>
         No clusters configured
       </h3>
@@ -245,7 +241,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
 
 function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState({
-    name: "", url: "", username: "", auth_type: "basic" as AuthType, secret: "",
+    name: "", url: "", username: "", auth_type: "basic" as AuthType, credential: "",
   });
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [testMsg, setTestMsg]     = useState("");
@@ -269,7 +265,7 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
         setTestMsg(`Connected — ThoughtSpot ${res.ts_version ?? ""}`);
       } else {
         setTestState("fail");
-        setTestMsg("Connection failed");
+        setTestMsg(res.error ?? "Connection failed");
       }
     } catch (e: any) {
       try { await clustersApi.delete(tempId); } catch {}
@@ -292,7 +288,7 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
     }
   };
 
-  const canSave = form.name && form.url && form.username && form.secret;
+  const canSave = form.name && form.url && form.username && form.credential;
 
   return (
     <>
@@ -340,7 +336,7 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
           </Field>
 
           <Field label={AUTH_SECRET_LABEL[form.auth_type]}>
-            <input value={form.secret} onChange={set("secret")} type="password" placeholder="••••••••" {...inputStyle} />
+            <input value={form.credential} onChange={set("credential")} type="password" placeholder="••••••••" {...inputStyle} />
           </Field>
 
           {/* Test result */}
