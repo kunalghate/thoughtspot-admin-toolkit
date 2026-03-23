@@ -91,16 +91,62 @@ Your data (local cache, settings, job history) is preserved between sessions.
 
 ---
 
-## Managing multiple ThoughtSpot instances
+## Managing connections
 
-To connect to a second cluster (e.g. a staging environment):
+All connection management is done from **Settings → Connections**.
+
+### Adding a cluster
+
+1. Click **Add cluster**
+2. Enter a display name (e.g. `Production`, `Staging`)
+3. Enter your ThoughtSpot URL (e.g. `https://company.thoughtspot.cloud`)
+4. Enter your username
+5. Choose your auth method:
+   - **Basic** — username + password
+   - **Trusted Auth** — username + secret key (found in ThoughtSpot under **Develop → Security Settings → Trusted authentication**)
+   - **Bearer token** — a pre-obtained API token
+6. Click **Test connection** to verify before saving
+7. Click **Save**
+
+The first cluster you add is automatically set as active. Additional clusters must be manually activated.
+
+Your credentials are stored securely in your operating system's keychain — never in a plain text file.
+
+---
+
+### Switching the active cluster
+
+Only one cluster is active at a time. The active cluster is shown with a purple indicator on the connections page.
+
+To switch:
+1. Go to **Settings → Connections**
+2. Click **Set active** on the cluster you want to switch to
+
+All pages will immediately reflect data from the newly active cluster.
+
+---
+
+### Editing a cluster
+
+Use this when your credentials rotate, your auth method changes, or your ThoughtSpot URL changes.
 
 1. Go to **Settings → Connections**
-2. Click **Add cluster**
-3. Follow the same setup flow
+2. Click the **pencil icon** on the cluster you want to edit
+3. Update any fields
+4. To rotate your credential (password, secret key, or token), enter the new value in the credential field. **Leave it blank to keep your existing credential unchanged.**
+5. Click **Save changes**
 
-Switch between clusters using the **cluster picker** in the top navigation bar.
-Each cluster has its own local cache.
+> If you change the auth method (e.g. from Basic to Trusted Auth), you must enter a new credential — the old one is automatically removed from the keychain.
+
+---
+
+### Removing a cluster
+
+1. Go to **Settings → Connections**
+2. Click the **trash icon** on the cluster you want to remove
+3. Confirm the deletion
+
+Removing a cluster deletes its configuration and credential from the keychain. It does **not** delete the local cached data (users, metadata, etc.) associated with that cluster. To clear cached data, use the sync management page.
 
 ---
 
