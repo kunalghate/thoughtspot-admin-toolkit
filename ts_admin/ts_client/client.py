@@ -342,7 +342,9 @@ class ThoughtSpotClient:
             context="search_orgs",
         )
         try:
-            return [TSOrg.model_validate(o) for o in data.get("orgs", [])]
+            # TS API returns a plain list, not {"orgs": [...]}
+            items = data if isinstance(data, list) else data.get("orgs", [])
+            return [TSOrg.model_validate(o) for o in items]
         except ValidationError as exc:
             raise TSResponseParseError(
                 url="/api/rest/2.0/orgs/search", detail=str(exc)

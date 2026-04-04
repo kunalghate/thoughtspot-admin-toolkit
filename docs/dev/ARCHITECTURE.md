@@ -105,6 +105,77 @@ thoughtspot-admin-toolkit/
 
 ---
 
+## Cluster connection management
+
+### Three-store pattern
+
+A cluster's data is split across three stores. Each store has a specific role:
+
+```
+Store 1: ~/.ts-admin/config.toml       — non-sensitive connection config
+  active_cluster = "production"
+
+  [clusters.production]
+  name     = "Production"
+  url      = "https://company.thoughtspot.cloud"
+  username = "admin@company.com"
+  auth_type = "trusted"
+
+Store 2: OS keychain (via `keyring`)   — credentials only, never plaintext
+  service  = "ts-admin-toolkit"
+  username = "production:secret_key"
+  password = "79573ef6-..."            ← the actual secret key
+
+Store 3: SQLite clusters table         — FK integrity for all cache tables
+  id = "production", name = "Production",
+  url = "...", username = "...", auth_type = "trusted"
+```
+
+**Why three stores?**
+- TOML is human-readable, easy to inspect, version-controllable (without credentials)
+- OS keychain is the secure store for secrets — never written to disk as plaintext
+- SQLite is needed so every cache table (`ts_metadata`, `ts_users`, etc.) can have a valid FK to `clusters.id`
+
+### Cluster lifecycle
+
+```
+CREATE (save_cluster)
+  ├── Write to config.toml       (name, url, username, auth_type)
+  ├── Write to OS keychain       (password | secret_key | token)
+  ├── Write to SQLite clusters   (same non-sensitive fields)
+  └── If first cluster: auto-set as active_cluster in config.toml
+
+UPDATE (update_cluster)
+  ├── Update config.toml         (any field)
+  ├── If new_secret provided:
+  │   ├── If auth_type changed: delete old keychain entry first
+  │   └── Write new credential to keychain under new field name
+  ├── Update SQLite clusters     (name, url, username, auth_type)
+  └── If new_secret is None: keychain entry is left untouched
+
+DELETE (delete_cluster)
+  ├── Remove from config.toml
+  ├── Delete from OS keychain    (all credential fields for this cluster)
+  ├── Delete from SQLite clusters
+  └── If was active_cluster: auto-promote next remaining cluster (or clear)
+```
+
+### Auth type → keychain field mapping
+
+| Auth type | Keychain field | Value stored |
+|---|---|---|
+| `basic` | `password` | User's ThoughtSpot password |
+| `trusted` | `secret_key` | Trusted auth secret key from Developer settings |
+| `bearer` | `token` | Pre-obtained bearer token |
+
+When auth type changes during an edit, the old keychain field is deleted and the new one is written. This prevents stale credentials from accumulating in the keychain.
+
+### Orgs
+
+Orgs are fetched live from the ThoughtSpot API — they are not cached in SQLite. The org list is fetched when the active cluster changes (on app load and on cluster switch). This keeps org data always fresh without needing a separate sync step.
+
+---
+
 ## Data architecture
 
 ### Local cache (SQLite)

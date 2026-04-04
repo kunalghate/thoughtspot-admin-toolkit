@@ -28,7 +28,7 @@ class ClusterIn(BaseModel):
     url: str
     username: str
     auth_type: AuthType = AuthType.BASIC
-    secret: str                         # password | secret_key | bearer token
+    credential: str                     # password | secret_key | bearer token
 
     @field_validator("url")
     @classmethod
@@ -81,7 +81,7 @@ async def list_clusters() -> list[ClusterOut]:
 @router.post("", response_model=ClusterOut, status_code=status.HTTP_201_CREATED)
 async def add_cluster(body: ClusterIn) -> ClusterOut:
     """Add a new cluster connection and save credentials to keychain."""
-    from ts_admin.config import ClusterConfig, save_cluster
+    from ts_admin.config import ClusterConfig, load_config, save_cluster, set_active_cluster
     from ts_admin.ts_client.exceptions import TSAdminError
 
     cluster = ClusterConfig(
@@ -93,9 +93,16 @@ async def add_cluster(body: ClusterIn) -> ClusterOut:
     )
 
     try:
-        save_cluster(cluster, secret=body.secret)
+        save_cluster(cluster, secret=body.credential)
     except TSAdminError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Auto-activate if this is the first cluster
+    config = load_config()
+    is_active = False
+    if len(config.clusters) == 1:
+        set_active_cluster(cluster.id)
+        is_active = True
 
     return ClusterOut(
         id=cluster.id,
@@ -103,7 +110,46 @@ async def add_cluster(body: ClusterIn) -> ClusterOut:
         url=cluster.url,
         username=cluster.username,
         auth_type=cluster.auth_type,
+        is_active=is_active,
     )
+
+
+class ClusterUpdate(BaseModel):
+    name: str
+    url: str
+    username: str
+    auth_type: AuthType = AuthType.BASIC
+    credential: str | None = None   # if None, keep existing keychain entry
+
+
+@router.put("/{cluster_id}", response_model=ClusterOut)
+async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
+    """Update a cluster's config and optionally rotate its credential."""
+    from ts_admin.config import load_config, update_cluster as cfg_update
+    from ts_admin.ts_client.exceptions import ConfigInvalidError, TSAdminError
+
+    try:
+        cluster = cfg_update(
+            cluster_id,
+            name=body.name,
+            url=body.url,
+            username=body.username,
+            auth_type=body.auth_type,
+            new_secret=body.credential,   # None = keep existing
+        )
+        config = load_config()
+        return ClusterOut(
+            id=cluster.id,
+            name=cluster.name,
+            url=cluster.url,
+            username=cluster.username,
+            auth_type=cluster.auth_type,
+            is_active=(config.active_cluster_id == cluster.id),
+        )
+    except ConfigInvalidError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except TSAdminError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.delete("/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -118,6 +164,7 @@ async def test_cluster(cluster_id: str) -> TestResult:
     """Test the connection to a specific cluster."""
     from ts_admin.config import load_config
     from ts_admin.ts_client import ThoughtSpotClient
+    import httpx
     from ts_admin.ts_client.exceptions import ConfigNotFoundError, TSAdminError
 
     try:
@@ -136,6 +183,52 @@ async def test_cluster(cluster_id: str) -> TestResult:
         raise HTTPException(status_code=404, detail=str(exc))
     except TSAdminError as exc:
         return TestResult(success=False, error=str(exc))
+    except httpx.HTTPStatusError as exc:
+        return TestResult(success=False, error=f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
+    except httpx.ConnectError:
+        return TestResult(success=False, error="Cannot reach ThoughtSpot — check the URL and your network connection")
+    except httpx.TimeoutException:
+        return TestResult(success=False, error="Connection timed out — ThoughtSpot is not responding")
+
+
+class OrgOut(BaseModel):
+    org_id: int
+    name: str
+    description: str = ""
+    status: str = "ACTIVE"
+
+
+@router.get("/{cluster_id}/orgs", response_model=list[OrgOut])
+async def list_cluster_orgs(cluster_id: str) -> list[OrgOut]:
+    """Fetch all orgs from a cluster live. Used to populate the org switcher."""
+    from ts_admin.config import load_config
+    from ts_admin.ts_client import ThoughtSpotClient
+    from ts_admin.ts_client.exceptions import ConfigNotFoundError, TSAdminError
+
+    try:
+        config = load_config()
+        cluster = config.clusters.get(cluster_id)
+        if not cluster:
+            raise HTTPException(status_code=404, detail=f"Cluster {cluster_id!r} not found")
+
+        auth = cluster.build_auth_strategy()
+        async with ThoughtSpotClient(url=cluster.url, auth=auth) as client:
+            orgs = await client.search_orgs()
+
+        return [
+            OrgOut(
+                org_id=o.id,
+                name=o.name,
+                description=o.description or "",
+                status=o.status,
+            )
+            for o in orgs
+        ]
+
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except TSAdminError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @router.post("/{cluster_id}/activate", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,26 +1,26 @@
 import { useRouter } from "next/router";
 import Link from "next/link";
-import clsx from "clsx";
+import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Users, UsersRound, FolderSearch,
-  ArchiveBox, Share2, GitFork, Briefcase, Settings,
+  Archive, Share2, GitFork, Briefcase, Settings,
 } from "lucide-react";
 import type { Cluster } from "@/lib/types";
 
-const NAV_ITEMS = [
-  { href: "/dashboard",     label: "Dashboard",     icon: LayoutDashboard },
-  { href: "/users",         label: "Users",          icon: Users },
-  { href: "/groups",        label: "Groups",         icon: UsersRound },
-  { href: "/metadata",      label: "Metadata",       icon: FolderSearch },
-  { href: "/archiver",      label: "Archiver",       icon: ArchiveBox },
-  { href: "/sharing",       label: "Bulk Sharing",   icon: Share2 },
-  { href: "/relationships", label: "Relationships",  icon: GitFork },
-] as const;
+const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
+  { href: "/dashboard",     label: "Dashboard",    icon: LayoutDashboard },
+  { href: "/users",         label: "Users",         icon: Users },
+  { href: "/groups",        label: "Groups",        icon: UsersRound },
+  { href: "/metadata",      label: "Metadata",      icon: FolderSearch },
+  { href: "/archiver",      label: "Archiver",      icon: Archive },
+  { href: "/sharing",       label: "Bulk Sharing",  icon: Share2 },
+  { href: "/relationships", label: "Relationships", icon: GitFork },
+];
 
-const BOTTOM_ITEMS = [
+const BOTTOM_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/jobs",     label: "Jobs",     icon: Briefcase },
   { href: "/settings", label: "Settings", icon: Settings },
-] as const;
+];
 
 interface SidebarProps {
   activeCluster: Cluster | null;
@@ -95,7 +95,7 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
 }
 
 function NavSection({ items, currentPath }: {
-  items: readonly { href: string; label: string; icon: React.ComponentType<{ size?: number }> }[];
+  items: { href: string; label: string; icon: LucideIcon }[];
   currentPath: string;
 }) {
   return (
@@ -108,9 +108,8 @@ function NavSection({ items, currentPath }: {
               display: "flex", alignItems: "center", gap: 9,
               padding: "7px 10px", borderRadius: 6, marginBottom: 2, cursor: "pointer",
               background: active ? "#EDE9FE" : "transparent",
-              transition: "background 0.1s",
             }}>
-              <Icon size={15} style={{ color: active ? "#6D28D9" : "#7A7068", flexShrink: 0 }} />
+              <Icon size={15} color={active ? "#6D28D9" : "#7A7068"} style={{ flexShrink: 0 }} />
               <span style={{
                 fontSize: 13, fontWeight: active ? 500 : 400,
                 color: active ? "#6D28D9" : "#1A1714",

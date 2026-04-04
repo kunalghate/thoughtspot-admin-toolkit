@@ -7,12 +7,25 @@
  *   </AppShell>
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 import { clustersApi, syncApi } from "@/lib/api";
 import type { Cluster, Org, SyncLog, EntityType } from "@/lib/types";
+
+// ── Shell context — lets any page read the active cluster + org ────────────────
+
+interface ShellContextValue {
+  activeCluster: Cluster | null;
+  activeOrg: Org | null;
+}
+
+const ShellContext = createContext<ShellContextValue>({ activeCluster: null, activeOrg: null });
+
+export function useShell(): ShellContextValue {
+  return useContext(ShellContext);
+}
 
 interface AppShellProps {
   pageTitle: string;
@@ -22,7 +35,7 @@ interface AppShellProps {
 
 export default function AppShell({ pageTitle, entityType, children }: AppShellProps) {
   const router = useRouter();
-  const [clusters, setClusters]       = useState<Cluster[]>([]);
+  const [, setClusters]               = useState<Cluster[]>([]);
   const [activeCluster, setActiveCluster] = useState<Cluster | null>(null);
   const [orgs, setOrgs]               = useState<Org[]>([]);
   const [activeOrg, setActiveOrg]     = useState<Org | null>(null);
@@ -34,11 +47,14 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
     clustersApi.list().then((list) => {
       setClusters(list);
       if (list.length > 0) setActiveCluster(list[0]);
+      // Only redirect if no clusters AND not already on a settings page
+      if (list.length === 0 && !router.pathname.startsWith("/settings")) {
+        router.push("/settings/connections");
+      }
     }).catch(() => {
-      // No clusters configured — send to settings
-      router.push("/settings");
+      // API unreachable — stay on the current page, don't redirect
     });
-  }, []);
+  }, [router.pathname]);
 
   // Load orgs when active cluster changes
   useEffect(() => {
@@ -74,6 +90,7 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
   }, [activeCluster?.id, activeOrg?.org_id, entityType]);
 
   return (
+    <ShellContext.Provider value={{ activeCluster, activeOrg }}>
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "Geist, sans-serif" }}>
       <Sidebar
         activeCluster={activeCluster}
@@ -95,5 +112,6 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
         </main>
       </div>
     </div>
+    </ShellContext.Provider>
   );
 }
