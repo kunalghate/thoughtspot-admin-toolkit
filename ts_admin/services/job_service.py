@@ -18,8 +18,9 @@ def create_job(*, job_type: str, parameters: dict) -> str:
     config = load_config()
     cluster_id = config.active_cluster.id
 
+    job_id = str(uuid.uuid4())
     job = Job(
-        id=str(uuid.uuid4()),
+        id=job_id,
         cluster_id=cluster_id,
         job_type=job_type,
         status="QUEUED",
@@ -30,7 +31,7 @@ def create_job(*, job_type: str, parameters: dict) -> str:
         session.add(job)
         session.commit()
 
-    return job.id
+    return job_id
 
 
 def mark_running(job_id: str, total: int) -> None:

@@ -121,11 +121,14 @@ class ThoughtSpotClient:
                     headers=auth_headers,
                 )
             except httpx.ConnectError as exc:
+                # ConnectError covers both TCP connection failures and TLS/SSL errors
+                # in httpx >= 0.28 (SSLError was removed as a separate class)
+                msg = str(exc)
+                if "ssl" in msg.lower() or "tls" in msg.lower() or "certificate" in msg.lower():
+                    raise TSSSLError(f"TLS error connecting to ThoughtSpot: {exc}") from exc
                 raise TSConnectionError(
                     f"Cannot reach ThoughtSpot at {self._base_url}: {exc}"
                 ) from exc
-            except httpx.SSLError as exc:
-                raise TSSSLError(f"TLS error connecting to ThoughtSpot: {exc}") from exc
 
             if response.status_code == 401:
                 self._auth.invalidate()
@@ -268,33 +271,60 @@ class ThoughtSpotClient:
     async def search_metadata(
         self,
         *,
-        types: list[MetadataType] | None = None,
         org_id: int | None = None,
     ) -> AsyncIterator[list[TSMetadataObject]]:
-        """Yield pages of all content objects (Liveboards, Answers, etc.)."""
-        body: dict = {
-            "metadata": [
-                {"type": t}
-                for t in (types or [MetadataType.LIVEBOARD, MetadataType.ANSWER])
-            ],
-            "include_details": True,
-        }
-        if org_id is not None:
-            body["org_identifiers"] = [org_id]
+        """Yield pages of all content objects (Liveboards, Answers, Worksheets, Tables).
 
-        async for page in self._paginate(
-            "/api/rest/2.0/metadata/search",
-            body,
-            result_key="metadata_details",
-            context="search_metadata",
-        ):
-            try:
-                yield [TSMetadataObject.model_validate(m) for m in page]
-            except ValidationError as exc:
-                raise TSResponseParseError(
-                    url="/api/rest/2.0/metadata/search",
-                    detail=str(exc),
-                ) from exc
+        The TS API type=LOGICAL_TABLE covers both worksheets and physical tables.
+        We make separate requests per subtype so we can stamp each result with the
+        correct effective type (WORKSHEET vs ONE_TO_ONE_LOGICAL).
+
+        /api/rest/2.0/metadata/search returns a list directly, so we paginate manually.
+        """
+        # Each spec: (api_type, subtypes_filter, effective_type_to_store)
+        specs = [
+            ("LIVEBOARD",     None,                    MetadataType.LIVEBOARD),
+            ("ANSWER",        None,                    MetadataType.ANSWER),
+            ("LOGICAL_TABLE", ["WORKSHEET"],           MetadataType.WORKSHEET),
+            ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"],  MetadataType.ONE_TO_ONE_LOGICAL),
+            ("LOGICAL_TABLE", ["AGGR_WORKSHEET"],      MetadataType.AGGR_WORKSHEET),
+            ("LOGICAL_TABLE", ["SQL_VIEW"],            MetadataType.SQL_VIEW),
+            ("LOGICAL_TABLE", ["USER_DEFINED"],        MetadataType.USER_DEFINED),
+        ]
+
+        for api_type, subtypes, effective_type in specs:
+            metadata_filter: dict = {"type": api_type}
+            if subtypes:
+                metadata_filter["subtypes"] = subtypes
+
+            body: dict = {"metadata": [metadata_filter]}
+            if org_id is not None:
+                body["org_identifiers"] = [org_id]
+
+            offset = 0
+            while True:
+                data = await self._request(
+                    "POST",
+                    "/api/rest/2.0/metadata/search",
+                    json={**body, "record_offset": offset, "record_size": PAGE_SIZE},
+                    context="search_metadata",
+                )
+                page: list = data if isinstance(data, list) else data.get("metadata_details", [])
+                if not page:
+                    break
+                # Stamp each item with the effective type so the model stores it correctly
+                for item in page:
+                    item["metadata_type"] = effective_type
+                try:
+                    yield [TSMetadataObject.model_validate(m) for m in page]
+                except ValidationError as exc:
+                    raise TSResponseParseError(
+                        url="/api/rest/2.0/metadata/search",
+                        detail=str(exc),
+                    ) from exc
+                if len(page) < PAGE_SIZE:
+                    break
+                offset += PAGE_SIZE
 
     # ── Tags ───────────────────────────────────────────────────────────────────
 

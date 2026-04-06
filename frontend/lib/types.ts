@@ -35,12 +35,12 @@ export interface SyncLog {
 export type JobStatus = "PENDING" | "RUNNING" | "COMPLETE" | "PARTIAL" | "FAILED";
 
 export interface Job {
-  id: number;
-  operation: string;
+  id: string;
+  job_type: string;
   status: JobStatus;
-  total_items: number;
-  processed_items: number;
-  failed_items: number;
+  progress: number;
+  total: number;
+  progress_pct: number;
   created_at: string;
   completed_at: string | null;
   error: string | null;
@@ -85,7 +85,6 @@ export interface MetadataObject {
   tags: string[];
   created_at: string | null;
   modified_at: string | null;
-  last_accessed_at: string | null;
 }
 
 // ── API response wrappers ─────────────────────────────────────────────────────

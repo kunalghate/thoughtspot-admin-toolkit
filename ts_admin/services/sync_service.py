@@ -177,7 +177,6 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
 async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     from ts_admin.config import load_config
     from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.ts_client.models import MetadataType
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from sqlmodel import select
     import json
@@ -190,10 +189,8 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     mark_running(job_id, total=0)
     count = 0
 
-    types = [MetadataType.LIVEBOARD, MetadataType.ANSWER, MetadataType.LOGICAL_TABLE]
-
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
-        async for page in client.search_metadata(types=types, org_id=org_id):
+        async for page in client.search_metadata(org_id=org_id):
             with get_session() as session:
                 for obj in page:
                     existing = session.exec(
@@ -208,6 +205,7 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
 
                     if existing:
                         existing.name = obj.name
+                        existing.object_type = obj.type.value
                         existing.owner_guid = obj.owner_id
                         existing.owner_name = obj.author_name
                         existing.tag_names = tag_names

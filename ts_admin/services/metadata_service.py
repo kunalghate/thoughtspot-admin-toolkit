@@ -23,6 +23,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, col, or_, select
 
 import ts_admin.database as _db   # import module, not function — keeps monkeypatching working in tests
@@ -46,8 +47,8 @@ class MetadataService:
         tag_names: list[str] | None = None,
         search: str | None = None,
         stale_days: int | None = None,
-        page: int = 1,
-        page_size: int = 500,
+        record_offset: int = 0,
+        page_size: int = 200,
     ) -> tuple[list[CachedMetadata], int]:
         """
         Return a filtered, paginated page of metadata objects from the local cache.
@@ -98,14 +99,13 @@ class MetadataService:
                 )
 
         with Session(_db.get_engine()) as session:
-            base_stmt = select(CachedMetadata).where(*conditions)
-
-            # Total count — same filters, no pagination
-            total = len(session.exec(base_stmt).all())
+            # Total count — use COUNT(*) not len(all()) to avoid loading all rows
+            count_stmt = select(func.count()).select_from(CachedMetadata).where(*conditions)
+            total = session.exec(count_stmt).one()
 
             # Paginated fetch
-            offset = (page - 1) * page_size
-            items = session.exec(base_stmt.offset(offset).limit(page_size)).all()
+            base_stmt = select(CachedMetadata).where(*conditions).order_by(CachedMetadata.name)
+            items = session.exec(base_stmt.offset(record_offset).limit(page_size)).all()
 
             return list(items), total
 

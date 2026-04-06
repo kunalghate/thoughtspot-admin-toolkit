@@ -33,11 +33,9 @@ class MetadataObjectResponse(BaseModel):
     owner_guid: str
     owner_name: str
     org_id: int
-    tag_names: list[str]
+    tags: list[str]
     created_at: str | None
     modified_at: str | None
-    last_accessed_at: str | None
-    synced_at: str | None
 
     @classmethod
     def from_cache(cls, obj: CachedMetadata) -> "MetadataObjectResponse":
@@ -48,11 +46,9 @@ class MetadataObjectResponse(BaseModel):
             owner_guid=obj.owner_guid,
             owner_name=obj.owner_name,
             org_id=obj.org_id,
-            tag_names=obj.get_tag_names(),
+            tags=obj.get_tag_names(),
             created_at=obj.created_at.isoformat() if obj.created_at else None,
             modified_at=obj.modified_at.isoformat() if obj.modified_at else None,
-            last_accessed_at=obj.last_accessed_at.isoformat() if obj.last_accessed_at else None,
-            synced_at=obj.synced_at.isoformat() if obj.synced_at else None,
         )
 
 
@@ -74,15 +70,15 @@ class MetadataStatsResponse(BaseModel):
 
 @router.get("", response_model=MetadataListResponse)
 def list_metadata(
-    cluster_id: str = Query(..., description="Cluster ID"),
-    org_id: int = Query(..., description="Org ID"),
+    cluster_id: str | None = Query(default=None, description="Cluster ID (defaults to active cluster)"),
+    org_id: int = Query(default=0, description="Org ID"),
     types: list[str] | None = Query(default=None, description="Filter by object type"),
     owner_guid: str | None = Query(default=None, description="Filter by owner GUID"),
     tag_names: list[str] | None = Query(default=None, description="Filter by tag name(s)"),
     search: str | None = Query(default=None, description="Substring search on name"),
     stale_days: int | None = Query(default=None, ge=1, description="Only objects unused for N+ days"),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=500, ge=1, le=2000),
+    record_offset: int = Query(default=0, ge=0),
+    page_size: int = Query(default=200, ge=1, le=1000),
 ) -> MetadataListResponse:
     """
     List metadata objects from the local cache with optional filters.
@@ -90,6 +86,10 @@ def list_metadata(
     Results are served entirely from SQLite — no ThoughtSpot API calls.
     Trigger a sync first via POST /api/v1/sync/{cluster_id}/{org_id}/metadata.
     """
+    if not cluster_id:
+        from ts_admin.config import load_config
+        cluster_id = load_config().active_cluster.id
+
     items, total = MetadataService.search(
         cluster_id=cluster_id,
         org_id=org_id,
@@ -98,23 +98,26 @@ def list_metadata(
         tag_names=tag_names,
         search=search,
         stale_days=stale_days,
-        page=page,
+        record_offset=record_offset,
         page_size=page_size,
     )
     return MetadataListResponse(
         items=[MetadataObjectResponse.from_cache(i) for i in items],
         total=total,
-        page=page,
+        page=record_offset // page_size + 1,
         page_size=page_size,
     )
 
 
 @router.get("/stats", response_model=MetadataStatsResponse)
 def metadata_stats(
-    cluster_id: str = Query(...),
-    org_id: int = Query(...),
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
 ) -> MetadataStatsResponse:
     """Aggregate stats for the dashboard health card."""
+    if not cluster_id:
+        from ts_admin.config import load_config
+        cluster_id = load_config().active_cluster.id
     stats = MetadataService.stats(cluster_id=cluster_id, org_id=org_id)
     return MetadataStatsResponse(**stats)
 
@@ -122,10 +125,13 @@ def metadata_stats(
 @router.get("/{ts_guid}", response_model=MetadataObjectResponse)
 def get_metadata(
     ts_guid: str,
-    cluster_id: str = Query(...),
-    org_id: int = Query(...),
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
 ) -> MetadataObjectResponse:
     """Return a single metadata object by ThoughtSpot GUID."""
+    if not cluster_id:
+        from ts_admin.config import load_config
+        cluster_id = load_config().active_cluster.id
     obj = MetadataService.get(cluster_id=cluster_id, org_id=org_id, ts_guid=ts_guid)
     if obj is None:
         raise HTTPException(

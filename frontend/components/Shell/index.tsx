@@ -2,16 +2,16 @@
  * AppShell — wraps every page with Sidebar + Topbar.
  *
  * Usage:
- *   <AppShell pageTitle="Users" entityType="users">
+ *   <AppShell pageTitle="Users" entityType="users" onSyncComplete={reload}>
  *     <UsersPage />
  *   </AppShell>
  */
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
-import { clustersApi, syncApi } from "@/lib/api";
+import { clustersApi, jobsApi, syncApi } from "@/lib/api";
 import type { Cluster, Org, SyncLog, EntityType } from "@/lib/types";
 
 // ── Shell context — lets any page read the active cluster + org ────────────────
@@ -29,11 +29,12 @@ export function useShell(): ShellContextValue {
 
 interface AppShellProps {
   pageTitle: string;
-  entityType?: EntityType;   // determines which sync log entry to show in topbar
+  entityType?: EntityType;      // determines which sync log entry to show in topbar
+  onSyncComplete?: () => void;  // called when sync job finishes — use to reload page data
   children: React.ReactNode;
 }
 
-export default function AppShell({ pageTitle, entityType, children }: AppShellProps) {
+export default function AppShell({ pageTitle, entityType, onSyncComplete, children }: AppShellProps) {
   const router = useRouter();
   const [, setClusters]               = useState<Cluster[]>([]);
   const [activeCluster, setActiveCluster] = useState<Cluster | null>(null);
@@ -41,6 +42,8 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
   const [activeOrg, setActiveOrg]     = useState<Org | null>(null);
   const [syncLogs, setSyncLogs]       = useState<SyncLog[]>([]);
   const [isSyncing, setIsSyncing]     = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load clusters on mount
   useEffect(() => {
@@ -71,6 +74,9 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
     syncApi.status(activeCluster.id).then(setSyncLogs).catch(() => {});
   }, [activeCluster?.id, activeOrg?.org_id]);
 
+  // Clean up polling on unmount
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
   const activeSyncLog = entityType
     ? syncLogs.find((l) => l.entity_type === entityType) ?? null
     : null;
@@ -78,16 +84,39 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
   const handleSync = useCallback(async () => {
     if (!activeCluster || !activeOrg || !entityType) return;
     setIsSyncing(true);
+    setSyncProgress(null);
+
     try {
-      await syncApi.trigger(activeCluster.id, activeOrg.org_id, entityType);
-      const updated = await syncApi.status(activeCluster.id);
-      setSyncLogs(updated);
+      const { job_id } = await syncApi.trigger(activeCluster.id, activeOrg.org_id, entityType);
+
+      // Poll until the job finishes
+      pollRef.current = setInterval(async () => {
+        try {
+          const updated = await jobsApi.get(job_id);
+          setSyncProgress({ processed: updated.progress, total: updated.total });
+
+          if (updated.status !== "PENDING" && updated.status !== "RUNNING") {
+            clearInterval(pollRef.current!);
+            pollRef.current = null;
+            setIsSyncing(false);
+            setSyncProgress(null);
+            // Refresh sync log then reload page data
+            const logs = await syncApi.status(activeCluster.id);
+            setSyncLogs(logs);
+            onSyncComplete?.();
+          }
+        } catch {
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          setIsSyncing(false);
+          setSyncProgress(null);
+        }
+      }, 2000);
     } catch {
-      // error surfaced in Topbar via syncLog.status === "FAILED"
-    } finally {
       setIsSyncing(false);
+      setSyncProgress(null);
     }
-  }, [activeCluster?.id, activeOrg?.org_id, entityType]);
+  }, [activeCluster?.id, activeOrg?.org_id, entityType, onSyncComplete]);
 
   return (
     <ShellContext.Provider value={{ activeCluster, activeOrg }}>
@@ -99,10 +128,12 @@ export default function AppShell({ pageTitle, entityType, children }: AppShellPr
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <Topbar
           pageTitle={pageTitle}
+          entityType={entityType}
           clusterName={activeCluster?.name ?? ""}
           activeOrg={activeOrg}
           orgs={orgs}
           syncLog={activeSyncLog}
+          syncProgress={syncProgress}
           onOrgChange={setActiveOrg}
           onSync={handleSync}
           isSyncing={isSyncing}
