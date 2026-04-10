@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { IDatasource, IGetRowsParams } from "ag-grid-community";
+import type { IDatasource, IGetRowsParams, RowClickedEvent } from "ag-grid-community";
 import { Download, Search, X } from "lucide-react";
 import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
+import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { metadataApi } from "@/lib/api";
+import type { MetadataObject } from "@/lib/types";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
@@ -38,10 +40,11 @@ function MetadataContent() {
   const { activeCluster, activeOrg } = useShell();
   const gridRef = useRef<AgGridReact>(null);
 
-  const [total, setTotal]           = useState<number | null>(null);
-  const [search, setSearch]         = useState("");
-  const [selectedTypes, setTypes]   = useState<string[]>([]);
+  const [total, setTotal]             = useState<number | null>(null);
+  const [search, setSearch]           = useState("");
+  const [selectedTypes, setTypes]     = useState<string[]>([]);
   const [searchInput, setSearchInput] = useState(""); // raw input, debounced into search
+  const [drawerObject, setDrawerObject] = useState<MetadataObject | null>(null);
 
   // Debounce search input → search state
   useEffect(() => {
@@ -174,8 +177,26 @@ function MetadataContent() {
           infiniteInitialRowCount={PAGE_SIZE}
           defaultColDef={{ resizable: true, sortable: false }}
           overlayNoRowsTemplate="No content found. Sync metadata first."
+          rowSelection="single"
+          rowStyle={{ cursor: "pointer" }}
+          onRowClicked={(e: RowClickedEvent<MetadataObject>) => {
+            if (e.data) setDrawerObject(e.data);
+          }}
         />
       </div>
+
+      {/* Permission drawer */}
+      {activeCluster && activeOrg != null && (
+        <PermissionDrawer
+          object={drawerObject}
+          clusterId={activeCluster.id}
+          orgId={activeOrg.org_id}
+          onClose={() => {
+            setDrawerObject(null);
+            gridRef.current?.api?.deselectAll();
+          }}
+        />
+      )}
     </div>
   );
 }

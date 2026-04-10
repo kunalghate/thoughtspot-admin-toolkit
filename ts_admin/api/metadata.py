@@ -1,13 +1,14 @@
 """
 Metadata Explorer API — read-only endpoints for browsing cached TS content.
 
-All responses come from the local SQLite cache.
-Sync is triggered separately via POST /api/v1/sync/{cluster_id}/{org_id}/metadata.
+All responses come from the local SQLite cache, except /permissions which
+calls ThoughtSpot live (permissions are never cached).
 
 Endpoints:
-  GET  /api/v1/metadata                     list + filter metadata objects
-  GET  /api/v1/metadata/stats               aggregate stats (for dashboard)
-  GET  /api/v1/metadata/{guid}              single object detail
+  GET  /api/v1/metadata                          list + filter metadata objects
+  GET  /api/v1/metadata/stats                    aggregate stats (for dashboard)
+  GET  /api/v1/metadata/{guid}                   single object detail
+  GET  /api/v1/metadata/{guid}/permissions       live permissions from ThoughtSpot
 """
 
 from __future__ import annotations
@@ -66,6 +67,19 @@ class MetadataStatsResponse(BaseModel):
     last_synced: str | None
 
 
+class PermissionEntry(BaseModel):
+    principal_id: str
+    principal_name: str
+    principal_type: str   # "USER" or "USER_GROUP"
+    share_mode: str       # "READ_ONLY" or "MODIFY"
+
+
+class PermissionsResponse(BaseModel):
+    ts_guid: str
+    object_name: str
+    permissions: list[PermissionEntry]
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=MetadataListResponse)
@@ -120,6 +134,55 @@ def metadata_stats(
         cluster_id = load_config().active_cluster.id
     stats = MetadataService.stats(cluster_id=cluster_id, org_id=org_id)
     return MetadataStatsResponse(**stats)
+
+
+@router.get("/{ts_guid}/permissions", response_model=PermissionsResponse)
+async def get_permissions(
+    ts_guid: str,
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
+) -> PermissionsResponse:
+    """
+    Fetch live permissions for a metadata object from ThoughtSpot.
+
+    This endpoint calls ThoughtSpot directly — results are not cached.
+    Requires an active connection to the ThoughtSpot cluster.
+    """
+    from ts_admin.config import load_config
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    config = load_config()
+    if not cluster_id:
+        cluster_id = config.active_cluster.id
+
+    # Look up the object in cache to get its name and type
+    obj = MetadataService.get(cluster_id=cluster_id, org_id=org_id, ts_guid=ts_guid)
+    if obj is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Metadata object {ts_guid!r} not found in cache. Sync first.",
+        )
+
+    cluster = config.active_cluster
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
+        perms = await client.fetch_permissions(
+            ts_guid=ts_guid,
+            object_type=obj.object_type,
+        )
+
+    return PermissionsResponse(
+        ts_guid=ts_guid,
+        object_name=obj.name,
+        permissions=[
+            PermissionEntry(
+                principal_id=p.principal_id,
+                principal_name=p.principal_name,
+                principal_type=p.principal_type,
+                share_mode=p.share_mode,
+            )
+            for p in perms
+        ],
+    )
 
 
 @router.get("/{ts_guid}", response_model=MetadataObjectResponse)

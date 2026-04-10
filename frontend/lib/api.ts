@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -119,6 +119,9 @@ export const metadataApi = {
 
   get: (guid: string, clusterId: string, orgId: number) =>
     request<MetadataObject>(`/metadata/${guid}?cluster_id=${clusterId}&org_id=${orgId}`),
+
+  permissions: (guid: string, clusterId: string, orgId: number) =>
+    request<PermissionsResponse>(`/metadata/${guid}/permissions?cluster_id=${clusterId}&org_id=${orgId}`),
 };
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────

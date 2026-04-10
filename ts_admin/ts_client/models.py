@@ -176,7 +176,7 @@ class TSTokenResponse(TSBaseModel):
     valid_for_username: str = Field(default="")
 
 
-# ── Sharing ────────────────────────────────────────────────────────────────────
+# ── Sharing / Permissions ──────────────────────────────────────────────────────
 
 class SharePermission(StrEnum):
     READ_ONLY = "READ_ONLY"
@@ -188,3 +188,11 @@ class TSShareResult(TSBaseModel):
     object_id: str
     success: bool
     error: str | None = None
+
+
+class TSPermission(TSBaseModel):
+    """One principal's access level on a metadata object."""
+    principal_id: str
+    principal_name: str
+    principal_type: str    # "USER" or "USER_GROUP"
+    share_mode: SharePermission

@@ -87,6 +87,24 @@ export interface MetadataObject {
   modified_at: string | null;
 }
 
+// ── Permissions ───────────────────────────────────────────────────────────────
+
+export type ShareMode = "READ_ONLY" | "MODIFY";
+export type PrincipalType = "USER" | "USER_GROUP";
+
+export interface Permission {
+  principal_id: string;
+  principal_name: string;
+  principal_type: PrincipalType;
+  share_mode: ShareMode;
+}
+
+export interface PermissionsResponse {
+  ts_guid: string;
+  object_name: string;
+  permissions: Permission[];
+}
+
 // ── API response wrappers ─────────────────────────────────────────────────────
 
 export interface ApiError {

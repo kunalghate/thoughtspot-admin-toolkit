@@ -36,6 +36,7 @@ from ts_admin.ts_client.models import (
     TSGroup,
     TSMetadataObject,
     TSOrg,
+    TSPermission,
     TSTag,
     TSTokenResponse,
     TSUser,
@@ -407,6 +408,70 @@ class ThoughtSpotClient:
             },
             context="share_objects",
         )
+
+    # ── Permissions ────────────────────────────────────────────────────────────
+
+    # Subtypes that the permissions API doesn't know about — map them to LOGICAL_TABLE
+    _PERMISSIONS_TYPE_MAP: dict[str, str] = {
+        "WORKSHEET":          "LOGICAL_TABLE",
+        "ONE_TO_ONE_LOGICAL": "LOGICAL_TABLE",
+        "AGGR_WORKSHEET":     "LOGICAL_TABLE",
+        "SQL_VIEW":           "LOGICAL_TABLE",
+        "USER_DEFINED":       "LOGICAL_TABLE",
+    }
+
+    async def fetch_permissions(
+        self,
+        *,
+        ts_guid: str,
+        object_type: str,
+    ) -> list[TSPermission]:
+        """
+        Fetch all users and groups that have access to a metadata object.
+
+        Calls POST /api/rest/2.0/security/metadata/fetch-permissions live —
+        results are never cached in SQLite.
+
+        object_type may be a subtype (e.g. WORKSHEET); it's mapped to the
+        TS API type (LOGICAL_TABLE) automatically.
+        """
+        api_type = self._PERMISSIONS_TYPE_MAP.get(object_type, object_type)
+
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/security/metadata/fetch-permissions",
+            json={
+                "metadata": [{"identifier": ts_guid, "type": api_type}],
+                "record_size": -1,
+                "permission_type": "DEFINED",   # explicitly shared only, matches TS UI
+            },
+            context="fetch_permissions",
+        )
+
+        permissions: list[TSPermission] = []
+        # Response: {"metadata_permission_details": [{
+        #   "principal_permission_info": [{
+        #     "principal_type": "USER"|"USER_GROUP",
+        #     "principal_permissions": [{
+        #       "principal_id", "principal_name", "permission": "READ_ONLY"|"MODIFY"|"NO_ACCESS"
+        #     }]
+        #   }]
+        # }]}
+        details = data.get("metadata_permission_details") or [] if isinstance(data, dict) else []
+        for item in details:
+            for group in (item.get("principal_permission_info") or []):
+                principal_type = group.get("principal_type", "USER")
+                for entry in (group.get("principal_permissions") or []):
+                    share_mode = entry.get("permission", "")
+                    if not share_mode or share_mode == "NO_ACCESS":
+                        continue
+                    permissions.append(TSPermission(
+                        principal_id=entry.get("principal_id", ""),
+                        principal_name=entry.get("principal_name", ""),
+                        principal_type=principal_type,
+                        share_mode=share_mode,
+                    ))
+        return permissions
 
     # ── Metadata deletion ──────────────────────────────────────────────────────
 
