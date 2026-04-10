@@ -1,26 +1,36 @@
 import { useState } from "react";
 import { ChevronDown, RefreshCw } from "lucide-react";
-import type { Org, SyncLog } from "@/lib/types";
+import type { EntityType, Org, SyncLog } from "@/lib/types";
+
+const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
+  metadata: "Metadata",
+  users: "Users",
+  groups: "Groups",
+  tags: "Tags",
+};
 
 interface TopbarProps {
   pageTitle: string;
+  entityType?: EntityType;
   clusterName: string;
   activeOrg: Org | null;
   orgs: Org[];
-  syncLog: SyncLog | null;         // sync status for the current entity
+  syncLog: SyncLog | null;
+  syncProgress: { processed: number; total: number } | null;
   onOrgChange: (org: Org) => void;
   onSync: () => void;
   isSyncing: boolean;
 }
 
 export default function Topbar({
-  pageTitle, clusterName, activeOrg, orgs,
-  syncLog, onOrgChange, onSync, isSyncing,
+  pageTitle, entityType, clusterName, activeOrg, orgs,
+  syncLog, syncProgress, onOrgChange, onSync, isSyncing,
 }: TopbarProps) {
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
 
-  const syncLabel = buildSyncLabel(syncLog, isSyncing);
+  const syncLabel = buildSyncLabel(syncLog, isSyncing, syncProgress);
   const syncColor = buildSyncColor(syncLog, isSyncing);
+  const syncButtonLabel = isSyncing ? "Syncing…" : `Sync ${ENTITY_LABELS[entityType!] ?? ""}`;
 
   return (
     <header style={{
@@ -58,7 +68,7 @@ export default function Topbar({
         }}
       >
         <RefreshCw size={12} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />
-        {isSyncing ? "Syncing…" : "Sync"}
+        {syncButtonLabel}
       </button>
 
       {/* Org selector */}
@@ -177,8 +187,15 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildSyncLabel(log: SyncLog | null, isSyncing: boolean): string {
-  if (isSyncing) return "Syncing…";
+function buildSyncLabel(
+  log: SyncLog | null,
+  isSyncing: boolean,
+  progress: { processed: number; total: number } | null,
+): string {
+  if (isSyncing) {
+    if (progress && progress.total > 0) return `Syncing ${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
+    return "Syncing…";
+  }
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
   if (log.status === "FAILED") return "Sync failed";
   if (!log.synced_at) return "Unknown";
