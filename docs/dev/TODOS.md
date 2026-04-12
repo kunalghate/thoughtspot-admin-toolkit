@@ -7,6 +7,29 @@ and the context needed to pick it up later.
 
 ## P2 — High value, next phase
 
+### Cascade-delete cached data when an org is removed
+
+**What:** When `GET /clusters/{id}/orgs` fetches a fresh org list and detects that
+one or more org IDs are no longer present, delete the corresponding rows from
+`ts_metadata`, `ts_groups`, `ts_tags`, and `ts_users` (org-scoped memberships) for
+those org IDs.
+
+**Why:** The current delete-before-insert for `ts_orgs` leaves orphaned rows in all
+org-scoped cache tables when an org is deleted in ThoughtSpot. The rows are not
+surfaced in any UI (the org no longer appears in the dropdown), but they consume
+disk space indefinitely.
+
+**How to implement:**
+- In `list_cluster_orgs` (or a helper), diff the incoming org IDs against the
+  current `ts_orgs` rows for the cluster before replacing them
+- For each removed `ts_org_id`, issue DELETE WHERE `cluster_id = ? AND org_id = ?`
+  on `ts_metadata`, `ts_groups`, `ts_tags`, and `user_org_memberships`
+
+**Effort:** S | **Priority:** P2 | **Depends on:** Nothing
+
+---
+
+
 ### PIN/passphrase protection for localhost
 
 **What:** An optional PIN or passphrase required to access the app at localhost.

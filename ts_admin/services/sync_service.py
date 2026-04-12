@@ -178,7 +178,6 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     from ts_admin.config import load_config
     from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.models.cache.ts_metadata import CachedMetadata
-    from sqlmodel import select
     import json
 
     config = load_config()
@@ -189,50 +188,40 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     mark_running(job_id, total=0)
     count = 0
 
-    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
-        async for page in client.search_metadata(org_id=org_id):
+    # Delete all existing rows for this org before re-syncing so stale objects
+    # (deleted in TS since last sync) don't linger in the cache.
+    from sqlmodel import delete as sql_delete
+    with get_session() as session:
+        session.exec(
+            sql_delete(CachedMetadata).where(
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+            )
+        )
+        session.commit()
+
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
+        async for page in client.search_metadata():
             with get_session() as session:
                 for obj in page:
-                    existing = session.exec(
-                        select(CachedMetadata).where(
-                            CachedMetadata.cluster_id == cluster_id,
-                            CachedMetadata.org_id == org_id,
-                            CachedMetadata.ts_guid == obj.id,
-                        )
-                    ).first()
-
                     tag_names = json.dumps([t.name for t in obj.tags])
-
-                    if existing:
-                        existing.name = obj.name
-                        existing.object_type = obj.type.value
-                        existing.owner_guid = obj.owner_id
-                        existing.owner_name = obj.author_name
-                        existing.tag_names = tag_names
-                        existing.modified_at = obj.modified
-                        existing.last_accessed_at = obj.last_accessed
-                        existing.view_count = obj.view_count
-                        existing.synced_at = datetime.now(timezone.utc)
-                        session.add(existing)
-                    else:
-                        session.add(CachedMetadata(
-                            cluster_id=cluster_id,
-                            org_id=org_id,
-                            ts_guid=obj.id,
-                            name=obj.name,
-                            object_type=obj.type.value,
-                            owner_guid=obj.owner_id,
-                            owner_name=obj.author_name,
-                            tag_names=tag_names,
-                            created_at=obj.created,
-                            modified_at=obj.modified,
-                            last_accessed_at=obj.last_accessed,
-                            view_count=obj.view_count,
-                            synced_at=datetime.now(timezone.utc),
-                        ))
-
-                    session.commit()
+                    session.add(CachedMetadata(
+                        cluster_id=cluster_id,
+                        org_id=org_id,
+                        ts_guid=obj.id,
+                        name=obj.name,
+                        object_type=obj.type.value,
+                        owner_guid=obj.owner_id,
+                        owner_name=obj.author_name,
+                        tag_names=tag_names,
+                        created_at=obj.created,
+                        modified_at=obj.modified,
+                        last_accessed_at=obj.last_accessed,
+                        view_count=obj.view_count,
+                        synced_at=datetime.now(timezone.utc),
+                    ))
                     count += 1
+                session.commit()
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("metadata", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)

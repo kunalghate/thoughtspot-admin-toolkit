@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, RefreshCw } from "lucide-react";
+import { ChevronDown, RefreshCw, WifiOff } from "lucide-react";
 import type { EntityType, Org, SyncLog } from "@/lib/types";
 
 const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
@@ -20,17 +20,23 @@ interface TopbarProps {
   onOrgChange: (org: Org) => void;
   onSync: () => void;
   isSyncing: boolean;
+  clusterOnline: boolean | null;
 }
 
 export default function Topbar({
   pageTitle, entityType, clusterName, activeOrg, orgs,
   syncLog, syncProgress, onOrgChange, onSync, isSyncing,
+  clusterOnline,
 }: TopbarProps) {
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
 
   const syncLabel = buildSyncLabel(syncLog, isSyncing, syncProgress);
   const syncColor = buildSyncColor(syncLog, isSyncing);
   const syncButtonLabel = isSyncing ? "Syncing…" : `Sync ${ENTITY_LABELS[entityType!] ?? ""}`;
+
+  const isOffline = clusterOnline === false;
+  const isChecking = clusterOnline === null;
+  const syncDisabled = isSyncing || isOffline || isChecking;
 
   return (
     <header style={{
@@ -39,13 +45,23 @@ export default function Topbar({
       display: "flex", alignItems: "center",
       padding: "0 24px", gap: 12, flexShrink: 0,
     }}>
-      {/* Page title */}
-      <h1 style={{
-        flex: 1, margin: 0, fontSize: 15, fontWeight: 600,
-        color: "#1A1714", fontFamily: "Geist, sans-serif",
-      }}>
-        {pageTitle}
-      </h1>
+      {/* Page title + optional offline badge */}
+      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10 }}>
+        <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+          {pageTitle}
+        </h1>
+        {isOffline && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 5,
+            padding: "3px 10px", borderRadius: 20,
+            background: "#FEF2F2", border: "1px solid #FECACA",
+            fontSize: 12, color: "#991B1B", fontFamily: "Geist, sans-serif",
+          }}>
+            <WifiOff size={11} />
+            Cluster offline — showing cached data
+          </div>
+        )}
+      </div>
 
       {/* Sync indicator */}
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -58,13 +74,15 @@ export default function Topbar({
       {/* Sync button */}
       <button
         onClick={onSync}
-        disabled={isSyncing}
+        disabled={syncDisabled}
+        title={isOffline ? "Cannot sync — cluster is offline" : undefined}
         style={{
           display: "flex", alignItems: "center", gap: 5,
           padding: "5px 11px", borderRadius: 5, border: "none",
-          background: "#8B5CF6", color: "white", cursor: isSyncing ? "default" : "pointer",
+          background: "#8B5CF6", color: "white",
+          cursor: syncDisabled ? "default" : "pointer",
           fontSize: 12, fontWeight: 500, fontFamily: "Geist, sans-serif",
-          opacity: isSyncing ? 0.7 : 1,
+          opacity: syncDisabled ? 0.5 : 1,
         }}
       >
         <RefreshCw size={12} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />

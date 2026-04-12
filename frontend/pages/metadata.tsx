@@ -27,16 +27,17 @@ const TYPE_LABELS: Record<string, string> = {
 // ── Page wrapper ───────────────────────────────────────────────────────────────
 
 export default function MetadataPage() {
+  const [syncVersion, setSyncVersion] = useState(0);
   return (
-    <AppShell pageTitle="Metadata" entityType="metadata">
-      <MetadataContent />
+    <AppShell pageTitle="Metadata" entityType="metadata" onSyncComplete={() => setSyncVersion((v) => v + 1)}>
+      <MetadataContent syncVersion={syncVersion} />
     </AppShell>
   );
 }
 
 // ── Inner content — useShell() is valid here because we're inside the provider ─
 
-function MetadataContent() {
+function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const { activeCluster, activeOrg } = useShell();
   const gridRef = useRef<AgGridReact>(null);
 
@@ -53,7 +54,7 @@ function MetadataContent() {
   }, [searchInput]);
 
   // Build and set a new datasource whenever cluster/org/search/types change
-  const resetDatasource = useCallback(() => {
+  const reloadGrid = useCallback(() => {
     if (!activeCluster?.id || activeOrg?.org_id == null) return;
 
     const clusterId = activeCluster.id;
@@ -84,7 +85,7 @@ function MetadataContent() {
     gridRef.current?.api?.setGridOption("datasource", datasource);
   }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes]);
 
-  useEffect(() => { resetDatasource(); }, [resetDatasource]);
+  useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
 
   const exportCsv = () => gridRef.current?.api.exportDataAsCsv({ fileName: "metadata.csv" });
   const clearFilters = () => { setSearchInput(""); setSearch(""); setTypes([]); };

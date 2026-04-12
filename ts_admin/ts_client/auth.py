@@ -36,11 +36,15 @@ class AuthStrategy(ABC):
 class BasicAuth(AuthStrategy):
     """
     Standard username + password authentication.
-    Calls /api/rest/2.0/auth/session/login on first use and caches the cookie.
+    Calls /api/rest/2.0/auth/token/full on first use and caches the token.
+
+    Pass org_id to scope the token to a specific org — required for multi-org
+    sync since TS returns org-scoped content based on the token's org context.
     """
 
     username: str
     password: str
+    org_id: int | None = None
     _session_token: str | None = None
 
     async def get_headers(self, http_client: httpx.AsyncClient) -> dict[str, str]:
@@ -51,13 +55,17 @@ class BasicAuth(AuthStrategy):
     async def _login(self, http_client: httpx.AsyncClient) -> None:
         from ts_admin.ts_client.exceptions import TSAuthenticationError
 
+        body: dict = {
+            "username": self.username,
+            "password": self.password,
+            "validity_time_in_sec": 86400,
+        }
+        if self.org_id is not None:
+            body["org_id"] = self.org_id
+
         response = await http_client.post(
             "/api/rest/2.0/auth/token/full",
-            json={
-                "username": self.username,
-                "password": self.password,
-                "validity_time_in_sec": 86400,
-            },
+            json=body,
         )
         if response.status_code == 401:
             raise TSAuthenticationError("Invalid username or password")
@@ -79,10 +87,14 @@ class TrustedAuth(AuthStrategy):
     Trusted authentication using the ThoughtSpot secret key.
     Allows login as any user without knowing their password.
     The secret key is found in: Developer tab → Security Settings.
+
+    Pass org_id to scope the token to a specific org — required for multi-org
+    sync since TS returns org-scoped content based on the token's org context.
     """
 
     username: str
     secret_key: str
+    org_id: int | None = None
     _session_token: str | None = None
 
     async def get_headers(self, http_client: httpx.AsyncClient) -> dict[str, str]:
@@ -93,13 +105,17 @@ class TrustedAuth(AuthStrategy):
     async def _login(self, http_client: httpx.AsyncClient) -> None:
         from ts_admin.ts_client.exceptions import TSAuthenticationError
 
+        body: dict = {
+            "username": self.username,
+            "secret_key": self.secret_key,
+            "validity_time_in_sec": 86400,
+        }
+        if self.org_id is not None:
+            body["org_id"] = self.org_id
+
         response = await http_client.post(
             "/api/rest/2.0/auth/token/full",
-            json={
-                "username": self.username,
-                "secret_key": self.secret_key,
-                "validity_time_in_sec": 86400,
-            },
+            json=body,
         )
         if response.status_code == 401:
             raise TSAuthenticationError("Invalid username or secret key")
