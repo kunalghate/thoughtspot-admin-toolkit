@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { X, Users, User, Shield, Pencil, WifiOff } from "lucide-react";
 import { metadataApi } from "@/lib/api";
+import { useShell } from "@/components/Shell";
 import type { MetadataObject, Permission } from "@/lib/types";
 
 interface Props {
@@ -21,16 +22,12 @@ const SHARE_MODE_COLORS: Record<string, { bg: string; color: string }> = {
 };
 
 export default function PermissionDrawer({ object, clusterId, orgId, onClose }: Props) {
+  const { clusterOnline } = useShell();
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState<string | null>(null);
 
-  const isOfflineError = error != null && (
-    error.toLowerCase().includes("cannot reach") ||
-    error.toLowerCase().includes("failed to fetch") ||
-    error.toLowerCase().includes("networkerror") ||
-    error.toLowerCase().includes("502")
-  );
+  const isOfflineError = clusterOnline === false;
 
   useEffect(() => {
     if (!object) return;
