@@ -19,9 +19,14 @@ import type { Cluster, Org, SyncLog, EntityType } from "@/lib/types";
 interface ShellContextValue {
   activeCluster: Cluster | null;
   activeOrg: Org | null;
+  clusterOnline: boolean | null;  // null = still checking
 }
 
-const ShellContext = createContext<ShellContextValue>({ activeCluster: null, activeOrg: null });
+const ShellContext = createContext<ShellContextValue>({
+  activeCluster: null,
+  activeOrg: null,
+  clusterOnline: null,
+});
 
 export function useShell(): ShellContextValue {
   return useContext(ShellContext);
@@ -43,6 +48,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   const [syncLogs, setSyncLogs]       = useState<SyncLog[]>([]);
   const [isSyncing, setIsSyncing]     = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
+  const [clusterOnline, setClusterOnline] = useState<boolean | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load clusters on mount
@@ -59,13 +65,38 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     });
   }, [router.pathname]);
 
-  // Load orgs when active cluster changes
+  // When active cluster changes: check connectivity, then load orgs appropriately
   useEffect(() => {
     if (!activeCluster) return;
-    clustersApi.listOrgs(activeCluster.id).then((list) => {
-      setOrgs(list);
-      setActiveOrg(list[0] ?? null);
-    }).catch(() => {});
+
+    setClusterOnline(null);  // reset to "checking"
+
+    // Non-blocking: test connectivity first, then load orgs
+    clustersApi.testConnection(activeCluster.id).then((result) => {
+      const online = result.success;
+      setClusterOnline(online);
+
+      if (online) {
+        // Cluster is reachable — fetch orgs live
+        return clustersApi.listOrgs(activeCluster.id).then((list) => {
+          setOrgs(list);
+          setActiveOrg(list[0] ?? null);
+        });
+      } else {
+        // Cluster offline — fall back to SQLite cache
+        return clustersApi.listCachedOrgs(activeCluster.id).then((list) => {
+          setOrgs(list);
+          setActiveOrg(list[0] ?? null);
+        });
+      }
+    }).catch(() => {
+      // Connection test itself failed (network error) — try cache
+      setClusterOnline(false);
+      clustersApi.listCachedOrgs(activeCluster.id).then((list) => {
+        setOrgs(list);
+        setActiveOrg(list[0] ?? null);
+      }).catch(() => {});
+    });
   }, [activeCluster?.id]);
 
   // Load sync status when cluster + org changes
@@ -119,7 +150,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   }, [activeCluster?.id, activeOrg?.org_id, entityType, onSyncComplete]);
 
   return (
-    <ShellContext.Provider value={{ activeCluster, activeOrg }}>
+    <ShellContext.Provider value={{ activeCluster, activeOrg, clusterOnline }}>
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "Geist, sans-serif" }}>
       <Sidebar
         activeCluster={activeCluster}
@@ -137,6 +168,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           onOrgChange={setActiveOrg}
           onSync={handleSync}
           isSyncing={isSyncing}
+          clusterOnline={clusterOnline}
         />
         <main style={{ flex: 1, overflowY: "auto", background: "#F2EDE3" }}>
           {children}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X, Users, User, Shield, Pencil } from "lucide-react";
+import { X, Users, User, Shield, Pencil, WifiOff } from "lucide-react";
 import { metadataApi } from "@/lib/api";
 import type { MetadataObject, Permission } from "@/lib/types";
 
@@ -24,6 +24,13 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState<string | null>(null);
+
+  const isOfflineError = error != null && (
+    error.toLowerCase().includes("cannot reach") ||
+    error.toLowerCase().includes("failed to fetch") ||
+    error.toLowerCase().includes("networkerror") ||
+    error.toLowerCase().includes("502")
+  );
 
   useEffect(() => {
     if (!object) return;
@@ -92,7 +99,23 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
             </div>
           )}
 
-          {error && (
+          {error && isOfflineError && (
+            <div style={{
+              background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8,
+              padding: "16px", display: "flex", flexDirection: "column", gap: 8,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#991B1B" }}>
+                <WifiOff size={16} />
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Cannot connect to ThoughtSpot</span>
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: "#7F1D1D" }}>
+                Permissions are fetched live and are unavailable while the cluster is offline.
+                Check your network connection and retry.
+              </p>
+            </div>
+          )}
+
+          {error && !isOfflineError && (
             <div style={{
               background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8,
               padding: "12px 16px", fontSize: 13, color: "#991B1B",

@@ -74,6 +74,9 @@ export const clustersApi = {
 
   listOrgs: (id: string) =>
     request<Org[]>(`/clusters/${id}/orgs`),
+
+  listCachedOrgs: (id: string) =>
+    request<Org[]>(`/clusters/${id}/orgs/cached`),
 };
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

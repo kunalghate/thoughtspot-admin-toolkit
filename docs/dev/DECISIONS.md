@@ -209,6 +209,48 @@ and user-group membership graph. Built on top of the `ts_dependencies` SQLite ta
 
 ---
 
+## ADR-012: Org cache populated on every live fetch
+
+**Decision:** `GET /clusters/{id}/orgs` — which is called on every page load when
+the cluster is online — does a delete-before-insert into `ts_orgs` after a successful
+live fetch. There is no separate "sync orgs" job exposed in the UI.
+
+**Rationale:**
+- Orgs are a small list (typically < 200). Replacing the entire set is fast and always correct.
+- A separate "sync orgs" step would add friction; admins expect the org dropdown to be current.
+- Delete-before-insert (vs. upsert) means deleted orgs never linger in the dropdown.
+
+**Offline fallback:** When the cluster is unreachable on page load, `GET /clusters/{id}/orgs/cached`
+reads from `ts_orgs` directly, so the dropdown always shows the last known org list.
+
+**Known gap:** Deleting an org in ThoughtSpot leaves its cached metadata rows in
+`ts_metadata` orphaned (the `org_id` FK to `ts_orgs` is not DB-enforced). These rows
+are harmless — no UI surfaces them for a missing org — but they consume disk space.
+Cleanup is deferred (see TODOS).
+
+---
+
+## ADR-013: Cluster offline behavior — check once on load, no polling
+
+**Decision:** On page load, the Shell runs a single non-blocking connectivity check
+(`POST /clusters/{id}/test`). If the cluster is offline, an inline badge appears next
+to the page title, the org dropdown falls back to the SQLite cache, and the sync button
+is disabled. No periodic polling. Admin refreshes the page when the cluster is back.
+
+**Rationale:**
+- Polling adds background network traffic and complexity for a failure mode that is
+  uncommon and typically short-lived (cluster restart, network blip).
+- A single check on load is sufficient: the admin knows their cluster status. The
+  offline badge clearly communicates the degraded state without being intrusive.
+- Permissions in the drawer are always fetched live from TS (never cached), so the
+  drawer shows a specific "cluster offline" error if opened while offline.
+
+**Alternatives considered:**
+- Periodic polling every N seconds: adds background requests, complicates state management.
+- Retry button: removed — a page refresh achieves the same result with less UI surface.
+
+---
+
 ## Deferred decisions (revisit in future phases)
 
 | Decision | Why deferred | Target phase |

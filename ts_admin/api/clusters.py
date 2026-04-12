@@ -215,6 +215,23 @@ async def list_cluster_orgs(cluster_id: str) -> list[OrgOut]:
         async with ThoughtSpotClient(url=cluster.url, auth=auth) as client:
             orgs = await client.search_orgs()
 
+        # Replace cached orgs for this cluster so deletions in TS are reflected
+        from ts_admin.database import get_session
+        from ts_admin.models.cache.ts_org import CachedOrg
+        from sqlmodel import delete as sql_delete
+        with get_session() as session:
+            session.exec(sql_delete(CachedOrg).where(CachedOrg.cluster_id == cluster_id))
+            for o in orgs:
+                session.add(CachedOrg(
+                    cluster_id=cluster_id,
+                    ts_org_id=o.id,
+                    name=o.name,
+                    description=o.description or "",
+                    status=o.status.value if hasattr(o.status, "value") else str(o.status),
+                    is_primary=o.is_primary,
+                ))
+            session.commit()
+
         return [
             OrgOut(
                 org_id=o.id,
@@ -229,6 +246,29 @@ async def list_cluster_orgs(cluster_id: str) -> list[OrgOut]:
         raise HTTPException(status_code=404, detail=str(exc))
     except TSAdminError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/{cluster_id}/orgs/cached", response_model=list[OrgOut])
+async def list_cluster_orgs_cached(cluster_id: str) -> list[OrgOut]:
+    """Return orgs from the local SQLite cache. Used as fallback when cluster is offline."""
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_org import CachedOrg
+    from sqlmodel import select
+
+    with get_session() as session:
+        rows = session.exec(
+            select(CachedOrg).where(CachedOrg.cluster_id == cluster_id)
+        ).all()
+
+    return [
+        OrgOut(
+            org_id=row.ts_org_id,
+            name=row.name,
+            description=row.description or "",
+            status=row.status or "ACTIVE",
+        )
+        for row in rows
+    ]
 
 
 @router.post("/{cluster_id}/activate", status_code=status.HTTP_204_NO_CONTENT)
