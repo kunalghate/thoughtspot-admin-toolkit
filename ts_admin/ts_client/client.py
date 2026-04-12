@@ -271,10 +271,11 @@ class ThoughtSpotClient:
 
     async def search_metadata(
         self,
-        *,
-        org_id: int | None = None,
     ) -> AsyncIterator[list[TSMetadataObject]]:
         """Yield pages of all content objects (Liveboards, Answers, Worksheets, Tables).
+
+        Org context is determined by the token used to authenticate — pass org_id
+        to build_auth_strategy() when constructing the client to scope to a specific org.
 
         The TS API type=LOGICAL_TABLE covers both worksheets and physical tables.
         We make separate requests per subtype so we can stamp each result with the
@@ -299,8 +300,6 @@ class ThoughtSpotClient:
                 metadata_filter["subtypes"] = subtypes
 
             body: dict = {"metadata": [metadata_filter]}
-            if org_id is not None:
-                body["org_identifiers"] = [org_id]
 
             offset = 0
             while True:

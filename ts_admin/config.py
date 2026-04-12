@@ -52,18 +52,22 @@ class ClusterConfig:
     username: str
     auth_type: AuthType = AuthType.BASIC
 
-    def build_auth_strategy(self) -> AuthStrategy:
+    def build_auth_strategy(self, org_id: int | None = None) -> AuthStrategy:
         """
         Construct the appropriate AuthStrategy for this cluster,
         loading secrets from keychain (or env vars as fallback).
+
+        Pass org_id to scope the auth token to a specific org context.
+        This is required for multi-org sync — the TS API returns org-scoped
+        content based on the token's org context, not via request parameters.
         """
         if self.auth_type == AuthType.BASIC:
             password = _load_secret(self.id, "password")
-            return BasicAuth(username=self.username, password=password)
+            return BasicAuth(username=self.username, password=password, org_id=org_id)
 
         if self.auth_type == AuthType.TRUSTED:
             secret_key = _load_secret(self.id, "secret_key")
-            return TrustedAuth(username=self.username, secret_key=secret_key)
+            return TrustedAuth(username=self.username, secret_key=secret_key, org_id=org_id)
 
         if self.auth_type == AuthType.BEARER:
             token = _load_secret(self.id, "token")

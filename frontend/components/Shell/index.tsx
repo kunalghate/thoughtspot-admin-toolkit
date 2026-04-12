@@ -71,7 +71,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   // Load sync status when cluster + org changes
   useEffect(() => {
     if (!activeCluster) return;
-    syncApi.status(activeCluster.id).then(setSyncLogs).catch(() => {});
+    syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0).then(setSyncLogs).catch(() => {});
   }, [activeCluster?.id, activeOrg?.org_id]);
 
   // Clean up polling on unmount
@@ -101,7 +101,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
             setIsSyncing(false);
             setSyncProgress(null);
             // Refresh sync log then reload page data
-            const logs = await syncApi.status(activeCluster.id);
+            const logs = await syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0);
             setSyncLogs(logs);
             onSyncComplete?.();
           }
