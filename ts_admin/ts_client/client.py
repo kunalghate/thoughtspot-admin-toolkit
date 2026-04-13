@@ -299,7 +299,7 @@ class ThoughtSpotClient:
             if subtypes:
                 metadata_filter["subtypes"] = subtypes
 
-            body: dict = {"metadata": [metadata_filter]}
+            body: dict = {"metadata": [metadata_filter], "include_stats": True}
 
             offset = 0
             while True:

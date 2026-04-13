@@ -130,6 +130,13 @@ class TSMetadataObject(TSBaseModel):
                 {"id": t.get("id", ""), "name": t.get("name", ""), "color": t.get("color", "")}
                 for t in raw_tags if isinstance(t, dict)
             ]
+            # stats object: {"views": int, "last_accessed": epoch_ms | None, ...}
+            stats = obj.get("stats") or {}
+            last_accessed_ms = stats.get("last_accessed")
+            if last_accessed_ms:
+                from datetime import timezone
+                flat["last_accessed"] = datetime.fromtimestamp(last_accessed_ms / 1000, tz=timezone.utc)
+            flat["view_count"] = stats.get("views", 0) or 0
             obj = flat
         return super().model_validate(obj, **kwargs)
 

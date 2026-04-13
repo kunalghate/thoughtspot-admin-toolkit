@@ -37,6 +37,8 @@ class MetadataObjectResponse(BaseModel):
     tags: list[str]
     created_at: str | None
     modified_at: str | None
+    last_accessed_at: str | None
+    view_count: int
 
     @classmethod
     def from_cache(cls, obj: CachedMetadata) -> "MetadataObjectResponse":
@@ -50,6 +52,8 @@ class MetadataObjectResponse(BaseModel):
             tags=obj.get_tag_names(),
             created_at=obj.created_at.isoformat() if obj.created_at else None,
             modified_at=obj.modified_at.isoformat() if obj.modified_at else None,
+            last_accessed_at=obj.last_accessed_at.isoformat() if obj.last_accessed_at else None,
+            view_count=obj.view_count,
         )
 
 

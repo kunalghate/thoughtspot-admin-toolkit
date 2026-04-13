@@ -4,7 +4,7 @@ Database setup and session management.
 Uses SQLite via SQLModel (SQLAlchemy under the hood).
 All tables include a cluster_id FK for multi-cluster isolation.
 
-DB location: ~/.ts-admin/db.sqlite
+DB location: ~/.ts-admin/ts_admin_toolkit_db.sqlite
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Annotated
 from sqlmodel import Session, SQLModel, create_engine
 
 DB_DIR  = Path.home() / ".ts-admin"
-DB_PATH = DB_DIR / "db.sqlite"
+DB_PATH = DB_DIR / "ts_admin_toolkit_db.sqlite"
 
 _engine = None
 
@@ -24,6 +24,10 @@ def get_engine():
     global _engine
     if _engine is None:
         DB_DIR.mkdir(parents=True, exist_ok=True)
+        # Migrate from old filename if it exists and new one doesn't
+        old_path = DB_DIR / "db.sqlite"
+        if old_path.exists() and not DB_PATH.exists():
+            old_path.rename(DB_PATH)
         _engine = create_engine(
             f"sqlite:///{DB_PATH}",
             connect_args={"check_same_thread": False},
