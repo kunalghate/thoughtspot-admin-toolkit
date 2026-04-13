@@ -95,6 +95,8 @@ def list_metadata(
     tag_names: list[str] | None = Query(default=None, description="Filter by tag name(s)"),
     search: str | None = Query(default=None, description="Substring search on name"),
     stale_days: int | None = Query(default=None, ge=1, description="Only objects unused for N+ days"),
+    sort_field: str = Query(default="modified_at", description="Field to sort by"),
+    sort_order: Literal["asc", "desc"] = Query(default="desc", description="Sort direction"),
     record_offset: int = Query(default=0, ge=0),
     page_size: int = Query(default=200, ge=1, le=1000),
 ) -> MetadataListResponse:
@@ -116,6 +118,8 @@ def list_metadata(
         tag_names=tag_names,
         search=search,
         stale_days=stale_days,
+        sort_field=sort_field,
+        sort_order=sort_order,
         record_offset=record_offset,
         page_size=page_size,
     )

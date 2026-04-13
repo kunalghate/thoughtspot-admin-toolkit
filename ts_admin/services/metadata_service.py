@@ -23,7 +23,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, asc, desc, nulls_last
 from sqlmodel import Session, col, or_, select
 
 import ts_admin.database as _db   # import module, not function — keeps monkeypatching working in tests
@@ -47,6 +47,8 @@ class MetadataService:
         tag_names: list[str] | None = None,
         search: str | None = None,
         stale_days: int | None = None,
+        sort_field: str = "modified_at",
+        sort_order: str = "desc",
         record_offset: int = 0,
         page_size: int = 200,
     ) -> tuple[list[CachedMetadata], int]:
@@ -98,13 +100,27 @@ class MetadataService:
                     col(CachedMetadata.tag_names).contains(f'"{tag}"')
                 )
 
+        # Map frontend field names to model columns
+        _sortable: dict[str, Any] = {
+            "name":             CachedMetadata.name,
+            "object_type":      CachedMetadata.object_type,
+            "owner_name":       CachedMetadata.owner_name,
+            "created_at":       CachedMetadata.created_at,
+            "modified_at":      CachedMetadata.modified_at,
+            "last_accessed_at": CachedMetadata.last_accessed_at,
+            "view_count":       CachedMetadata.view_count,
+        }
+        sort_col = _sortable.get(sort_field, CachedMetadata.name)
+        direction = asc if sort_order.lower() == "asc" else desc
+        order_expr = nulls_last(direction(sort_col))
+
         with Session(_db.get_engine()) as session:
             # Total count — use COUNT(*) not len(all()) to avoid loading all rows
             count_stmt = select(func.count()).select_from(CachedMetadata).where(*conditions)
             total = session.exec(count_stmt).one()
 
             # Paginated fetch
-            base_stmt = select(CachedMetadata).where(*conditions).order_by(CachedMetadata.name)
+            base_stmt = select(CachedMetadata).where(*conditions).order_by(order_expr)
             items = session.exec(base_stmt.offset(record_offset).limit(page_size)).all()
 
             return list(items), total

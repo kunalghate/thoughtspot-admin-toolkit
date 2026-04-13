@@ -8,7 +8,6 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     flex: 3,
     minWidth: 220,
     filter: "agTextColumnFilter",
-    sort: "asc",
   },
   {
     field: "object_type",
@@ -34,7 +33,7 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     minWidth: 140,
     filter: "agTextColumnFilter",
     valueFormatter: (p) => (p.value as string[] | null)?.join(", ") ?? "",
-    sortable: false,
+    sortable: false,  // tags are a JSON blob — server-side sort is meaningless
   },
   {
     field: "last_accessed_at",
