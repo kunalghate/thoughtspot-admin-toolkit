@@ -1,9 +1,9 @@
 import AppShell from "@/components/Shell";
-import { LayoutDashboard } from "lucide-react";
+import { Briefcase } from "lucide-react";
 
-export default function DashboardPage() {
+export default function JobsPage() {
   return (
-    <AppShell pageTitle="Dashboard">
+    <AppShell pageTitle="Jobs">
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "center",
         height: "100%", padding: 48,
@@ -17,12 +17,12 @@ export default function DashboardPage() {
             background: "#FAF8F4", border: "1px solid #E8E1D5",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>
-            <LayoutDashboard size={32} style={{ color: "#8B5CF6" }} />
+            <Briefcase size={32} style={{ color: "#8B5CF6" }} />
           </div>
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 8 }}>
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
-                Dashboard
+                Jobs
               </h2>
               <span style={{
                 padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600,
@@ -36,7 +36,7 @@ export default function DashboardPage() {
               margin: 0, fontSize: 14, color: "#7A7068",
               fontFamily: "Geist, sans-serif", lineHeight: 1.6,
             }}>
-              An overview of your ThoughtSpot cluster — sync status, stale content counts, active users, and recent admin activity at a glance.
+              Monitor all background jobs — syncs, archives, tag operations, and restores. View progress, status, and error details in one place.
             </p>
           </div>
         </div>

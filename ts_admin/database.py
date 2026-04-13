@@ -49,6 +49,7 @@ def init_db() -> None:
     import ts_admin.models.cache.ts_tag      # noqa: F401
     import ts_admin.models.cache.ts_org              # noqa: F401
     import ts_admin.models.cache.content_permissions # noqa: F401
+    import ts_admin.models.archive_record            # noqa: F401
 
     SQLModel.metadata.create_all(get_engine())
 

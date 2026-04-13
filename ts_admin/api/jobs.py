@@ -66,6 +66,30 @@ async def get_job(job_id: str) -> JobResponse:
     return _job_to_response(job)
 
 
+@router.delete("/{job_id}/cancel", status_code=204)
+async def cancel_job(job_id: str) -> None:
+    """
+    Request cancellation of a running job.
+
+    Sets job.is_cancelled = True. The running background task checks this
+    flag at each chunk boundary and stops cleanly if set.
+
+    Returns 409 if the job is already done.
+    """
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+        if job.is_done:
+            raise HTTPException(status_code=409, detail=f"Job {job_id!r} is already {job.status}")
+        job.is_cancelled = True
+        session.add(job)
+        session.commit()
+
+
 def _job_to_response(job) -> JobResponse:
     return JobResponse(
         id=job.id,

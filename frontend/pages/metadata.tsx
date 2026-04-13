@@ -48,6 +48,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const [drawerObject, setDrawerObject] = useState<MetadataObject | null>(null);
   const [sortField, setSortField]     = useState("modified_at");
   const [sortOrder, setSortOrder]     = useState<"asc" | "desc">("desc");
+  const [colFilters, setColFilters]   = useState<Record<string, any>>({});
 
   // Debounce search input → search state
   useEffect(() => {
@@ -61,8 +62,13 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
 
     const clusterId = activeCluster.id;
     const orgId = activeOrg.org_id;
-    const types = selectedTypes.length > 0 ? selectedTypes : undefined;
-    const searchTerm = search.trim() || undefined;
+    const toolbarTypes  = selectedTypes.length > 0 ? selectedTypes : undefined;
+    const toolbarSearch = search.trim() || undefined;
+
+    // Read filters from state (captured in closure) — avoids race when datasource resets
+    const colSearch  = (colFilters["name"]        as any)?.filter?.trim() || undefined;
+    const colTypes   = (colFilters["object_type"] as any)?.values          as string[] | undefined;
+    const colTagText = (colFilters["tags"]        as any)?.filter?.trim() || undefined;
 
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
@@ -70,15 +76,15 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           const res = await metadataApi.list({
             cluster_id: clusterId,
             org_id: orgId,
-            types,
-            search: searchTerm,
+            types:      colTypes   ?? toolbarTypes,
+            search:     colSearch  ?? toolbarSearch,
+            tag_names:  colTagText ? [colTagText] : undefined,
             sort_field: sortField,
             sort_order: sortOrder,
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
           });
           setTotal(res.total);
-          // lastRow tells AG Grid the total so it stops requesting more pages
           params.successCallback(res.items, res.total);
         } catch {
           params.failCallback();
@@ -87,7 +93,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
     };
 
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder]);
+  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder, colFilters]);
 
   const handleGridReady = useCallback((e: GridReadyEvent) => {
     e.api.applyColumnState({
@@ -105,6 +111,12 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
       setSortField("name");
       setSortOrder("asc");
     }
+  }, []);
+
+  // Column filter changed → capture model into state (closure-safe), then reload
+  const handleFilterChanged = useCallback(() => {
+    const fm = gridRef.current?.api?.getFilterModel() ?? {};
+    setColFilters(fm);          // triggers reloadGrid via useEffect([reloadGrid])
   }, []);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
@@ -201,6 +213,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           defaultColDef={{ resizable: true, sortable: true, sortingOrder: ["asc", "desc"] }}
           onGridReady={handleGridReady}
           onSortChanged={handleSortChanged}
+          onFilterChanged={handleFilterChanged}
           overlayNoRowsTemplate="No content found. Sync metadata first."
           rowSelection="single"
           rowStyle={{ cursor: "pointer" }}

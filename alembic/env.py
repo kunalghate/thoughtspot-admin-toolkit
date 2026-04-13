@@ -22,11 +22,16 @@ import ts_admin.models.cache.ts_metadata       # noqa: F401
 import ts_admin.models.cache.ts_tag            # noqa: F401
 import ts_admin.models.cache.ts_org            # noqa: F401
 import ts_admin.models.cache.content_permissions # noqa: F401
+import ts_admin.models.archive_record            # noqa: F401
 
 # ── Alembic config ─────────────────────────────────────────────────────────────
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Override DB URL with the same path the application uses
+from ts_admin.database import DB_PATH
+config.set_main_option("sqlalchemy.url", f"sqlite:///{DB_PATH}")
 
 target_metadata = SQLModel.metadata
 

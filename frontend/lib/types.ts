@@ -41,6 +41,7 @@ export interface Job {
   progress: number;
   total: number;
   progress_pct: number;
+  result: Record<string, unknown> | null;
   created_at: string;
   completed_at: string | null;
   error: string | null;
@@ -125,4 +126,85 @@ export interface PaginatedResponse<T> {
   total: number;
   page: number;
   page_size: number;
+}
+
+// ── Archiver ──────────────────────────────────────────────────────────────────
+
+export interface ArchiverItem {
+  ts_guid: string;
+  name: string;
+  object_type: "LIVEBOARD" | "ANSWER";
+  owner_guid: string;
+  owner_name: string;
+  org_id: number;
+  last_accessed_at: string | null;
+  modified_at: string | null;
+  created_at: string | null;
+  view_count: number;
+  days_unused: number;
+  tags: string[];
+}
+
+export interface ArchiverPreview {
+  total: number;
+  by_type: Record<string, number>;
+  criteria_summary: string;
+}
+
+export interface AffectedPrincipal {
+  name: string;
+  type: "USER" | "USER_GROUP";
+  object_count: number;
+}
+
+export interface DependencyWarning {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  dependents: { name: string; type: string }[];
+}
+
+export interface DryRunSummary {
+  total: number;
+  by_type: Record<string, number>;
+  shared_count: number;
+  affected_principals: AffectedPrincipal[];
+  dependency_warnings: DependencyWarning[];
+  errors: { ts_guid: string; error: string }[];
+}
+
+export interface ArchiveRecord {
+  id: string;
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_name: string;
+  last_accessed_at: string | null;
+  days_unused: number;
+  tags: string[];
+  tml_export_status: "PENDING" | "SUCCESS" | "FAILED";
+  archived_at: string;
+  restored_at: string | null;
+  restored_as_guid: string | null;
+  is_restorable: boolean;
+}
+
+export interface ArchiveRecordFlatItem {
+  id: string;
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_name: string;
+  archived_at: string;
+  tml_export_status: "PENDING" | "SUCCESS" | "FAILED";
+  job_id: string;
+}
+
+export interface ArchiveSessionSummary {
+  job_id: string;
+  archived_at: string;
+  total: number;
+  succeeded: number;
+  failed_tml_export: number;
+  failed_delete: number;
 }

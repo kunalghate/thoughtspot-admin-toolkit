@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -139,4 +139,174 @@ export const jobsApi = {
 
   get: (jobId: string) =>
     request<Job>(`/jobs/${jobId}`),
+
+  cancel: (jobId: string) =>
+    request<void>(`/jobs/${jobId}/cancel`, { method: "DELETE" }),
+};
+
+// ── Archiver ──────────────────────────────────────────────────────────────────
+
+export const archiverApi = {
+  preview: (params: {
+    cluster_id: string;
+    org_id: number;
+    stale_activity_days: number;
+    stale_modified_days: number;
+    types?: string[];
+    exclude_tags?: string[];
+    stale_operator?: "AND" | "OR";
+    owner_guid?: string;
+    exclude_owner_guids?: string[];
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    q.set("stale_activity_days", String(params.stale_activity_days));
+    q.set("stale_modified_days", String(params.stale_modified_days));
+    if (params.types)               params.types.forEach((t) => q.append("types", t));
+    if (params.exclude_tags)        params.exclude_tags.forEach((t) => q.append("exclude_tags", t));
+    if (params.stale_operator)      q.set("stale_operator", params.stale_operator);
+    if (params.owner_guid)          q.set("owner_guid", params.owner_guid);
+    if (params.exclude_owner_guids) params.exclude_owner_guids.forEach((g) => q.append("exclude_owner_guids", g));
+    return request<ArchiverPreview>(`/archiver/preview?${q}`);
+  },
+
+  results: (params: {
+    cluster_id: string;
+    org_id: number;
+    stale_activity_days: number;
+    stale_modified_days: number;
+    types?: string[];
+    exclude_tags?: string[];
+    filter_tags?: string[];
+    search?: string;
+    stale_operator?: "AND" | "OR";
+    owner_guid?: string;
+    exclude_owner_guids?: string[];
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    q.set("stale_activity_days", String(params.stale_activity_days));
+    q.set("stale_modified_days", String(params.stale_modified_days));
+    if (params.types)               params.types.forEach((t) => q.append("types", t));
+    if (params.exclude_tags)        params.exclude_tags.forEach((t) => q.append("exclude_tags", t));
+    if (params.filter_tags)         params.filter_tags.forEach((t) => q.append("filter_tags", t));
+    if (params.search)              q.set("search", params.search);
+    if (params.stale_operator)      q.set("stale_operator", params.stale_operator);
+    if (params.owner_guid)          q.set("owner_guid", params.owner_guid);
+    if (params.exclude_owner_guids) params.exclude_owner_guids.forEach((g) => q.append("exclude_owner_guids", g));
+    if (params.sort_field)          q.set("sort_field", params.sort_field);
+    if (params.sort_order)          q.set("sort_order", params.sort_order);
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)           q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<ArchiverItem>>(`/archiver/results?${q}`);
+  },
+
+  tags: (params: {
+    cluster_id: string;
+    org_id: number;
+    stale_activity_days?: number;
+    stale_modified_days?: number;
+    types?: string[];
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.stale_activity_days != null) q.set("stale_activity_days", String(params.stale_activity_days));
+    if (params.stale_modified_days != null)  q.set("stale_modified_days", String(params.stale_modified_days));
+    if (params.types) params.types.forEach((t) => q.append("types", t));
+    return request<{ ts_guid: string; name: string }[]>(`/archiver/tags?${q}`);
+  },
+
+  dryrun: (body: { cluster_id: string; org_id: number; object_ids: string[] }) =>
+    request<{ job_id: string; total: number }>("/archiver/dryrun", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  dryrunObjects: (job_id: string, params: {
+    cluster_id: string;
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)             q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<ArchiverItem>>(`/archiver/dryrun/${job_id}/objects?${q}`);
+  },
+
+  execute: (body: {
+    cluster_id: string;
+    org_id: number;
+    object_ids: string[];
+    action: "tag" | "untag" | "delete";
+    tag_name?: string;
+    create_tag_if_missing?: boolean;
+  }) =>
+    request<{ job_id: string; action: string; total: number }>("/archiver/execute", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  history: (params: {
+    cluster_id: string;
+    org_id: number;
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)             q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<ArchiveSessionSummary>>(`/archiver/history?${q}`);
+  },
+
+  historySession: (job_id: string, params: {
+    cluster_id: string;
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)             q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<ArchiveRecord>>(`/archiver/history/${job_id}?${q}`);
+  },
+
+  restore: (body: { cluster_id: string; org_id: number; archive_record_ids: string[] }) =>
+    request<{ job_id: string; total: number }>("/archiver/restore", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  allRecords: (params: {
+    cluster_id: string;
+    org_id: number;
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
+    search?: string;
+    object_type?: string;
+    owner_name?: string;
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.sort_field)            q.set("sort_field", params.sort_field);
+    if (params.sort_order)            q.set("sort_order", params.sort_order);
+    if (params.search)                q.set("search", params.search);
+    if (params.object_type)           q.set("object_type", params.object_type);
+    if (params.owner_name)            q.set("owner_name", params.owner_name);
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)             q.set("page_size", String(params.page_size));
+    return request<{ items: ArchiveRecordFlatItem[]; total: number; record_offset: number; page_size: number }>(`/archiver/records?${q}`);
+  },
 };

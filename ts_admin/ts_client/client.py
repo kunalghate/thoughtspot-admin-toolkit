@@ -153,6 +153,10 @@ class ThoughtSpotClient:
 
             response.raise_for_status()
 
+            # 204 No Content — endpoints like assign_tag/unassign_tag return empty body
+            if response.status_code == 204 or not response.content:
+                return {}
+
             try:
                 return response.json()
             except Exception as exc:
@@ -337,7 +341,8 @@ class ThoughtSpotClient:
             context="search_tags",
         )
         try:
-            return [TSTag.model_validate(t) for t in data.get("tags", [])]
+            items = data if isinstance(data, list) else data.get("tags", [])
+            return [TSTag.model_validate(t) for t in items]
         except ValidationError as exc:
             raise TSResponseParseError(
                 url="/api/rest/2.0/tags/search", detail=str(exc)
@@ -477,7 +482,7 @@ class ThoughtSpotClient:
     async def delete_metadata(self, *, object_ids: list[str], object_type: MetadataType) -> None:
         """Permanently delete metadata objects. Irreversible."""
         await self._request(
-            "DELETE",
+            "POST",
             "/api/rest/2.0/metadata/delete",
             json={
                 "metadata": [
@@ -487,3 +492,108 @@ class ThoughtSpotClient:
             },
             context="delete_metadata",
         )
+
+    # ── TML export / import ────────────────────────────────────────────────────
+
+    async def tml_export(self, *, object_ids: list[str]) -> list[dict]:
+        """
+        Export TML for a batch of objects.
+
+        POST /api/rest/2.0/metadata/tml/export
+
+        Returns a list of dicts. A successful item has a non-empty "edoc" key
+        containing the YAML TML string. A failed item has no "edoc" key (or an
+        empty string). Check `"edoc" in result and result["edoc"]` — do NOT
+        check status_code; the v2 export API omits it on success.
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/metadata/tml/export",
+            json={
+                "metadata": [{"identifier": oid} for oid in object_ids],
+                "export_associated_objects": "NONE",
+                "export_fqn": True,
+            },
+            context="tml_export",
+        )
+        return data if isinstance(data, list) else data.get("object", [])
+
+    async def import_tml(
+        self,
+        *,
+        tml_strings: list[str],
+        import_policy: str = "PARTIAL",
+    ) -> list[dict]:
+        """
+        Import TML strings as new objects.
+
+        POST /api/rest/2.0/metadata/tml/import
+
+        import_policy="PARTIAL": import what we can, surface per-item errors
+        rather than failing the entire batch.
+
+        Each returned item has:
+          object_id (new GUID), name, type,
+          status { status_code: "OK"|"ERROR", error_message: str|None }
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/metadata/tml/import",
+            json={"metadata_tmls": tml_strings, "import_policy": import_policy},
+            context="import_tml",
+        )
+        return data if isinstance(data, list) else data.get("object", [])
+
+    # ── Tag creation ───────────────────────────────────────────────────────────
+
+    async def create_tag(self, *, name: str, color: str = "") -> TSTag:
+        """
+        Create a new tag on the instance.
+        POST /api/rest/2.0/tags
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/tags/create",
+            json={"name": name, "color": color or None},
+            context="create_tag",
+        )
+        try:
+            return TSTag.model_validate(data)
+        except ValidationError as exc:
+            raise TSResponseParseError(url="/api/rest/2.0/tags", detail=str(exc)) from exc
+
+    # ── Dependencies ───────────────────────────────────────────────────────────
+
+    async def fetch_dependents(
+        self,
+        *,
+        objects: list[dict],  # [{"identifier": guid, "type": "LIVEBOARD"}, ...]
+    ) -> dict[str, list[dict]]:
+        """
+        Return a map of { guid → [dependent objects] } for the given objects.
+
+        POST /api/rest/2.0/dependency/listdependents
+
+        ⚠ The actual response shape must be verified against a live cluster
+        before the parser below is considered authoritative. Adjust key names
+        if the real API differs.
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/dependency/listdependents",
+            json={"metadata": objects},
+            context="fetch_dependents",
+        )
+        result: dict[str, list[dict]] = {}
+        try:
+            items = data if isinstance(data, list) else data.get("dependency_response", [])
+            for item in items:
+                guid = item.get("id") or item.get("identifier", "")
+                if guid:
+                    result[guid] = item.get("dependents", [])
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise TSResponseParseError(
+                url="/api/rest/2.0/dependency/listdependents",
+                detail=f"Unexpected response shape: {exc}",
+            ) from exc
+        return result

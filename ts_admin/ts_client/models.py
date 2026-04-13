@@ -87,7 +87,11 @@ class TSGroupsResponse(TSBaseModel):
 class TSTag(TSBaseModel):
     id: str
     name: str
-    color: str = Field(default="")
+    color: str | None = Field(default=None)
+
+    @property
+    def color_str(self) -> str:
+        return self.color or ""
 
 
 class TSMetadataObject(TSBaseModel):

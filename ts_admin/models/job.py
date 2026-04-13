@@ -17,6 +17,7 @@ class Job(SQLModel, table=True):
     parameters: str = "{}"                 # JSON string of job input params
     result: str | None = None              # JSON string of result summary
     error: str | None = None
+    is_cancelled: bool = False             # set True by DELETE /jobs/{id}/cancel
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
