@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { IDatasource, IGetRowsParams, RowClickedEvent } from "ag-grid-community";
+import type { GridReadyEvent, IDatasource, IGetRowsParams, RowClickedEvent, SortChangedEvent } from "ag-grid-community";
 import { Download, Search, X } from "lucide-react";
 import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
@@ -46,6 +46,8 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const [selectedTypes, setTypes]     = useState<string[]>([]);
   const [searchInput, setSearchInput] = useState(""); // raw input, debounced into search
   const [drawerObject, setDrawerObject] = useState<MetadataObject | null>(null);
+  const [sortField, setSortField]     = useState("modified_at");
+  const [sortOrder, setSortOrder]     = useState<"asc" | "desc">("desc");
 
   // Debounce search input → search state
   useEffect(() => {
@@ -53,7 +55,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // Build and set a new datasource whenever cluster/org/search/types change
+  // Build and set a new datasource whenever cluster/org/search/types/sort change
   const reloadGrid = useCallback(() => {
     if (!activeCluster?.id || activeOrg?.org_id == null) return;
 
@@ -70,6 +72,8 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
             org_id: orgId,
             types,
             search: searchTerm,
+            sort_field: sortField,
+            sort_order: sortOrder,
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
           });
@@ -83,7 +87,25 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
     };
 
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes]);
+  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder]);
+
+  const handleGridReady = useCallback((e: GridReadyEvent) => {
+    e.api.applyColumnState({
+      state: [{ colId: "modified_at", sort: "desc" }],
+      defaultState: { sort: null },
+    });
+  }, []);
+
+  const handleSortChanged = useCallback((e: SortChangedEvent) => {
+    const sortModel = e.api.getColumnState().find((c) => c.sort);
+    if (sortModel) {
+      setSortField(sortModel.colId);
+      setSortOrder(sortModel.sort as "asc" | "desc");
+    } else {
+      setSortField("name");
+      setSortOrder("asc");
+    }
+  }, []);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
 
@@ -176,7 +198,9 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           cacheBlockSize={PAGE_SIZE}
           maxBlocksInCache={10}
           infiniteInitialRowCount={PAGE_SIZE}
-          defaultColDef={{ resizable: true, sortable: false }}
+          defaultColDef={{ resizable: true, sortable: true, sortingOrder: ["asc", "desc"] }}
+          onGridReady={handleGridReady}
+          onSortChanged={handleSortChanged}
           overlayNoRowsTemplate="No content found. Sync metadata first."
           rowSelection="single"
           rowStyle={{ cursor: "pointer" }}

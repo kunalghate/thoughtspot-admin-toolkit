@@ -30,6 +30,12 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
   const isOfflineError = clusterOnline === false;
 
   useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
     if (!object) return;
     setPermissions([]);
     setError(null);

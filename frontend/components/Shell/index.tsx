@@ -49,6 +49,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   const [isSyncing, setIsSyncing]     = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
   const [clusterOnline, setClusterOnline] = useState<boolean | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load clusters on mount
@@ -104,6 +105,12 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     if (!activeCluster) return;
     syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0).then(setSyncLogs).catch(() => {});
   }, [activeCluster?.id, activeOrg?.org_id]);
+
+  // Tick every 60s so relative sync timestamps stay fresh
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Clean up polling on unmount
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -169,6 +176,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           onSync={handleSync}
           isSyncing={isSyncing}
           clusterOnline={clusterOnline}
+          now={now}
         />
         <main style={{ flex: 1, overflowY: "auto", background: "#F2EDE3" }}>
           {children}

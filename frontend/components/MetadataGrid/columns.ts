@@ -8,7 +8,6 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     flex: 3,
     minWidth: 220,
     filter: "agTextColumnFilter",
-    sort: "asc",
   },
   {
     field: "object_type",
@@ -34,7 +33,21 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     minWidth: 140,
     filter: "agTextColumnFilter",
     valueFormatter: (p) => (p.value as string[] | null)?.join(", ") ?? "",
-    sortable: false,
+    sortable: false,  // tags are a JSON blob — server-side sort is meaningless
+  },
+  {
+    field: "last_accessed_at",
+    headerName: "Last Accessed",
+    width: 160,
+    filter: "agDateColumnFilter",
+    valueFormatter: (p) => isDataObject(p.data?.object_type) ? "—" : formatDate(p.value),
+  },
+  {
+    field: "view_count",
+    headerName: "Views",
+    width: 100,
+    filter: "agNumberColumnFilter",
+    valueFormatter: (p) => isDataObject(p.data?.object_type) ? "—" : (p.value ?? 0).toLocaleString(),
   },
   {
     field: "modified_at",
@@ -62,6 +75,9 @@ const TYPE_LABELS: Record<string, string> = {
   SQL_VIEW:           "SQL View",
   USER_DEFINED:       "User Defined",
 };
+
+const DATA_OBJECT_TYPES = new Set(["WORKSHEET", "ONE_TO_ONE_LOGICAL", "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED", "LOGICAL_TABLE"]);
+const isDataObject = (type: string | undefined) => !!type && DATA_OBJECT_TYPES.has(type);
 
 function formatDate(iso: string | null): string {
   if (!iso) return "Never";

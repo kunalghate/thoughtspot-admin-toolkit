@@ -85,6 +85,8 @@ export interface MetadataObject {
   tags: string[];
   created_at: string | null;
   modified_at: string | null;
+  last_accessed_at: string | null;
+  view_count: number;
 }
 
 // ── Permissions ───────────────────────────────────────────────────────────────

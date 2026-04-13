@@ -21,17 +21,19 @@ interface TopbarProps {
   onSync: () => void;
   isSyncing: boolean;
   clusterOnline: boolean | null;
+  now: number;
 }
 
 export default function Topbar({
   pageTitle, entityType, clusterName, activeOrg, orgs,
   syncLog, syncProgress, onOrgChange, onSync, isSyncing,
   clusterOnline,
+  now,
 }: TopbarProps) {
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
 
-  const syncLabel = buildSyncLabel(syncLog, isSyncing, syncProgress);
-  const syncColor = buildSyncColor(syncLog, isSyncing);
+  const syncLabel = buildSyncLabel(syncLog, isSyncing, syncProgress, now);
+  const syncColor = buildSyncColor(syncLog, isSyncing, now);
   const syncButtonLabel = isSyncing ? "Syncing…" : `Sync ${ENTITY_LABELS[entityType!] ?? ""}`;
 
   const isOffline = clusterOnline === false;
@@ -209,6 +211,7 @@ function buildSyncLabel(
   log: SyncLog | null,
   isSyncing: boolean,
   progress: { processed: number; total: number } | null,
+  now: number,
 ): string {
   if (isSyncing) {
     if (progress && progress.total > 0) return `Syncing ${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
@@ -218,7 +221,7 @@ function buildSyncLabel(
   if (log.status === "FAILED") return "Sync failed";
   if (!log.synced_at) return "Unknown";
 
-  const minutes = Math.floor((Date.now() - new Date(log.synced_at).getTime()) / 60_000);
+  const minutes = Math.floor((now - new Date(log.synced_at + "Z").getTime()) / 60_000);
   if (minutes < 2)  return "Synced just now";
   if (minutes < 60) return `Synced ${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -226,13 +229,13 @@ function buildSyncLabel(
   return `Synced ${Math.floor(hours / 24)}d ago`;
 }
 
-function buildSyncColor(log: SyncLog | null, isSyncing: boolean): string {
+function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): string {
   if (isSyncing) return "#8B5CF6";
   if (!log || log.status === "NOT_SYNCED") return "#DC2626";
   if (log.status === "FAILED") return "#DC2626";
   if (!log.synced_at) return "#7A7068";
 
-  const hours = (Date.now() - new Date(log.synced_at).getTime()) / 3_600_000;
+  const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;
   if (hours < 1) return "#059669";
   if (hours < 6) return "#7A7068";
   return "#D97706";

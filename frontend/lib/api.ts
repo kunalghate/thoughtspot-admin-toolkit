@@ -101,6 +101,8 @@ export const metadataApi = {
     tag_names?: string[];
     search?: string;
     stale_days?: number;
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
     record_offset?: number;
     page_size?: number;
   }) => {
@@ -112,6 +114,8 @@ export const metadataApi = {
     if (params.tag_names)      params.tag_names.forEach((t) => q.append("tag_names", t));
     if (params.search)         q.set("search", params.search);
     if (params.stale_days)     q.set("stale_days", String(params.stale_days));
+    if (params.sort_field)     q.set("sort_field", params.sort_field);
+    if (params.sort_order)     q.set("sort_order", params.sort_order);
     if (params.record_offset)  q.set("record_offset", String(params.record_offset));
     if (params.page_size)      q.set("page_size", String(params.page_size));
     return request<PaginatedResponse<MetadataObject>>(`/metadata?${q}`);
