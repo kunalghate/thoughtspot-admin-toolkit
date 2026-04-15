@@ -151,9 +151,7 @@ class TestMetadataServiceSearch:
     def test_pagination(self, session, cluster):
         for i in range(10):
             _make_obj(session, guid=f"guid-{i}", name=f"Object {i}")
-        items, total = MetadataService.search(
-            cluster_id="test-cluster", org_id=0, record_offset=0, page_size=3
-        )
+        items, total = MetadataService.search(cluster_id="test-cluster", org_id=0, record_offset=0, page_size=3)
         assert total == 10
         assert len(items) == 3
 
