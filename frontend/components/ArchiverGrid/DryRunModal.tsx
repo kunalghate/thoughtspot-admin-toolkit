@@ -143,15 +143,6 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
     return () => clearInterval(iv);
   }, [executeJobId]);
 
-  // ── Cancel ─────────────────────────────────────────────────────────────────
-
-  const handleCancel = async () => {
-    if (!executeJobId) return;
-    try {
-      await jobsApi.cancel(executeJobId);
-    } catch { /* ignore — job may have already finished */ }
-  };
-
   // ── Keyboard close ─────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -421,7 +412,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
         </div>
 
         {/* ── Footer ── */}
-        {(state === "ready" || state === "running") && (
+        {state === "ready" && (
           <div style={{
             display: "flex", justifyContent: "flex-end", gap: 8,
             padding: "12px 20px", borderTop: "1px solid #E8E1D5", flexShrink: 0,
@@ -454,18 +445,6 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
                   Delete {objectIds.length.toLocaleString()} objects
                 </button>
               </>
-            )}
-            {state === "running" && (
-              <button
-                onClick={handleCancel}
-                style={{
-                  padding: "7px 16px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-                  border: "1px solid #FECACA", background: "#FEF2F2",
-                  color: "#991B1B", fontFamily: "Geist, sans-serif",
-                }}
-              >
-                Cancel job
-              </button>
             )}
           </div>
         )}

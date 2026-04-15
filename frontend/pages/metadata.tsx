@@ -6,6 +6,7 @@ import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { metadataApi } from "@/lib/api";
+import { serializeFilterModel } from "@/lib/agGridFilters";
 import type { MetadataObject } from "@/lib/types";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
@@ -65,10 +66,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
     const toolbarTypes  = selectedTypes.length > 0 ? selectedTypes : undefined;
     const toolbarSearch = search.trim() || undefined;
 
-    // Read filters from state (captured in closure) — avoids race when datasource resets
-    const colSearch  = (colFilters["name"]        as any)?.filter?.trim() || undefined;
-    const colTypes   = (colFilters["object_type"] as any)?.values          as string[] | undefined;
-    const colTagText = (colFilters["tags"]        as any)?.filter?.trim() || undefined;
+    const f = serializeFilterModel(colFilters);
 
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
@@ -76,9 +74,18 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           const res = await metadataApi.list({
             cluster_id: clusterId,
             org_id: orgId,
-            types:      colTypes   ?? toolbarTypes,
-            search:     colSearch  ?? toolbarSearch,
-            tag_names:  colTagText ? [colTagText] : undefined,
+            types:               f.types ?? toolbarTypes,
+            search:              f.search ?? toolbarSearch,
+            owner_name_search:   f.owner_name_search,
+            tag_search:          f.tag_search,
+            views_min:           f.views_min,
+            views_max:           f.views_max,
+            last_accessed_before: f.last_accessed_before,
+            last_accessed_after:  f.last_accessed_after,
+            modified_before:     f.modified_before,
+            modified_after:      f.modified_after,
+            created_before:      f.created_before,
+            created_after:       f.created_after,
             sort_field: sortField,
             sort_order: sortOrder,
             record_offset: params.startRow,

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { IDatasource, IGetRowsParams } from "ag-grid-community";
-import { Download, X, Search } from "lucide-react";
+import { Download, X, Search, ChevronDown, Clock } from "lucide-react";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import AppShell, { useShell } from "@/components/Shell";
-import { ARCHIVER_COLUMNS } from "@/components/ArchiverGrid/columns";
+import { ARCHIVER_COLUMNS, serializeFilterModel } from "@/components/ArchiverGrid/columns";
 import { DryRunModal } from "@/components/ArchiverGrid/DryRunModal";
 import { archiverApi, jobsApi } from "@/lib/api";
 import type { ArchiverItem, ArchiveRecordFlatItem, Job } from "@/lib/types";
@@ -86,7 +86,7 @@ function ArchiverContent({ syncVersion }: { syncVersion: number }) {
       {/* Tab panels */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
         {activeTab === "archive" ? (
-          <ArchiveTab syncVersion={syncVersion} />
+          <ArchiveTab syncVersion={syncVersion} onViewHistory={() => setActiveTab("history")} />
         ) : (
           <HistoryTab />
         )}
@@ -95,9 +95,221 @@ function ArchiverContent({ syncVersion }: { syncVersion: number }) {
   );
 }
 
+// ── Stale Criteria pill + popover ──────────────────────────────────────────────
+
+type StaleCriteriaValues = {
+  staleActivityDays: number;
+  staleModifiedDays: number;
+  staleOperator: "AND" | "OR";
+};
+
+function StaleCriteriaPill(props: StaleCriteriaValues & {
+  onApply: (v: StaleCriteriaValues) => void;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<StaleCriteriaValues>({
+    staleActivityDays: props.staleActivityDays,
+    staleModifiedDays: props.staleModifiedDays,
+    staleOperator: props.staleOperator,
+  });
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Sync draft → props whenever popover opens (so it always shows the live state)
+  useEffect(() => {
+    if (open) {
+      setDraft({
+        staleActivityDays: props.staleActivityDays,
+        staleModifiedDays: props.staleModifiedDays,
+        staleOperator: props.staleOperator,
+      });
+    }
+  }, [open, props.staleActivityDays, props.staleModifiedDays, props.staleOperator]);
+
+  // Close on outside click + Esc
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const summary = `${props.staleActivityDays}d ${props.staleOperator} ${props.staleModifiedDays}d`;
+
+  const apply = () => { props.onApply(draft); setOpen(false); };
+  const reset = () => { props.onReset(); setOpen(false); };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Stale criteria"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          padding: "6px 10px 6px 12px", borderRadius: 20,
+          fontSize: 12, fontWeight: 500, fontFamily: "Geist, sans-serif",
+          background: open ? "#F3EFFE" : "#FAF8F4",
+          border: `1px solid ${open ? "#C4B5FD" : "#E8E1D5"}`,
+          color: open ? "#6D28D9" : "#1A1714",
+          cursor: "pointer", whiteSpace: "nowrap",
+          transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
+        }}
+        onMouseEnter={(e) => { if (!open) e.currentTarget.style.borderColor = "#D8CFC8"; }}
+        onMouseLeave={(e) => { if (!open) e.currentTarget.style.borderColor = "#E8E1D5"; }}
+      >
+        <Clock size={12} strokeWidth={2} />
+        <span style={{ color: "#7A7068", fontWeight: 400 }}>Stale:</span>
+        <span>{summary}</span>
+        <ChevronDown size={12} color="#7A7068" />
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50,
+          width: 260, background: "#FFFFFF",
+          border: "1px solid #E8E1D5", borderRadius: 10,
+          boxShadow: "0 1px 2px rgba(26,23,20,0.04), 0 12px 28px -8px rgba(26,23,20,0.18)",
+          fontFamily: "Geist, sans-serif",
+          animation: "popoverIn 140ms ease-out",
+          overflow: "hidden",
+        }}>
+          {/* Header */}
+          <div style={{
+            padding: "10px 14px", borderBottom: "1px solid #F0EAE0",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <Clock size={12} color="#8B5CF6" strokeWidth={2.25} />
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", letterSpacing: "0.01em" }}>
+              Stale criteria
+            </span>
+          </div>
+
+          {/* Body */}
+          <div style={{ padding: "14px 14px 12px", display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* Last Accessed row */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ fontSize: 12, color: "#3F3A34", fontWeight: 500 }}>Last Accessed ≥</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="number" min={1} value={draft.staleActivityDays}
+                  onChange={(e) => setDraft({ ...draft, staleActivityDays: Math.max(1, Number(e.target.value)) })}
+                  onKeyDown={(e) => { if (e.key === "Enter") apply(); }}
+                  className="stale-num"
+                  style={{
+                    width: 64, height: 30, padding: "0 10px", borderRadius: 6,
+                    border: "1px solid #EBE3D5", background: "#FAF8F4",
+                    fontSize: 13, fontFamily: "Geist, sans-serif", color: "#1A1714",
+                    outline: "none", textAlign: "right",
+                  }}
+                />
+                <span style={{ fontSize: 11, color: "#7A7068", width: 28 }}>days</span>
+              </div>
+            </div>
+
+            {/* AND/OR unified segmented control */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1, height: 1, background: "#F0EAE0" }} />
+              <div style={{
+                display: "inline-flex", padding: 2, borderRadius: 999,
+                background: "#F4EFE6", border: "1px solid #E8E1D5",
+              }}>
+                {(["AND", "OR"] as const).map((op) => {
+                  const active = draft.staleOperator === op;
+                  return (
+                    <button
+                      key={op}
+                      onClick={() => setDraft({ ...draft, staleOperator: op })}
+                      style={{
+                        height: 22, padding: "0 12px", minWidth: 44,
+                        fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+                        borderRadius: 999, fontFamily: "Geist, sans-serif",
+                        background: active ? "#8B5CF6" : "transparent",
+                        color: active ? "#FFFFFF" : "#7A7068",
+                        border: "none", cursor: "pointer",
+                        boxShadow: active ? "0 1px 2px rgba(139,92,246,0.25)" : "none",
+                        transition: "background 140ms ease, color 140ms ease",
+                      }}
+                    >
+                      {op}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ flex: 1, height: 1, background: "#F0EAE0" }} />
+            </div>
+
+            {/* Last Modified row */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ fontSize: 12, color: "#3F3A34", fontWeight: 500 }}>Last Modified ≥</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="number" min={1} value={draft.staleModifiedDays}
+                  onChange={(e) => setDraft({ ...draft, staleModifiedDays: Math.max(1, Number(e.target.value)) })}
+                  onKeyDown={(e) => { if (e.key === "Enter") apply(); }}
+                  className="stale-num"
+                  style={{
+                    width: 64, height: 30, padding: "0 10px", borderRadius: 6,
+                    border: "1px solid #EBE3D5", background: "#FAF8F4",
+                    fontSize: 13, fontFamily: "Geist, sans-serif", color: "#1A1714",
+                    outline: "none", textAlign: "right",
+                  }}
+                />
+                <span style={{ fontSize: 11, color: "#7A7068", width: 28 }}>days</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div style={{
+            display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8,
+            padding: "8px 12px", borderTop: "1px solid #F0EAE0", background: "#FFFFFF",
+          }}>
+            <button
+              onClick={reset}
+              style={{
+                height: 30, padding: "0 12px", borderRadius: 6,
+                border: "1px solid transparent", background: "transparent",
+                fontSize: 12, fontWeight: 500, color: "#6B6056",
+                fontFamily: "Geist, sans-serif", cursor: "pointer",
+                transition: "background 120ms ease, color 120ms ease",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#F4EFE6"; e.currentTarget.style.color = "#1A1714"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#6B6056"; }}
+            >
+              Reset
+            </button>
+            <button
+              onClick={apply}
+              style={{
+                height: 30, padding: "0 14px", borderRadius: 6,
+                border: "1px solid #8B5CF6", background: "#8B5CF6",
+                fontSize: 12, fontWeight: 600, color: "#FFFFFF",
+                fontFamily: "Geist, sans-serif", cursor: "pointer", minWidth: 64,
+                boxShadow: "0 1px 2px rgba(139,92,246,0.25)",
+                transition: "background 120ms ease, border-color 120ms ease",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#7C3AED"; e.currentTarget.style.borderColor = "#7C3AED"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "#8B5CF6"; e.currentTarget.style.borderColor = "#8B5CF6"; }}
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Archive tab ────────────────────────────────────────────────────────────────
 
-function ArchiveTab({ syncVersion }: { syncVersion: number }) {
+function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onViewHistory: () => void }) {
   const { activeCluster, activeOrg } = useShell();
   const gridRef = useRef<AgGridReact<ArchiverItem>>(null);
 
@@ -108,6 +320,9 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
   const [sortField, setSortField] = useState("days_unused");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selectedGuids, setSelectedGuids] = useState<Set<string>>(new Set());
+  // Union of tags across currently-selected rows — drives the click-to-remove
+  // chip cluster in the bulk-action toolbar.
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagName, setTagName] = useState("Stale");            // selected tag for bulk-tag action
   const [customTagName, setCustomTagName] = useState("");     // typed when "New tag…" chosen
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -115,7 +330,10 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
   const [availableTags, setAvailableTags] = useState<{ ts_guid: string; name: string }[]>([]);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
-  const [colFilters, setColFilters] = useState<Record<string, any>>({});
+  // Held in a ref so updating filters doesn't recreate the datasource (which
+  // would close the open filter popup mid-typing). On filter change we purge
+  // the infinite cache; the existing getRows closure reads the ref.
+  const colFiltersRef = useRef<Record<string, any>>({});
 
   // DryRunModal state
   const [dryRunOpen, setDryRunOpen] = useState(false);
@@ -165,23 +383,32 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
-          // Use colFilters from state (captured in closure) — avoids race with datasource reset
-          const colSearch = (colFilters["name"]        as any)?.filter?.trim() || undefined;
-          const colTypes  = (colFilters["object_type"] as any)?.values          as string[] | undefined;
-          const colOwner  = (colFilters["owner_name"]  as any)?.filter?.trim() || undefined;
+          const f = serializeFilterModel(colFiltersRef.current);
 
           const res = await archiverApi.results({
             cluster_id: clusterId,
             org_id: orgId,
             stale_activity_days: snap.staleActivityDays,
             stale_modified_days: snap.staleModifiedDays,
-            types:              colTypes ?? snap.types,
+            types:              f.types ?? snap.types,
             exclude_tags:       snap.excludeTags.length ? snap.excludeTags : undefined,
             filter_tags:        snap.filterTags.length  ? snap.filterTags  : undefined,
-            search:             (colSearch ?? snap.search) || undefined,
+            search:             f.search ?? snap.search ?? undefined,
             stale_operator:     snap.staleOperator,
-            owner_guid:         colOwner ? undefined : (snap.ownerGuid || undefined),
+            owner_guid:         f.owner_name_search ? undefined : (snap.ownerGuid || undefined),
             exclude_owner_guids: snap.excludeOwnerGuids.length ? snap.excludeOwnerGuids : undefined,
+            owner_name_search:  f.owner_name_search,
+            tag_search:         f.tag_search,
+            days_unused_min:    f.days_unused_min,
+            days_unused_max:    f.days_unused_max,
+            views_min:          f.views_min,
+            views_max:          f.views_max,
+            last_accessed_before: f.last_accessed_before,
+            last_accessed_after:  f.last_accessed_after,
+            modified_before:      f.modified_before,
+            modified_after:       f.modified_after,
+            created_before:       f.created_before,
+            created_after:        f.created_after,
             sort_field: sf,
             sort_order: so,
             record_offset: params.startRow,
@@ -195,7 +422,7 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
       },
     };
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, debouncedCriteria, sortField, sortOrder, colFilters]);
+  }, [activeCluster?.id, activeOrg?.org_id, debouncedCriteria, sortField, sortOrder]);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
 
@@ -218,6 +445,9 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
   const handleSelectionChanged = useCallback(() => {
     const rows = gridRef.current?.api.getSelectedRows() ?? [];
     setSelectedGuids(new Set(rows.map((r) => r.ts_guid)));
+    const tagSet = new Set<string>();
+    for (const r of rows) for (const t of r.tags ?? []) tagSet.add(t);
+    setSelectedTags([...tagSet].sort());
   }, []);
 
   // Resolved tag name: custom input wins over dropdown selection
@@ -229,21 +459,23 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
   };
 
   // Actions
-  const handleTag = async (action: "tag" | "untag", guids: string[]) => {
+  const handleTag = async (action: "tag" | "untag", guids: string[], untagName?: string) => {
     if (!activeCluster?.id || activeOrg?.org_id == null || !guids.length) return;
+    const tagForAction = action === "tag" ? resolvedTagName : (untagName ?? "");
+    if (action === "untag" && !tagForAction) return;
     try {
       const { job_id } = await archiverApi.execute({
         cluster_id: activeCluster.id,
         org_id: activeOrg.org_id,
         object_ids: guids,
         action,
-        tag_name: action === "tag" ? resolvedTagName : undefined,
-        create_tag_if_missing: true,
+        tag_name: tagForAction,
+        create_tag_if_missing: action === "tag",
       });
       pollUntilDone(job_id, (job) => {
         const result = (job as any).result;
+        const succeeded = result?.succeeded ?? guids.length;
         if (action === "tag") {
-          const succeeded = result?.succeeded ?? guids.length;
           showToast(
             job.status === "COMPLETE"
               ? `Tagged ${succeeded} object${succeeded !== 1 ? "s" : ""} as "${resolvedTagName}"`
@@ -251,11 +483,10 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
             job.status === "COMPLETE",
           );
         } else {
-          const succeeded = result?.succeeded ?? guids.length;
           showToast(
             job.status === "COMPLETE"
-              ? `Removed tags from ${succeeded} object${succeeded !== 1 ? "s" : ""}`
-              : `Partially untagged: ${succeeded} succeeded`,
+              ? `Removed "${tagForAction}" from ${succeeded} object${succeeded !== 1 ? "s" : ""}`
+              : `Partially removed "${tagForAction}": ${succeeded} succeeded`,
             job.status === "COMPLETE",
           );
         }
@@ -323,16 +554,21 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
             const tags = p.value ?? [];
             if (!tags.length) return <span style={{ color: "#D8CFC8", fontFamily: "Geist, sans-serif" }}>—</span>;
             return (
-              <div style={{ display: "flex", gap: 3, alignItems: "center", height: "100%", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", height: "100%", flexWrap: "wrap" }}>
                 {tags.slice(0, 2).map((t: string) => (
                   <span key={t} style={{
-                    padding: "1px 6px", borderRadius: 8, fontSize: 10, fontWeight: 500,
-                    background: "#FEF3C7", color: "#92400E", fontFamily: "Geist, sans-serif",
+                    display: "inline-block", lineHeight: "18px",
+                    padding: "0 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
+                    background: "#F3F4F6", color: "#374151", fontFamily: "Geist, sans-serif",
                     whiteSpace: "nowrap",
                   }}>{t}</span>
                 ))}
                 {tags.length > 2 && (
-                  <span style={{ fontSize: 10, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+                  <span style={{
+                    display: "inline-block", lineHeight: "18px",
+                    padding: "0 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
+                    background: "#F3F4F6", color: "#374151", fontFamily: "Geist, sans-serif",
+                  }}>
                     +{tags.length - 2}
                   </span>
                 )}
@@ -388,39 +624,19 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
 
         <div style={{ width: 1, height: 18, background: "#E8E1D5", margin: "0 2px" }} />
 
-        {/* Last Accessed threshold */}
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>Last Accessed ≥</span>
-        <input
-          type="number" min={1} value={criteria.staleActivityDays}
-          onChange={(e) => setCriteria({ ...criteria, staleActivityDays: Math.max(1, Number(e.target.value)) })}
-          style={{ width: 56, height: 32, padding: "0 8px", borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4", fontSize: 13, fontFamily: "Geist, sans-serif", outline: "none" }}
+        {/* Stale criteria pill — collapses Last Accessed + AND/OR + Last Modified */}
+        <StaleCriteriaPill
+          staleActivityDays={criteria.staleActivityDays}
+          staleModifiedDays={criteria.staleModifiedDays}
+          staleOperator={criteria.staleOperator}
+          onApply={(v) => setCriteria({ ...criteria, ...v })}
+          onReset={() => setCriteria({
+            ...criteria,
+            staleActivityDays: DEFAULT_CRITERIA.staleActivityDays,
+            staleModifiedDays: DEFAULT_CRITERIA.staleModifiedDays,
+            staleOperator: DEFAULT_CRITERIA.staleOperator,
+          })}
         />
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>days</span>
-
-        <button
-          title={criteria.staleOperator === "AND"
-            ? "AND: object must satisfy both thresholds. Click to switch to OR."
-            : "OR: object satisfies either threshold. Click to switch to AND."}
-          onClick={() => setCriteria({ ...criteria, staleOperator: criteria.staleOperator === "AND" ? "OR" : "AND" })}
-          style={{
-            fontSize: 10, fontWeight: 700, fontFamily: "Geist, sans-serif",
-            padding: "2px 7px", borderRadius: 4, cursor: "pointer", letterSpacing: "0.06em",
-            border: "none",
-            background: criteria.staleOperator === "AND" ? "#6B7280" : "#7C3AED",
-            color: "#fff",
-          }}
-        >
-          {criteria.staleOperator}
-        </button>
-
-        {/* Last Modified threshold */}
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>Last Modified ≥</span>
-        <input
-          type="number" min={1} value={criteria.staleModifiedDays}
-          onChange={(e) => setCriteria({ ...criteria, staleModifiedDays: Math.max(1, Number(e.target.value)) })}
-          style={{ width: 56, height: 32, padding: "0 8px", borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4", fontSize: 13, fontFamily: "Geist, sans-serif", outline: "none" }}
-        />
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>days</span>
 
         <div style={{ width: 1, height: 18, background: "#E8E1D5", margin: "0 2px" }} />
 
@@ -616,6 +832,40 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
             Apply Tag
           </ActionButton>
 
+          {selectedTags.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 4 }}>
+              <span style={{ fontSize: 11, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+                Remove:
+              </span>
+              {selectedTags.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => handleTag("untag", [...selectedGuids], t)}
+                  title={`Remove "${t}" from selected`}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 4,
+                    height: 22, padding: "0 4px 0 10px",
+                    borderRadius: 20, fontSize: 11, fontWeight: 500,
+                    background: "#FEF2F2", color: "#991B1B", border: "1px solid #FECACA",
+                    fontFamily: "Geist, sans-serif", cursor: "pointer", whiteSpace: "nowrap",
+                    transition: "background 120ms ease, border-color 120ms ease",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "#FEE2E2";
+                    e.currentTarget.style.borderColor = "#FCA5A5";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "#FEF2F2";
+                    e.currentTarget.style.borderColor = "#FECACA";
+                  }}
+                >
+                  {t}
+                  <X size={11} strokeWidth={2.5} />
+                </button>
+              ))}
+            </div>
+          )}
+
           <div style={{ width: 1, height: 18, background: "#C4B5FD" }} />
 
           <ActionButton
@@ -674,7 +924,10 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
           onGridReady={handleGridReady}
           onGridSizeChanged={handleGridSizeChanged}
           onSortChanged={handleSortChanged}
-          onFilterChanged={() => setColFilters(gridRef.current?.api?.getFilterModel() ?? {})}
+          onFilterChanged={() => {
+            colFiltersRef.current = gridRef.current?.api?.getFilterModel() ?? {};
+            gridRef.current?.api?.purgeInfiniteCache();
+          }}
           onSelectionChanged={handleSelectionChanged}
           overlayNoRowsTemplate="No stale content found. Adjust the criteria or sync metadata first."
         />
@@ -687,7 +940,7 @@ function ArchiveTab({ syncVersion }: { syncVersion: number }) {
           clusterId={activeCluster.id}
           orgId={activeOrg.org_id}
           onClose={handleDryRunClose}
-          onViewHistory={() => {/* handled by close + tab switch in parent if needed */}}
+          onViewHistory={onViewHistory}
         />
       )}
     </div>
@@ -708,16 +961,17 @@ const HISTORY_COLUMNS = [
     minWidth: 180,
     sortable: true,
     filter: "agTextColumnFilter",
-    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true },
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
   },
   {
     field: "object_type",
     headerName: "Type",
     width: 120,
     sortable: true,
-    filter: "agSetColumnFilter",
-    filterParams: { values: ["LIVEBOARD", "ANSWER"] },
-    // Return JSX — HTML strings are rendered as text in AG Grid React
+    filter: "agTextColumnFilter",
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
+    filterValueGetter: (p: { data?: { object_type?: string } }) =>
+      TYPE_LABELS_HIST[p.data?.object_type ?? ""] ?? p.data?.object_type,
     cellRenderer: (p: { value: string }) => (
       <span style={{
         padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
@@ -779,7 +1033,8 @@ function HistoryTab() {
   const [total, setTotal] = useState<number | null>(null);
   const [sortField, setSortField] = useState("archived_at");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [colFilters, setColFilters] = useState<Record<string, any>>({});
+  // Held in a ref — see ArchiveTab for rationale (keeps filter popup open).
+  const colFiltersRef = useRef<Record<string, any>>({});
 
   const clusterId = activeCluster?.id ?? "";
 
@@ -796,14 +1051,26 @@ function HistoryTab() {
         download
         title={`Download TML for "${name}"`}
         onClick={(e) => e.stopPropagation()}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "#F9F7F2";
+          e.currentTarget.style.borderColor = "#D8CFC8";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "#FFFFFF";
+          e.currentTarget.style.borderColor = "#E8E1D5";
+        }}
         style={{
-          display: "inline-flex", alignItems: "center", gap: 4,
-          padding: "3px 8px", borderRadius: 4, fontSize: 11,
-          border: "1px solid #C4B5FD", background: "#EDE9FE", color: "#6D28D9",
-          textDecoration: "none",
+          display: "inline-flex", alignItems: "center", gap: 5,
+          padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 500,
+          lineHeight: "16px",
+          border: "1px solid #E8E1D5", background: "#FFFFFF", color: "#3F3A34",
+          textDecoration: "none", fontFamily: "Geist, sans-serif",
+          boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
+          transition: "background 120ms ease, border-color 120ms ease",
         }}
       >
-        <Download size={11} /> TML
+        <Download size={11} strokeWidth={2} />
+        <span>TML</span>
       </a>
     );
   }, [clusterId]);
@@ -819,22 +1086,20 @@ function HistoryTab() {
     const sf = sortField;
     const so = sortOrder;
 
-    // Use colFilters from state closure — avoids race with datasource reset
-    const colSearch = (colFilters["name"]        as any)?.filter?.trim() || undefined;
-    const colTypes  = (colFilters["object_type"] as any)?.values          as string[] | undefined;
-    const colOwner  = (colFilters["owner_name"]  as any)?.filter?.trim() || undefined;
-
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
+          const f = serializeFilterModel(colFiltersRef.current);
           const res = await archiverApi.allRecords({
             cluster_id: cid,
             org_id: oid,
             sort_field: sf,
             sort_order: so,
-            search:      colSearch || undefined,
-            object_type: colTypes?.length === 1 ? colTypes[0] : undefined,
-            owner_name:  colOwner || undefined,
+            search:            f.search,
+            types:             f.types,
+            owner_name_search: f.owner_name_search,
+            archived_before:   f.archived_before,
+            archived_after:    f.archived_after,
             record_offset: params.startRow,
             page_size: HISTORY_PAGE_SIZE,
           });
@@ -846,7 +1111,7 @@ function HistoryTab() {
       },
     };
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, sortField, sortOrder, colFilters]);
+  }, [activeCluster?.id, activeOrg?.org_id, sortField, sortOrder]);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid]);
 
@@ -911,7 +1176,10 @@ function HistoryTab() {
           onGridReady={handleGridReady}
           onGridSizeChanged={handleGridSizeChanged}
           onSortChanged={handleSortChanged}
-          onFilterChanged={() => setColFilters(gridRef.current?.api?.getFilterModel() ?? {})}
+          onFilterChanged={() => {
+            colFiltersRef.current = gridRef.current?.api?.getFilterModel() ?? {};
+            gridRef.current?.api?.purgeInfiniteCache();
+          }}
           overlayNoRowsTemplate="No deleted objects yet. Delete stale content from the Archive tab."
         />
       </div>

@@ -26,14 +26,15 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     flex: 3,
     minWidth: 200,
     filter: "agTextColumnFilter",
-    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true },
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
   },
   {
     field: "object_type",
     headerName: "Type",
     width: 130,
-    filter: "agSetColumnFilter",
-    filterParams: { values: ["LIVEBOARD", "ANSWER"] },
+    filter: "agTextColumnFilter",
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
+    filterValueGetter: (p) => TYPE_LABELS[p.data?.object_type as string] ?? p.data?.object_type,
     cellRenderer: (p: { value: string }) => TYPE_LABELS[p.value] ?? p.value,
   },
   {
@@ -42,7 +43,7 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     flex: 2,
     minWidth: 160,
     filter: "agTextColumnFilter",
-    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true },
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
   },
   {
     field: "tags",
@@ -50,7 +51,7 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     flex: 1,
     minWidth: 100,
     filter: "agTextColumnFilter",
-    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true },
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => (p.value as string[] | null)?.join(", ") ?? "",
     sortable: false,
   },
@@ -59,7 +60,7 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     headerName: "Last Accessed",
     width: 150,
     filter: "agDateColumnFilter",
-    filterParams: { suppressAndOrCondition: true },
+    filterParams: { suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => formatDate(p.value),
   },
   // ── Archiver-specific ─────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     headerName: "Days Unused",
     width: 150,
     filter: "agNumberColumnFilter",
-    filterParams: { filterOptions: ["greaterThan", "lessThan"], suppressAndOrCondition: true },
+    filterParams: { filterOptions: ["greaterThan", "lessThan"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => p.value != null ? p.value.toLocaleString() : "—",
   },
   {
@@ -76,7 +77,7 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     headerName: "Views",
     width: 100,
     filter: "agNumberColumnFilter",
-    filterParams: { filterOptions: ["greaterThan", "lessThan"], suppressAndOrCondition: true },
+    filterParams: { filterOptions: ["greaterThan", "lessThan"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => (p.value ?? 0).toLocaleString(),
   },
   {
@@ -84,7 +85,7 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     headerName: "Modified",
     width: 130,
     filter: "agDateColumnFilter",
-    filterParams: { suppressAndOrCondition: true },
+    filterParams: { suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => formatDate(p.value),
   },
   {
@@ -92,7 +93,10 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     headerName: "Created",
     width: 130,
     filter: "agDateColumnFilter",
-    filterParams: { suppressAndOrCondition: true },
+    filterParams: { suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => formatDate(p.value),
   },
 ];
+
+export { serializeFilterModel } from "@/lib/agGridFilters";
+export type { SerializedFilters } from "@/lib/agGridFilters";

@@ -92,6 +92,16 @@ def _has_tag(tag_names_json: str, tag: str) -> bool:
 _ARCHIVABLE_TYPES = ("LIVEBOARD", "ANSWER")
 
 
+def _parse_iso_date(s: str | None) -> datetime | None:
+    """Parse YYYY-MM-DD into a naive UTC datetime at start-of-day."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
 def _stale_conditions(
     cluster_id: str,
     org_id: int,
@@ -104,6 +114,18 @@ def _stale_conditions(
     filter_tags: list[str] | None = None,
     search: str | None = None,
     stale_operator: str = "AND",
+    owner_name_search: str | None = None,
+    tag_search: str | None = None,
+    days_unused_min: int | None = None,
+    days_unused_max: int | None = None,
+    views_min: int | None = None,
+    views_max: int | None = None,
+    last_accessed_before: str | None = None,
+    last_accessed_after: str | None = None,
+    modified_before: str | None = None,
+    modified_after: str | None = None,
+    created_before: str | None = None,
+    created_after: str | None = None,
 ) -> list[Any]:
     """
     Build the WHERE conditions shared by preview() and search().
@@ -141,6 +163,9 @@ def _stale_conditions(
         CachedMetadata.org_id == org_id,
         col(CachedMetadata.object_type).in_(allowed_types),
         stale_expr,
+        # Hide objects owned by the built-in "System User" — not actionable
+        # for admins (system-owned / internal content).
+        col(CachedMetadata.owner_name) != "System User",
     ]
 
     if owner_guid:
@@ -166,6 +191,47 @@ def _stale_conditions(
 
     if search:
         conditions.append(col(CachedMetadata.name).ilike(f"%{search}%"))
+
+    if owner_name_search:
+        conditions.append(col(CachedMetadata.owner_name).ilike(f"%{owner_name_search}%"))
+
+    if tag_search:
+        # Substring against the JSON tag array (e.g. '["Stale","Finance"]').
+        conditions.append(col(CachedMetadata.tag_names).ilike(f'%"%{tag_search}%"%'))
+
+    # days_unused is computed off last_accessed_at — invert min/max
+    # last_accessed_at <= now - days_unused_min  →  unused for AT LEAST that long
+    # last_accessed_at >= now - days_unused_max  →  unused for AT MOST that long
+    if days_unused_min is not None:
+        conditions.append(col(CachedMetadata.last_accessed_at) <= now - timedelta(days=days_unused_min))
+    if days_unused_max is not None:
+        conditions.append(col(CachedMetadata.last_accessed_at) >= now - timedelta(days=days_unused_max))
+
+    if views_min is not None:
+        conditions.append(col(CachedMetadata.view_count) >= views_min)
+    if views_max is not None:
+        conditions.append(col(CachedMetadata.view_count) <= views_max)
+
+    last_acc_before_dt = _parse_iso_date(last_accessed_before)
+    last_acc_after_dt = _parse_iso_date(last_accessed_after)
+    if last_acc_before_dt is not None:
+        conditions.append(col(CachedMetadata.last_accessed_at) <= last_acc_before_dt + timedelta(days=1))
+    if last_acc_after_dt is not None:
+        conditions.append(col(CachedMetadata.last_accessed_at) >= last_acc_after_dt)
+
+    modified_before_dt = _parse_iso_date(modified_before)
+    modified_after_dt = _parse_iso_date(modified_after)
+    if modified_before_dt is not None:
+        conditions.append(col(CachedMetadata.modified_at) <= modified_before_dt + timedelta(days=1))
+    if modified_after_dt is not None:
+        conditions.append(col(CachedMetadata.modified_at) >= modified_after_dt)
+
+    created_before_dt = _parse_iso_date(created_before)
+    created_after_dt = _parse_iso_date(created_after)
+    if created_before_dt is not None:
+        conditions.append(col(CachedMetadata.created_at) <= created_before_dt + timedelta(days=1))
+    if created_after_dt is not None:
+        conditions.append(col(CachedMetadata.created_at) >= created_after_dt)
 
     return conditions
 
@@ -248,6 +314,18 @@ class ArchiverService:
         stale_operator: str = "AND",
         owner_guid: str | None = None,
         exclude_owner_guids: list[str] | None = None,
+        owner_name_search: str | None = None,
+        tag_search: str | None = None,
+        days_unused_min: int | None = None,
+        days_unused_max: int | None = None,
+        views_min: int | None = None,
+        views_max: int | None = None,
+        last_accessed_before: str | None = None,
+        last_accessed_after: str | None = None,
+        modified_before: str | None = None,
+        modified_after: str | None = None,
+        created_before: str | None = None,
+        created_after: str | None = None,
         sort_field: str = "days_unused",
         sort_order: str = "desc",
         record_offset: int = 0,
@@ -264,6 +342,12 @@ class ArchiverService:
             stale_activity_days, stale_modified_days,
             types, exclude_tags, owner_guid, exclude_owner_guids,
             filter_tags=filter_tags, search=search, stale_operator=stale_operator,
+            owner_name_search=owner_name_search, tag_search=tag_search,
+            days_unused_min=days_unused_min, days_unused_max=days_unused_max,
+            views_min=views_min, views_max=views_max,
+            last_accessed_before=last_accessed_before, last_accessed_after=last_accessed_after,
+            modified_before=modified_before, modified_after=modified_after,
+            created_before=created_before, created_after=created_after,
         )
 
         # Sort mapping — days_unused proxied via last_accessed_at
@@ -1150,8 +1234,10 @@ def all_archive_records(
     sort_field: str = "archived_at",
     sort_order: str = "desc",
     search: str | None = None,
-    object_type: str | None = None,
-    owner_name: str | None = None,
+    types: list[str] | None = None,
+    owner_name_search: str | None = None,
+    archived_before: str | None = None,
+    archived_after: str | None = None,
     record_offset: int = 0,
     page_size: int = 200,
 ) -> tuple[list[dict], int]:
@@ -1177,10 +1263,17 @@ def all_archive_records(
     ]
     if search:
         conditions.append(col(ArchiveRecord.name).ilike(f"%{search}%"))
-    if object_type:
-        conditions.append(ArchiveRecord.object_type == object_type)
-    if owner_name:
-        conditions.append(col(ArchiveRecord.owner_name).ilike(f"%{owner_name}%"))
+    if types:
+        conditions.append(col(ArchiveRecord.object_type).in_(types))
+    if owner_name_search:
+        conditions.append(col(ArchiveRecord.owner_name).ilike(f"%{owner_name_search}%"))
+
+    archived_before_dt = _parse_iso_date(archived_before)
+    archived_after_dt = _parse_iso_date(archived_after)
+    if archived_before_dt is not None:
+        conditions.append(col(ArchiveRecord.archived_at) <= archived_before_dt + timedelta(days=1))
+    if archived_after_dt is not None:
+        conditions.append(col(ArchiveRecord.archived_at) >= archived_after_dt)
 
     with Session(_db.get_engine()) as session:
         total = session.exec(
