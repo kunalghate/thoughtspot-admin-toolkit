@@ -13,8 +13,8 @@ CLI, with a full web UI that any admin can use without needing Python or termina
 
 | Feature | Status | Description |
 |---|---|---|
-| **Metadata Explorer** | ✅ Available | Searchable, filterable grid of all content — owner, tags, last accessed, views. Server-side column filters. |
-| **Content Archiver** | ✅ Available | Find stale content, tag or delete with mandatory TML backup, dry-run impact check, restore from History |
+| **Metadata Explorer** | ✅ Available | Searchable, filterable grid of all content — owner, tags, last accessed, views. Every column funnel sends real server-side filters (name / owner / tag substring, date ranges, numeric ranges). |
+| **Content Archiver** | ✅ Available | Find stale content, tag or delete with mandatory TML backup, dry-run impact check, restore from History. Archive + History grids share the same full-column filter model. |
 | **User Management** | 🔜 Coming soon | Search, filter, bulk group updates, ownership transfer, deactivation |
 | **Bulk Sharing** | 🔜 Coming soon | Share content to users/groups in bulk with impact preview |
 | **Relationship Visualizer** | 🔜 Coming soon | Graph view of content dependencies and user-group membership |
@@ -73,11 +73,11 @@ On first launch, the app walks you through connecting to your ThoughtSpot instan
 The Content Archiver helps admins identify, tag, and safely delete stale Liveboards and Answers.
 
 **Workflow:**
-1. **Set criteria** — configure thresholds (e.g. unused ≥ 90 days AND unmodified ≥ 90 days), filter by type or tag
-2. **Review** — browse stale objects in a grid; use column filters to narrow down
-3. **Tag** — bulk-tag selected objects (e.g. `Stale`) with one click; choose from existing cluster tags or create new ones
-4. **Delete (safe)** — click **Delete selected** → dry-run checks permissions and dependencies → type `DELETE` to confirm → every object gets a TML backup before deletion
-5. **History** — browse all past archive sessions; download individual TML backups for any deleted object
+1. **Set criteria** — a single **Stale: 90d AND 90d** pill opens a compact editor where you pick both `Last Accessed ≥` and `Last Modified ≥` thresholds plus the AND/OR operator. Scope further with type chips (Liveboard / Answer) and per-tag include/exclude.
+2. **Review** — browse stale objects in a grid; every column funnel applies real backend filters (name · type · owner · tag substring, numeric ranges on Views / Days Unused, date ranges on Last Accessed / Modified / Created). System-owned objects are hidden automatically.
+3. **Tag** — bulk-tag selected rows (e.g. `Stale`) with one click; choose from existing cluster tags or create new ones. Tags currently on the selection appear as red pill chips in the toolbar — click one to remove that tag from every selected row.
+4. **Delete (safe)** — click **Delete selected** → dry-run checks permissions and dependencies → type `DELETE` to confirm → every object gets a TML backup before deletion.
+5. **History** — browse all past archive sessions; download individual TML backups for any deleted object. Same column-filter model as the Archive tab.
 
 The TML backup means every deletion is reversible — backups are stored locally at `~/.ts-admin/tml-exports/`.
 
