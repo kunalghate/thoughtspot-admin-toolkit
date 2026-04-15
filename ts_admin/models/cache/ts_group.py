@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+
 from sqlmodel import Field, SQLModel
 
 
@@ -27,7 +28,7 @@ class CachedGroup(SQLModel, table=True):
     name: str
     display_name: str = ""
     description: str = ""
-    privileges: str = "[]"                  # JSON list of privilege strings
+    privileges: str = "[]"  # JSON list of privilege strings
     created_at: datetime | None = None
     modified_at: datetime | None = None
     synced_at: datetime | None = None

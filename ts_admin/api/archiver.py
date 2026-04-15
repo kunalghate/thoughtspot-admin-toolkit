@@ -32,6 +32,7 @@ router = APIRouter(prefix="/archiver", tags=["Archiver"])
 
 # ── Shared item schema (used by results + dryrun objects) ─────────────────────
 
+
 class ArchiverResultItem(BaseModel):
     ts_guid: str
     name: str
@@ -48,6 +49,7 @@ class ArchiverResultItem(BaseModel):
 
 
 # ── Phase 2 schemas ───────────────────────────────────────────────────────────
+
 
 class ArchiverPreviewResponse(BaseModel):
     total: int
@@ -70,6 +72,7 @@ class ArchiverTagItem(BaseModel):
 
 # ── Phase 3 schemas ───────────────────────────────────────────────────────────
 
+
 class ExecuteRequest(BaseModel):
     cluster_id: str | None = None
     org_id: int = 0
@@ -86,6 +89,7 @@ class ExecuteResponse(BaseModel):
 
 
 # ── Phase 4 schemas ───────────────────────────────────────────────────────────
+
 
 class DryRunRequest(BaseModel):
     cluster_id: str | None = None
@@ -106,6 +110,7 @@ class DryRunObjectsResponse(BaseModel):
 
 
 # ── Phase 6 schemas ───────────────────────────────────────────────────────────
+
 
 class ArchiveSessionSummary(BaseModel):
     job_id: str
@@ -177,6 +182,7 @@ class ArchiveSessionResponse(BaseModel):
 
 # ── Phase 2 endpoints ──────────────────────────────────────────────────────────
 
+
 @router.get("/preview", response_model=ArchiverPreviewResponse)
 def archiver_preview(
     cluster_id: str | None = Query(default=None),
@@ -192,12 +198,18 @@ def archiver_preview(
     """Count stale objects matching criteria. Reads from SQLite — instant."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     result = ArchiverService.preview(
-        cluster_id=cluster_id, org_id=org_id,
-        stale_activity_days=stale_activity_days, stale_modified_days=stale_modified_days,
-        types=types, exclude_tags=exclude_tags, stale_operator=stale_operator,
-        owner_guid=owner_guid, exclude_owner_guids=exclude_owner_guids,
+        cluster_id=cluster_id,
+        org_id=org_id,
+        stale_activity_days=stale_activity_days,
+        stale_modified_days=stale_modified_days,
+        types=types,
+        exclude_tags=exclude_tags,
+        stale_operator=stale_operator,
+        owner_guid=owner_guid,
+        exclude_owner_guids=exclude_owner_guids,
     )
     return ArchiverPreviewResponse(**result)
 
@@ -235,25 +247,42 @@ def archiver_results(
     """Paginated stale objects for the AG Grid infinite row model."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     items, total = ArchiverService.search(
-        cluster_id=cluster_id, org_id=org_id,
-        stale_activity_days=stale_activity_days, stale_modified_days=stale_modified_days,
-        types=types, exclude_tags=exclude_tags, filter_tags=filter_tags,
-        search=search, stale_operator=stale_operator,
-        owner_guid=owner_guid, exclude_owner_guids=exclude_owner_guids,
-        owner_name_search=owner_name_search, tag_search=tag_search,
-        days_unused_min=days_unused_min, days_unused_max=days_unused_max,
-        views_min=views_min, views_max=views_max,
-        last_accessed_before=last_accessed_before, last_accessed_after=last_accessed_after,
-        modified_before=modified_before, modified_after=modified_after,
-        created_before=created_before, created_after=created_after,
-        sort_field=sort_field, sort_order=sort_order,
-        record_offset=record_offset, page_size=page_size,
+        cluster_id=cluster_id,
+        org_id=org_id,
+        stale_activity_days=stale_activity_days,
+        stale_modified_days=stale_modified_days,
+        types=types,
+        exclude_tags=exclude_tags,
+        filter_tags=filter_tags,
+        search=search,
+        stale_operator=stale_operator,
+        owner_guid=owner_guid,
+        exclude_owner_guids=exclude_owner_guids,
+        owner_name_search=owner_name_search,
+        tag_search=tag_search,
+        days_unused_min=days_unused_min,
+        days_unused_max=days_unused_max,
+        views_min=views_min,
+        views_max=views_max,
+        last_accessed_before=last_accessed_before,
+        last_accessed_after=last_accessed_after,
+        modified_before=modified_before,
+        modified_after=modified_after,
+        created_before=created_before,
+        created_after=created_after,
+        sort_field=sort_field,
+        sort_order=sort_order,
+        record_offset=record_offset,
+        page_size=page_size,
     )
     return ArchiverResultsResponse(
         items=[ArchiverResultItem(**i) for i in items],
-        total=total, record_offset=record_offset, page_size=page_size,
+        total=total,
+        record_offset=record_offset,
+        page_size=page_size,
     )
 
 
@@ -271,6 +300,7 @@ def archiver_tags(
     """
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     tags = ArchiverService.list_tags(
         cluster_id=cluster_id,
@@ -283,6 +313,7 @@ def archiver_tags(
 
 
 # ── Phase 3 endpoints ──────────────────────────────────────────────────────────
+
 
 @router.post("/execute", response_model=ExecuteResponse, status_code=202)
 async def archiver_execute(
@@ -331,6 +362,7 @@ async def archiver_execute(
 
 
 # ── Phase 4 endpoints ──────────────────────────────────────────────────────────
+
 
 @router.post("/dryrun", response_model=DryRunResponse, status_code=202)
 async def archiver_dryrun(
@@ -389,6 +421,7 @@ def dryrun_objects(
     """
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
 
     items, total = archiver_service.dryrun_objects(
@@ -406,6 +439,7 @@ def dryrun_objects(
 
 
 # ── Phase 6 endpoints ─────────────────────────────────────────────────────────
+
 
 @router.post("/restore", response_model=RestoreResponse, status_code=202)
 async def archiver_restore(
@@ -447,7 +481,6 @@ async def archiver_restore(
     return RestoreResponse(job_id=job_id, total=len(body.archive_record_ids))
 
 
-
 @router.get("/download/{archive_record_id}")
 def download_tml(
     archive_record_id: str,
@@ -457,9 +490,10 @@ def download_tml(
     Download the TML backup file for an archived object.
     Returns the raw YAML file as an attachment.
     """
-    from ts_admin.models.archive_record import ArchiveRecord
-    from ts_admin.database import get_session
     from pathlib import Path
+
+    from ts_admin.database import get_session
+    from ts_admin.models.archive_record import ArchiveRecord
 
     with get_session() as session:
         record = session.get(ArchiveRecord, archive_record_id)
@@ -499,6 +533,7 @@ def archiver_all_records(
     """All deleted objects across all sessions, paginated, sortable, and filterable."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     items, total = archiver_service.all_archive_records(
         cluster_id=cluster_id,
@@ -531,6 +566,7 @@ def archiver_history(
     """List all archive sessions (delete jobs) for this cluster, newest first."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     items, total = archiver_service.history(
         cluster_id=cluster_id,
@@ -556,6 +592,7 @@ def archiver_history_session(
     """Return individual ArchiveRecord rows for one archive session."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     items, total = archiver_service.history_session(
         job_id=job_id,

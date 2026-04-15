@@ -9,14 +9,14 @@ return org 0 content for all orgs.
 
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 import respx
 
 from ts_admin.ts_client.auth import BasicAuth, BearerTokenAuth, TrustedAuth
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _token_response(token: str = "test-token") -> dict:
     return {"token": token}
@@ -24,8 +24,8 @@ def _token_response(token: str = "test-token") -> dict:
 
 # ── BasicAuth ─────────────────────────────────────────────────────────────────
 
-class TestBasicAuth:
 
+class TestBasicAuth:
     @respx.mock
     @pytest.mark.anyio
     async def test_login_without_org_id(self):
@@ -39,6 +39,7 @@ class TestBasicAuth:
 
         body = route.calls[0].request.content
         import json
+
         parsed = json.loads(body)
         assert "org_id" not in parsed
         assert parsed["username"] == "admin"
@@ -57,6 +58,7 @@ class TestBasicAuth:
 
         body = route.calls[0].request.content
         import json
+
         parsed = json.loads(body)
         assert parsed["org_id"] == 928000883
 
@@ -73,6 +75,7 @@ class TestBasicAuth:
 
         body = route.calls[0].request.content
         import json
+
         parsed = json.loads(body)
         assert parsed["org_id"] == 0
 
@@ -110,10 +113,9 @@ class TestBasicAuth:
     @pytest.mark.anyio
     async def test_raises_on_401(self):
         """401 from TS → TSAuthenticationError."""
-        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(
-            return_value=httpx.Response(401)
-        )
+        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(return_value=httpx.Response(401))
         from ts_admin.ts_client.exceptions import TSAuthenticationError
+
         auth = BasicAuth(username="admin", password="wrong")
         async with httpx.AsyncClient(base_url="https://ts.example.com") as http:
             with pytest.raises(TSAuthenticationError):
@@ -122,8 +124,8 @@ class TestBasicAuth:
 
 # ── TrustedAuth ───────────────────────────────────────────────────────────────
 
-class TestTrustedAuth:
 
+class TestTrustedAuth:
     @respx.mock
     @pytest.mark.anyio
     async def test_login_without_org_id(self):
@@ -137,6 +139,7 @@ class TestTrustedAuth:
 
         body = route.calls[0].request.content
         import json
+
         parsed = json.loads(body)
         assert "org_id" not in parsed
         assert parsed["secret_key"] == "key123"
@@ -154,14 +157,15 @@ class TestTrustedAuth:
 
         body = route.calls[0].request.content
         import json
+
         parsed = json.loads(body)
         assert parsed["org_id"] == 42
 
 
 # ── BearerTokenAuth ───────────────────────────────────────────────────────────
 
-class TestBearerTokenAuth:
 
+class TestBearerTokenAuth:
     @pytest.mark.anyio
     async def test_returns_bearer_header(self):
         auth = BearerTokenAuth(token="my-token")

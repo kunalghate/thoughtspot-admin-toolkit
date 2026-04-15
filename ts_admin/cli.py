@@ -47,6 +47,7 @@ def serve(port: int, dev: bool, no_browser: bool) -> None:
 
 # ── Static mode (default) ──────────────────────────────────────────────────────
 
+
 def _serve_static(port: int, no_browser: bool) -> None:
     """
     Run FastAPI on a single port. FastAPI serves both the API and
@@ -58,6 +59,7 @@ def _serve_static(port: int, no_browser: bool) -> None:
 
     if not no_browser:
         import threading
+
         threading.Timer(1.2, lambda: webbrowser.open(f"http://localhost:{port}")).start()
 
     app = create_app(port=port)
@@ -66,6 +68,7 @@ def _serve_static(port: int, no_browser: bool) -> None:
 
 # ── Dev mode ───────────────────────────────────────────────────────────────────
 
+
 def _serve_dev(api_port: int, ui_port: int, no_browser: bool) -> None:
     """
     Start FastAPI (with reload) and Next.js dev server as subprocesses.
@@ -73,8 +76,7 @@ def _serve_dev(api_port: int, ui_port: int, no_browser: bool) -> None:
     """
     if not FRONTEND_DIR.exists():
         click.echo(
-            "✗ frontend/ directory not found.\n"
-            "  Clone the full repository to use --dev mode.",
+            "✗ frontend/ directory not found.\n  Clone the full repository to use --dev mode.",
             err=True,
         )
         sys.exit(1)
@@ -87,14 +89,21 @@ def _serve_dev(api_port: int, ui_port: int, no_browser: bool) -> None:
 
     try:
         # FastAPI with hot reload
-        api = subprocess.Popen([
-            sys.executable, "-m", "uvicorn",
-            "ts_admin.main:app",
-            "--host", "127.0.0.1",
-            "--port", str(api_port),
-            "--reload",
-            "--log-level", "warning",
-        ])
+        api = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "ts_admin.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(api_port),
+                "--reload",
+                "--log-level",
+                "warning",
+            ]
+        )
         processes.append(api)
         click.echo(f"  ✓ API running on http://localhost:{api_port}")
 
@@ -108,7 +117,8 @@ def _serve_dev(api_port: int, ui_port: int, no_browser: bool) -> None:
         click.echo(f"\n  → Open http://localhost:{ui_port}\n")
 
         if not no_browser:
-            import time, threading
+            import threading
+
             threading.Timer(3.0, lambda: webbrowser.open(f"http://localhost:{ui_port}")).start()
 
         # Forward Ctrl+C to both processes
@@ -134,6 +144,7 @@ def _serve_dev(api_port: int, ui_port: int, no_browser: bool) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def _check_node() -> None:
     try:
         result = subprocess.run(["node", "--version"], capture_output=True, text=True)
@@ -150,5 +161,6 @@ def _check_node() -> None:
 
 def _print_banner(port: int, dev: bool) -> None:
     from ts_admin import __version__
+
     mode = "dev mode" if dev else "static mode"
     click.echo(f"\n  ThoughtSpot Admin Toolkit v{__version__}  ({mode})\n")

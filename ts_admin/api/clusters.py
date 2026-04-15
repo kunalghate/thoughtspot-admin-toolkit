@@ -22,18 +22,20 @@ router = APIRouter(prefix="/clusters", tags=["clusters"])
 
 # ── Request / Response models ──────────────────────────────────────────────────
 
+
 class ClusterIn(BaseModel):
     id: str
     name: str
     url: str
     username: str
     auth_type: AuthType = AuthType.BASIC
-    credential: str                     # password | secret_key | bearer token
+    credential: str  # password | secret_key | bearer token
 
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: str) -> str:
         from ts_admin.services.cluster_service import validate_cluster_url
+
         return validate_cluster_url(v)
 
 
@@ -53,6 +55,7 @@ class TestResult(BaseModel):
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=list[ClusterOut])
 async def list_clusters() -> list[ClusterOut]:
@@ -119,13 +122,14 @@ class ClusterUpdate(BaseModel):
     url: str
     username: str
     auth_type: AuthType = AuthType.BASIC
-    credential: str | None = None   # if None, keep existing keychain entry
+    credential: str | None = None  # if None, keep existing keychain entry
 
 
 @router.put("/{cluster_id}", response_model=ClusterOut)
 async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
     """Update a cluster's config and optionally rotate its credential."""
-    from ts_admin.config import load_config, update_cluster as cfg_update
+    from ts_admin.config import load_config
+    from ts_admin.config import update_cluster as cfg_update
     from ts_admin.ts_client.exceptions import ConfigInvalidError, TSAdminError
 
     try:
@@ -135,7 +139,7 @@ async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
             url=body.url,
             username=body.username,
             auth_type=body.auth_type,
-            new_secret=body.credential,   # None = keep existing
+            new_secret=body.credential,  # None = keep existing
         )
         config = load_config()
         return ClusterOut(
@@ -156,15 +160,17 @@ async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
 async def remove_cluster(cluster_id: str) -> None:
     """Remove a cluster and delete its keychain entry."""
     from ts_admin.config import delete_cluster
+
     delete_cluster(cluster_id)
 
 
 @router.post("/{cluster_id}/test", response_model=TestResult)
 async def test_cluster(cluster_id: str) -> TestResult:
     """Test the connection to a specific cluster."""
+    import httpx
+
     from ts_admin.config import load_config
     from ts_admin.ts_client import ThoughtSpotClient
-    import httpx
     from ts_admin.ts_client.exceptions import ConfigNotFoundError, TSAdminError
 
     try:
@@ -216,20 +222,24 @@ async def list_cluster_orgs(cluster_id: str) -> list[OrgOut]:
             orgs = await client.search_orgs()
 
         # Replace cached orgs for this cluster so deletions in TS are reflected
+        from sqlmodel import delete as sql_delete
+
         from ts_admin.database import get_session
         from ts_admin.models.cache.ts_org import CachedOrg
-        from sqlmodel import delete as sql_delete
+
         with get_session() as session:
             session.exec(sql_delete(CachedOrg).where(CachedOrg.cluster_id == cluster_id))
             for o in orgs:
-                session.add(CachedOrg(
-                    cluster_id=cluster_id,
-                    ts_org_id=o.id,
-                    name=o.name,
-                    description=o.description or "",
-                    status=o.status.value if hasattr(o.status, "value") else str(o.status),
-                    is_primary=o.is_primary,
-                ))
+                session.add(
+                    CachedOrg(
+                        cluster_id=cluster_id,
+                        ts_org_id=o.id,
+                        name=o.name,
+                        description=o.description or "",
+                        status=o.status.value if hasattr(o.status, "value") else str(o.status),
+                        is_primary=o.is_primary,
+                    )
+                )
             session.commit()
 
         return [
@@ -251,14 +261,13 @@ async def list_cluster_orgs(cluster_id: str) -> list[OrgOut]:
 @router.get("/{cluster_id}/orgs/cached", response_model=list[OrgOut])
 async def list_cluster_orgs_cached(cluster_id: str) -> list[OrgOut]:
     """Return orgs from the local SQLite cache. Used as fallback when cluster is offline."""
-    from ts_admin.database import get_session
-    from ts_admin.models.cache.ts_org import CachedOrg
     from sqlmodel import select
 
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_org import CachedOrg
+
     with get_session() as session:
-        rows = session.exec(
-            select(CachedOrg).where(CachedOrg.cluster_id == cluster_id)
-        ).all()
+        rows = session.exec(select(CachedOrg).where(CachedOrg.cluster_id == cluster_id)).all()
 
     return [
         OrgOut(

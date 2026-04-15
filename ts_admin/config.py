@@ -36,19 +36,21 @@ from ts_admin.ts_client.models import AuthType
 
 logger = logging.getLogger(__name__)
 
-CONFIG_DIR  = Path.home() / ".ts-admin"
+CONFIG_DIR = Path.home() / ".ts-admin"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 KEYRING_SERVICE = "ts-admin-toolkit"
 
 
 # ── Data classes ───────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ClusterConfig:
     """Configuration for a single ThoughtSpot cluster connection."""
-    id: str                        # slug key, e.g. "production"
-    name: str                      # display name, e.g. "Production"
-    url: str                       # https://company.thoughtspot.cloud
+
+    id: str  # slug key, e.g. "production"
+    name: str  # display name, e.g. "Production"
+    url: str  # https://company.thoughtspot.cloud
     username: str
     auth_type: AuthType = AuthType.BASIC
 
@@ -79,27 +81,25 @@ class ClusterConfig:
 @dataclass
 class AppConfig:
     """Full application configuration."""
+
     clusters: dict[str, ClusterConfig] = field(default_factory=dict)
     active_cluster_id: str | None = None
 
     @property
     def active_cluster(self) -> ClusterConfig:
         if not self.active_cluster_id:
-            raise ConfigNotFoundError(
-                "No active cluster set. Complete setup at http://localhost:8080/setup"
-            )
+            raise ConfigNotFoundError("No active cluster set. Complete setup at http://localhost:8080/setup")
         try:
             return self.clusters[self.active_cluster_id]
         except KeyError:
-            raise ConfigNotFoundError(
-                f"Active cluster {self.active_cluster_id!r} not found in config"
-            )
+            raise ConfigNotFoundError(f"Active cluster {self.active_cluster_id!r} not found in config")
 
     def has_clusters(self) -> bool:
         return bool(self.clusters)
 
 
 # ── Loading ────────────────────────────────────────────────────────────────────
+
 
 def load_config() -> AppConfig:
     """
@@ -114,10 +114,7 @@ def load_config() -> AppConfig:
         return _load_from_env()
 
     if not CONFIG_FILE.exists():
-        raise ConfigNotFoundError(
-            f"No config found at {CONFIG_FILE}. "
-            "Open the app and complete the setup screen."
-        )
+        raise ConfigNotFoundError(f"No config found at {CONFIG_FILE}. Open the app and complete the setup screen.")
 
     return _load_from_file()
 
@@ -150,9 +147,11 @@ def save_cluster(cluster: ClusterConfig, *, secret: str) -> None:
     _save_secret(cluster.id, _secret_field_for(cluster.auth_type), secret)
 
     # Mirror non-sensitive fields to SQLite so FK integrity holds for cache tables
+    from sqlmodel import select
+
     from ts_admin.database import get_session
     from ts_admin.models.cluster import Cluster as ClusterRow
-    from sqlmodel import select
+
     with get_session() as session:
         existing = session.exec(select(ClusterRow).where(ClusterRow.id == cluster.id)).first()
         if existing:
@@ -162,13 +161,15 @@ def save_cluster(cluster: ClusterConfig, *, secret: str) -> None:
             existing.auth_type = cluster.auth_type.value
             session.add(existing)
         else:
-            session.add(ClusterRow(
-                id=cluster.id,
-                name=cluster.name,
-                url=cluster.url,
-                username=cluster.username,
-                auth_type=cluster.auth_type.value,
-            ))
+            session.add(
+                ClusterRow(
+                    id=cluster.id,
+                    name=cluster.name,
+                    url=cluster.url,
+                    username=cluster.username,
+                    auth_type=cluster.auth_type.value,
+                )
+            )
         session.commit()
 
     logger.info("Saved cluster config: %s", cluster.id)
@@ -180,9 +181,9 @@ def update_cluster(
     name: str,
     url: str,
     username: str,
-    auth_type: "AuthType",
+    auth_type: AuthType,
     new_secret: str | None,
-) -> "ClusterConfig":
+) -> ClusterConfig:
     """
     Update an existing cluster's config. If new_secret is provided, rotate the
     keychain credential (deleting the old one if auth_type changed).
@@ -199,12 +200,14 @@ def update_cluster(
 
     # Update TOML
     raw = _read_toml(CONFIG_FILE)
-    raw["clusters"][cluster_id].update({
-        "name": name,
-        "url": url,
-        "username": username,
-        "auth_type": auth_type.value,
-    })
+    raw["clusters"][cluster_id].update(
+        {
+            "name": name,
+            "url": url,
+            "username": username,
+            "auth_type": auth_type.value,
+        }
+    )
     _write_toml(CONFIG_FILE, raw)
 
     # Rotate keychain if credential or auth_type changed
@@ -215,9 +218,11 @@ def update_cluster(
         _save_secret(cluster_id, _secret_field_for(auth_type), new_secret)
 
     # Sync to SQLite
+    from sqlmodel import select
+
     from ts_admin.database import get_session
     from ts_admin.models.cluster import Cluster as ClusterRow
-    from sqlmodel import select
+
     with get_session() as session:
         row = session.exec(select(ClusterRow).where(ClusterRow.id == cluster_id)).first()
         if row:
@@ -249,9 +254,11 @@ def delete_cluster(cluster_id: str) -> None:
     _delete_secret(cluster_id)
 
     # Remove from SQLite
+    from sqlmodel import select
+
     from ts_admin.database import get_session
     from ts_admin.models.cluster import Cluster as ClusterRow
-    from sqlmodel import select
+
     with get_session() as session:
         row = session.exec(select(ClusterRow).where(ClusterRow.id == cluster_id)).first()
         if row:
@@ -272,6 +279,7 @@ def set_active_cluster(cluster_id: str) -> None:
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
 
+
 def _load_from_file() -> AppConfig:
     try:
         raw = _read_toml(CONFIG_FILE)
@@ -289,9 +297,7 @@ def _load_from_file() -> AppConfig:
                 auth_type=AuthType(cdata.get("auth_type", "basic")),
             )
         except (KeyError, ValueError) as exc:
-            raise ConfigInvalidError(
-                f"Invalid config for cluster {cid!r}: {exc}"
-            ) from exc
+            raise ConfigInvalidError(f"Invalid config for cluster {cid!r}: {exc}") from exc
 
     return AppConfig(
         clusters=clusters,
@@ -305,7 +311,7 @@ def _env_cluster_configured() -> bool:
 
 def _load_from_env() -> AppConfig:
     """Load a single cluster config from environment variables."""
-    url      = os.environ["TS_ADMIN_URL"]
+    url = os.environ["TS_ADMIN_URL"]
     username = os.environ.get("TS_ADMIN_USERNAME", "")
     auth_type = AuthType(os.environ.get("TS_ADMIN_AUTH_TYPE", "basic"))
 
@@ -321,9 +327,9 @@ def _load_from_env() -> AppConfig:
 
 def _secret_field_for(auth_type: AuthType) -> str:
     return {
-        AuthType.BASIC:   "password",
+        AuthType.BASIC: "password",
         AuthType.TRUSTED: "secret_key",
-        AuthType.BEARER:  "token",
+        AuthType.BEARER: "token",
     }[auth_type]
 
 
@@ -331,27 +337,24 @@ def _load_secret(cluster_id: str, field: str) -> str:
     """Load a secret from keychain, falling back to env var."""
     # Env var takes precedence (useful for CI / testing)
     env_map = {
-        "password":   "TS_ADMIN_PASSWORD",
+        "password": "TS_ADMIN_PASSWORD",
         "secret_key": "TS_ADMIN_SECRET_KEY",
-        "token":      "TS_ADMIN_TOKEN",
+        "token": "TS_ADMIN_TOKEN",
     }
     if env_val := os.environ.get(env_map.get(field, "")):
         return env_val
 
     try:
         import keyring
+
         secret = keyring.get_password(KEYRING_SERVICE, f"{cluster_id}:{field}")
         if secret is None:
             raise KeyringError(
-                f"No {field} found for cluster {cluster_id!r}. "
-                "Re-enter credentials in Settings → Connections."
+                f"No {field} found for cluster {cluster_id!r}. Re-enter credentials in Settings → Connections."
             )
         return secret
     except ImportError:
-        raise KeyringError(
-            "keyring package is not available. "
-            "Set credentials via environment variables instead."
-        )
+        raise KeyringError("keyring package is not available. Set credentials via environment variables instead.")
     except Exception as exc:
         raise KeyringError(f"Failed to read keychain: {exc}") from exc
 
@@ -359,6 +362,7 @@ def _load_secret(cluster_id: str, field: str) -> str:
 def _save_secret(cluster_id: str, field: str, value: str) -> None:
     try:
         import keyring
+
         keyring.set_password(KEYRING_SERVICE, f"{cluster_id}:{field}", value)
     except Exception as exc:
         raise KeyringError(f"Failed to save to keychain: {exc}") from exc
@@ -367,6 +371,7 @@ def _save_secret(cluster_id: str, field: str, value: str) -> None:
 def _delete_secret(cluster_id: str) -> None:
     try:
         import keyring
+
         for f in ("password", "secret_key", "token"):
             try:
                 keyring.delete_password(KEYRING_SERVICE, f"{cluster_id}:{f}")
@@ -379,10 +384,12 @@ def _delete_secret(cluster_id: str) -> None:
 def _read_toml(path: Path) -> dict[str, Any]:
     if sys.version_info >= (3, 11):
         import tomllib
+
         with open(path, "rb") as f:
             return tomllib.load(f)
     else:
         import tomli
+
         with open(path, "rb") as f:
             return tomli.load(f)
 
@@ -391,6 +398,7 @@ def _write_toml(path: Path, data: dict[str, Any]) -> None:
     # Use tomli_w if available, otherwise format manually for simple structures
     try:
         import tomli_w
+
         with open(path, "wb") as f:
             tomli_w.dump(data, f)
     except ImportError:
@@ -399,7 +407,7 @@ def _write_toml(path: Path, data: dict[str, Any]) -> None:
         if "active_cluster" in data:
             lines.append(f'active_cluster = "{data["active_cluster"]}"\n')
         for cid, cdata in data.get("clusters", {}).items():
-            lines.append(f'\n[clusters.{cid}]')
+            lines.append(f"\n[clusters.{cid}]")
             for k, v in cdata.items():
                 lines.append(f'{k} = "{v}"')
         with open(path, "w") as f:

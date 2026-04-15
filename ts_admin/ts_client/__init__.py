@@ -1,5 +1,5 @@
-from ts_admin.ts_client.client import ThoughtSpotClient
 from ts_admin.ts_client.auth import BasicAuth, BearerTokenAuth, TrustedAuth
+from ts_admin.ts_client.client import ThoughtSpotClient
 from ts_admin.ts_client.exceptions import (
     TSAdminError,
     TSAuthenticationError,

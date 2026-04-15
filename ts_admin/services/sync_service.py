@@ -24,11 +24,11 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
     Called as a FastAPI BackgroundTask.
     """
     handlers = {
-        "users":    _sync_users,
-        "groups":   _sync_groups,
+        "users": _sync_users,
+        "groups": _sync_groups,
         "metadata": _sync_metadata,
-        "tags":     _sync_tags,
-        "orgs":     _sync_orgs,
+        "tags": _sync_tags,
+        "orgs": _sync_orgs,
     }
 
     handler = handlers.get(entity_type)
@@ -46,11 +46,13 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
 
 # ── Per-entity sync handlers ───────────────────────────────────────────────────
 
+
 async def _sync_users(*, org_id: int, job_id: str) -> None:
-    from ts_admin.config import load_config
-    from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
     from sqlmodel import select
+
+    from ts_admin.config import load_config
+    from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
+    from ts_admin.ts_client import ThoughtSpotClient
 
     config = load_config()
     cluster = config.active_cluster
@@ -80,17 +82,19 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
                         existing.synced_at = datetime.now(timezone.utc)
                         session.add(existing)
                     else:
-                        session.add(CachedUser(
-                            cluster_id=cluster_id,
-                            ts_guid=user.id,
-                            username=user.name,
-                            display_name=user.display_name,
-                            email=user.email,
-                            status=user.status.value,
-                            created_at=user.created,
-                            modified_at=user.modified,
-                            synced_at=datetime.now(timezone.utc),
-                        ))
+                        session.add(
+                            CachedUser(
+                                cluster_id=cluster_id,
+                                ts_guid=user.id,
+                                username=user.name,
+                                display_name=user.display_name,
+                                email=user.email,
+                                status=user.status.value,
+                                created_at=user.created,
+                                modified_at=user.modified,
+                                synced_at=datetime.now(timezone.utc),
+                            )
+                        )
 
                     # Upsert org membership
                     membership = session.exec(
@@ -101,12 +105,14 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
                         )
                     ).first()
                     if not membership:
-                        session.add(UserOrgMembership(
-                            cluster_id=cluster_id,
-                            ts_guid=user.id,
-                            org_id=org_id,
-                            synced_at=datetime.now(timezone.utc),
-                        ))
+                        session.add(
+                            UserOrgMembership(
+                                cluster_id=cluster_id,
+                                ts_guid=user.id,
+                                org_id=org_id,
+                                synced_at=datetime.now(timezone.utc),
+                            )
+                        )
 
                     session.commit()
                     count += 1
@@ -118,11 +124,13 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
 
 
 async def _sync_groups(*, org_id: int, job_id: str) -> None:
-    from ts_admin.config import load_config
-    from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.models.cache.ts_group import CachedGroup
-    from sqlmodel import select
     import json
+
+    from sqlmodel import select
+
+    from ts_admin.config import load_config
+    from ts_admin.models.cache.ts_group import CachedGroup
+    from ts_admin.ts_client import ThoughtSpotClient
 
     config = load_config()
     cluster = config.active_cluster
@@ -152,18 +160,20 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
                         existing.synced_at = datetime.now(timezone.utc)
                         session.add(existing)
                     else:
-                        session.add(CachedGroup(
-                            cluster_id=cluster_id,
-                            org_id=org_id,
-                            ts_guid=group.id,
-                            name=group.name,
-                            display_name=group.display_name,
-                            description=group.description,
-                            privileges=json.dumps(group.privileges),
-                            created_at=group.created,
-                            modified_at=group.modified,
-                            synced_at=datetime.now(timezone.utc),
-                        ))
+                        session.add(
+                            CachedGroup(
+                                cluster_id=cluster_id,
+                                org_id=org_id,
+                                ts_guid=group.id,
+                                name=group.name,
+                                display_name=group.display_name,
+                                description=group.description,
+                                privileges=json.dumps(group.privileges),
+                                created_at=group.created,
+                                modified_at=group.modified,
+                                synced_at=datetime.now(timezone.utc),
+                            )
+                        )
 
                     session.commit()
                     count += 1
@@ -175,10 +185,11 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
 
 
 async def _sync_metadata(*, org_id: int, job_id: str) -> None:
-    from ts_admin.config import load_config
-    from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.models.cache.ts_metadata import CachedMetadata
     import json
+
+    from ts_admin.config import load_config
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.ts_client import ThoughtSpotClient
 
     config = load_config()
     cluster = config.active_cluster
@@ -191,6 +202,7 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     # Delete all existing rows for this org before re-syncing so stale objects
     # (deleted in TS since last sync) don't linger in the cache.
     from sqlmodel import delete as sql_delete
+
     with get_session() as session:
         session.exec(
             sql_delete(CachedMetadata).where(
@@ -205,21 +217,23 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
             with get_session() as session:
                 for obj in page:
                     tag_names = json.dumps([t.name for t in obj.tags])
-                    session.add(CachedMetadata(
-                        cluster_id=cluster_id,
-                        org_id=org_id,
-                        ts_guid=obj.id,
-                        name=obj.name,
-                        object_type=obj.type.value,
-                        owner_guid=obj.owner_id,
-                        owner_name=obj.author_name,
-                        tag_names=tag_names,
-                        created_at=obj.created,
-                        modified_at=obj.modified,
-                        last_accessed_at=obj.last_accessed,
-                        view_count=obj.view_count,
-                        synced_at=datetime.now(timezone.utc),
-                    ))
+                    session.add(
+                        CachedMetadata(
+                            cluster_id=cluster_id,
+                            org_id=org_id,
+                            ts_guid=obj.id,
+                            name=obj.name,
+                            object_type=obj.type.value,
+                            owner_guid=obj.owner_id,
+                            owner_name=obj.author_name,
+                            tag_names=tag_names,
+                            created_at=obj.created,
+                            modified_at=obj.modified,
+                            last_accessed_at=obj.last_accessed,
+                            view_count=obj.view_count,
+                            synced_at=datetime.now(timezone.utc),
+                        )
+                    )
                     count += 1
                 session.commit()
 
@@ -230,10 +244,11 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
 
 
 async def _sync_tags(*, org_id: int, job_id: str) -> None:
-    from ts_admin.config import load_config
-    from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.models.cache.ts_tag import CachedTag
     from sqlmodel import select
+
+    from ts_admin.config import load_config
+    from ts_admin.models.cache.ts_tag import CachedTag
+    from ts_admin.ts_client import ThoughtSpotClient
 
     config = load_config()
     cluster = config.active_cluster
@@ -260,13 +275,15 @@ async def _sync_tags(*, org_id: int, job_id: str) -> None:
                 existing.color = tag.color
                 session.add(existing)
             else:
-                session.add(CachedTag(
-                    cluster_id=cluster_id,
-                    org_id=org_id,
-                    ts_guid=tag.id,
-                    name=tag.name,
-                    color=tag.color,
-                ))
+                session.add(
+                    CachedTag(
+                        cluster_id=cluster_id,
+                        org_id=org_id,
+                        ts_guid=tag.id,
+                        name=tag.name,
+                        color=tag.color,
+                    )
+                )
         session.commit()
 
     count = len(tags)
@@ -276,10 +293,11 @@ async def _sync_tags(*, org_id: int, job_id: str) -> None:
 
 
 async def _sync_orgs(*, org_id: int, job_id: str) -> None:
-    from ts_admin.config import load_config
-    from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.models.cache.ts_org import CachedOrg
     from sqlmodel import select
+
+    from ts_admin.config import load_config
+    from ts_admin.models.cache.ts_org import CachedOrg
+    from ts_admin.ts_client import ThoughtSpotClient
 
     config = load_config()
     cluster = config.active_cluster
@@ -307,14 +325,16 @@ async def _sync_orgs(*, org_id: int, job_id: str) -> None:
                 existing.is_primary = org.is_primary
                 session.add(existing)
             else:
-                session.add(CachedOrg(
-                    cluster_id=cluster_id,
-                    ts_org_id=org.id,
-                    name=org.name,
-                    description=org.description,
-                    status=org.status.value,
-                    is_primary=org.is_primary,
-                ))
+                session.add(
+                    CachedOrg(
+                        cluster_id=cluster_id,
+                        ts_org_id=org.id,
+                        name=org.name,
+                        description=org.description,
+                        status=org.status.value,
+                        is_primary=org.is_primary,
+                    )
+                )
         session.commit()
 
     count = len(orgs)
@@ -325,6 +345,7 @@ async def _sync_orgs(*, org_id: int, job_id: str) -> None:
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
+
 def _write_sync_log(
     entity_type: str,
     org_id: int,
@@ -334,8 +355,9 @@ def _write_sync_log(
     duration_ms: int = 0,
     error: str | None = None,
 ) -> None:
-    from ts_admin.config import load_config
     from sqlmodel import select
+
+    from ts_admin.config import load_config
 
     config = load_config()
     cluster_id = config.active_cluster.id
@@ -357,13 +379,15 @@ def _write_sync_log(
             existing.error = error
             session.add(existing)
         else:
-            session.add(SyncLog(
-                cluster_id=cluster_id,
-                org_id=org_id,
-                entity_type=entity_type,
-                record_count=record_count,
-                duration_ms=duration_ms,
-                status=status,
-                error=error,
-            ))
+            session.add(
+                SyncLog(
+                    cluster_id=cluster_id,
+                    org_id=org_id,
+                    entity_type=entity_type,
+                    record_count=record_count,
+                    duration_ms=duration_ms,
+                    status=status,
+                    error=error,
+                )
+            )
         session.commit()

@@ -48,17 +48,18 @@ def _recover_stuck_jobs() -> None:
     conservatively remove those CachedMetadata rows (assume the delete went
     through — they can be restored from ArchiveRecord if not).
     """
-    from ts_admin.database import get_session
-    from ts_admin.models.job import Job
-    from ts_admin.models.archive_record import ArchiveRecord
-    from ts_admin.models.cache.ts_metadata import CachedMetadata
-    from sqlmodel import select, col, delete as sql_delete
     from datetime import datetime, timezone
 
+    from sqlmodel import col, select
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.database import get_session
+    from ts_admin.models.archive_record import ArchiveRecord
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.models.job import Job
+
     with get_session() as session:
-        stuck = session.exec(
-            select(Job).where(col(Job.status).in_(["RUNNING", "QUEUED"]))
-        ).all()
+        stuck = session.exec(select(Job).where(col(Job.status).in_(["RUNNING", "QUEUED"]))).all()
 
         if not stuck:
             return
@@ -76,11 +77,7 @@ def _recover_stuck_jobs() -> None:
                         )
                     ).all()
                     if exported_guids:
-                        session.exec(
-                            sql_delete(CachedMetadata).where(
-                                col(CachedMetadata.ts_guid).in_(exported_guids)
-                            )
-                        )
+                        session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(exported_guids)))
                         logger.warning(
                             "Startup recovery: removed %d CachedMetadata rows "
                             "for stuck archive job %s (TML export succeeded — "
@@ -105,12 +102,14 @@ def _cleanup_old_tml_exports() -> None:
 
     Safe to skip on error — this is housekeeping only.
     """
-    from ts_admin.services.archiver_service import TML_EXPORT_DIR
+    import shutil
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import func, select
+
     from ts_admin.database import get_session
     from ts_admin.models.archive_record import ArchiveRecord
-    from sqlmodel import select, func
-    from datetime import datetime, timezone, timedelta
-    import shutil
+    from ts_admin.services.archiver_service import TML_EXPORT_DIR
 
     if not TML_EXPORT_DIR.exists():
         return
@@ -130,12 +129,12 @@ def _cleanup_old_tml_exports() -> None:
             job_id = job_dir.name
             with get_session() as session:
                 total = session.exec(
-                    select(func.count()).select_from(ArchiveRecord).where(
-                        ArchiveRecord.job_id == job_id
-                    )
+                    select(func.count()).select_from(ArchiveRecord).where(ArchiveRecord.job_id == job_id)
                 ).one()
                 restored = session.exec(
-                    select(func.count()).select_from(ArchiveRecord).where(
+                    select(func.count())
+                    .select_from(ArchiveRecord)
+                    .where(
                         ArchiveRecord.job_id == job_id,
                         ArchiveRecord.restored_at.isnot(None),
                     )
@@ -143,9 +142,7 @@ def _cleanup_old_tml_exports() -> None:
 
             if total > 0 and total == restored:
                 shutil.rmtree(job_dir, ignore_errors=True)
-                logger.info(
-                    "Cleaned up TML export dir for fully-restored job %s", job_id
-                )
+                logger.info("Cleaned up TML export dir for fully-restored job %s", job_id)
     except Exception as exc:
         logger.warning("TML export cleanup skipped due to error: %s", exc)
 
@@ -238,14 +235,14 @@ def create_app(port: int = 8080) -> FastAPI:
 
 
 def _register_routers(app: FastAPI) -> None:
-    from ts_admin.api import clusters, sync, jobs, health, metadata, archiver
+    from ts_admin.api import archiver, clusters, health, jobs, metadata, sync
 
-    app.include_router(health.router,    prefix="/api/v1")
-    app.include_router(clusters.router,  prefix="/api/v1")
-    app.include_router(sync.router,      prefix="/api/v1")
-    app.include_router(jobs.router,      prefix="/api/v1")
-    app.include_router(metadata.router,  prefix="/api/v1")
-    app.include_router(archiver.router,  prefix="/api/v1")
+    app.include_router(health.router, prefix="/api/v1")
+    app.include_router(clusters.router, prefix="/api/v1")
+    app.include_router(sync.router, prefix="/api/v1")
+    app.include_router(jobs.router, prefix="/api/v1")
+    app.include_router(metadata.router, prefix="/api/v1")
+    app.include_router(archiver.router, prefix="/api/v1")
 
 
 # Module-level app instance for uvicorn: uvicorn ts_admin.main:app

@@ -30,6 +30,7 @@ class TSHealthResponse(BaseModel):
 async def health() -> HealthResponse:
     """Basic liveness check — confirms the app is running."""
     from ts_admin import __version__
+
     return HealthResponse(status="ok", version=__version__)
 
 

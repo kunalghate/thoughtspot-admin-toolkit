@@ -21,7 +21,6 @@ from sqlmodel import Session, col, or_, select
 
 import ts_admin.database as _db
 from ts_admin.models.cache.ts_metadata import CachedMetadata
-from ts_admin.models.cache.ts_tag import CachedTag
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +29,7 @@ TML_EXPORT_DIR = Path.home() / ".ts-admin" / "tml-exports"
 
 
 # ── Generic helpers ────────────────────────────────────────────────────────────
+
 
 def _chunks(lst: list, size: int):
     """Yield successive chunks of `size` from `lst`."""
@@ -49,8 +49,9 @@ def _fetch_objects_by_guids(
     SQLite limits IN (...) to 999 parameters — chunk at 500 to stay safe.
     Returns a list of CachedMetadata objects in unspecified order.
     """
+    from sqlmodel import col, select
+
     from ts_admin.models.cache.ts_metadata import CachedMetadata
-    from sqlmodel import select, col
 
     results = []
     for chunk in _chunks(guids, 500):
@@ -66,6 +67,7 @@ def _fetch_objects_by_guids(
 
 
 # ── Tag-name JSON helpers ──────────────────────────────────────────────────────
+
 
 def _add_tag(tag_names_json: str, tag: str) -> str:
     """Return updated JSON array with `tag` appended (idempotent)."""
@@ -142,11 +144,11 @@ def _stale_conditions(
     allowed_types = list(types) if types else list(_ARCHIVABLE_TYPES)
 
     stale_activity = or_(
-        CachedMetadata.last_accessed_at == None,    # noqa: E711
+        CachedMetadata.last_accessed_at == None,  # noqa: E711
         col(CachedMetadata.last_accessed_at) < cutoff_activity,
     )
     stale_modified = or_(
-        CachedMetadata.modified_at == None,         # noqa: E711
+        CachedMetadata.modified_at == None,  # noqa: E711
         col(CachedMetadata.modified_at) < cutoff_modified,
     )
 
@@ -179,15 +181,11 @@ def _stale_conditions(
         # Exclude objects that have ANY of the excluded tags.
         # tag_names is stored as JSON e.g. '["Finance","HR"]'; use LIKE per tag.
         for tag in exclude_tags:
-            conditions.append(
-                col(CachedMetadata.tag_names).not_like(f'%"{tag}"%')
-            )
+            conditions.append(col(CachedMetadata.tag_names).not_like(f'%"{tag}"%'))
 
     if filter_tags:
         # Include objects that have ANY of the filter tags (OR logic).
-        conditions.append(
-            or_(*[col(CachedMetadata.tag_names).contains(f'"{tag}"') for tag in filter_tags])
-        )
+        conditions.append(or_(*[col(CachedMetadata.tag_names).contains(f'"{tag}"') for tag in filter_tags]))
 
     if search:
         conditions.append(col(CachedMetadata.name).ilike(f"%{search}%"))
@@ -252,8 +250,8 @@ def _compute_days_unused(obj: CachedMetadata) -> int:
 
 # ── Phase 2: Read-only queries ─────────────────────────────────────────────────
 
-class ArchiverService:
 
+class ArchiverService:
     @staticmethod
     def preview(
         *,
@@ -273,17 +271,20 @@ class ArchiverService:
         Does NOT return individual objects — use search() for that.
         """
         conditions = _stale_conditions(
-            cluster_id, org_id,
-            stale_activity_days, stale_modified_days,
-            types, exclude_tags, owner_guid, exclude_owner_guids,
+            cluster_id,
+            org_id,
+            stale_activity_days,
+            stale_modified_days,
+            types,
+            exclude_tags,
+            owner_guid,
+            exclude_owner_guids,
             stale_operator=stale_operator,
         )
 
         with Session(_db.get_engine()) as session:
             rows = session.exec(
-                select(CachedMetadata.object_type, func.count())
-                .where(*conditions)
-                .group_by(CachedMetadata.object_type)
+                select(CachedMetadata.object_type, func.count()).where(*conditions).group_by(CachedMetadata.object_type)
             ).all()
 
         by_type: dict[str, int] = {r[0]: r[1] for r in rows}
@@ -292,10 +293,8 @@ class ArchiverService:
         # Human-readable criteria summary for the badge tooltip
         type_labels = {"LIVEBOARD": "Liveboard", "ANSWER": "Answer"}
         type_str = " & ".join(type_labels.get(t, t) for t in sorted(by_type))
-        criteria_summary = (
-            f"Unused {stale_activity_days}+ days · "
-            f"Unmodified {stale_modified_days}+ days"
-            + (f" · {type_str}" if type_str else "")
+        criteria_summary = f"Unused {stale_activity_days}+ days · Unmodified {stale_modified_days}+ days" + (
+            f" · {type_str}" if type_str else ""
         )
 
         return {"total": total, "by_type": by_type, "criteria_summary": criteria_summary}
@@ -338,64 +337,71 @@ class ArchiverService:
                          "OR": either threshold is sufficient
         """
         conditions = _stale_conditions(
-            cluster_id, org_id,
-            stale_activity_days, stale_modified_days,
-            types, exclude_tags, owner_guid, exclude_owner_guids,
-            filter_tags=filter_tags, search=search, stale_operator=stale_operator,
-            owner_name_search=owner_name_search, tag_search=tag_search,
-            days_unused_min=days_unused_min, days_unused_max=days_unused_max,
-            views_min=views_min, views_max=views_max,
-            last_accessed_before=last_accessed_before, last_accessed_after=last_accessed_after,
-            modified_before=modified_before, modified_after=modified_after,
-            created_before=created_before, created_after=created_after,
+            cluster_id,
+            org_id,
+            stale_activity_days,
+            stale_modified_days,
+            types,
+            exclude_tags,
+            owner_guid,
+            exclude_owner_guids,
+            filter_tags=filter_tags,
+            search=search,
+            stale_operator=stale_operator,
+            owner_name_search=owner_name_search,
+            tag_search=tag_search,
+            days_unused_min=days_unused_min,
+            days_unused_max=days_unused_max,
+            views_min=views_min,
+            views_max=views_max,
+            last_accessed_before=last_accessed_before,
+            last_accessed_after=last_accessed_after,
+            modified_before=modified_before,
+            modified_after=modified_after,
+            created_before=created_before,
+            created_after=created_after,
         )
 
         # Sort mapping — days_unused proxied via last_accessed_at
         _sortable: dict[str, Any] = {
-            "name":             CachedMetadata.name,
-            "object_type":      CachedMetadata.object_type,
-            "owner_name":       CachedMetadata.owner_name,
-            "created_at":       CachedMetadata.created_at,
-            "modified_at":      CachedMetadata.modified_at,
+            "name": CachedMetadata.name,
+            "object_type": CachedMetadata.object_type,
+            "owner_name": CachedMetadata.owner_name,
+            "created_at": CachedMetadata.created_at,
+            "modified_at": CachedMetadata.modified_at,
             "last_accessed_at": CachedMetadata.last_accessed_at,
-            "days_unused":      CachedMetadata.last_accessed_at,   # proxy
-            "view_count":       CachedMetadata.view_count,
+            "days_unused": CachedMetadata.last_accessed_at,  # proxy
+            "view_count": CachedMetadata.view_count,
         }
         sort_col = _sortable.get(sort_field, CachedMetadata.last_accessed_at)
         # For staleness columns, NULL = most stale. ASC puts NULLs first (correct for
         # "most stale first" when sort_order=asc). Invert for desc: nulls_last(desc).
         if sort_order.lower() == "asc":
-            order_expr = asc(sort_col)           # NULLs sort first naturally in SQLite
+            order_expr = asc(sort_col)  # NULLs sort first naturally in SQLite
         else:
             order_expr = nulls_last(desc(sort_col))
 
         with Session(_db.get_engine()) as session:
-            total = session.exec(
-                select(func.count()).select_from(CachedMetadata).where(*conditions)
-            ).one()
+            total = session.exec(select(func.count()).select_from(CachedMetadata).where(*conditions)).one()
 
             rows = session.exec(
-                select(CachedMetadata)
-                .where(*conditions)
-                .order_by(order_expr)
-                .offset(record_offset)
-                .limit(page_size)
+                select(CachedMetadata).where(*conditions).order_by(order_expr).offset(record_offset).limit(page_size)
             ).all()
 
         items = [
             {
-                "ts_guid":          r.ts_guid,
-                "name":             r.name,
-                "object_type":      r.object_type,
-                "owner_guid":       r.owner_guid,
-                "owner_name":       r.owner_name,
-                "org_id":           r.org_id,
+                "ts_guid": r.ts_guid,
+                "name": r.name,
+                "object_type": r.object_type,
+                "owner_guid": r.owner_guid,
+                "owner_name": r.owner_name,
+                "org_id": r.org_id,
                 "last_accessed_at": r.last_accessed_at.isoformat() if r.last_accessed_at else None,
-                "modified_at":      r.modified_at.isoformat() if r.modified_at else None,
-                "created_at":       r.created_at.isoformat() if r.created_at else None,
-                "view_count":       r.view_count,
-                "days_unused":      _compute_days_unused(r),
-                "tags":             r.get_tag_names(),
+                "modified_at": r.modified_at.isoformat() if r.modified_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "view_count": r.view_count,
+                "days_unused": _compute_days_unused(r),
+                "tags": r.get_tag_names(),
             }
             for r in rows
         ]
@@ -417,16 +423,19 @@ class ArchiverService:
         the dropdown only offers tags that will actually return results when selected.
         """
         conditions = _stale_conditions(
-            cluster_id, org_id,
-            stale_activity_days, stale_modified_days,
-            types, None, None, None,
+            cluster_id,
+            org_id,
+            stale_activity_days,
+            stale_modified_days,
+            types,
+            None,
+            None,
+            None,
         )
         conditions.append(CachedMetadata.tag_names != "[]")
 
         with Session(_db.get_engine()) as session:
-            tag_name_jsons = session.exec(
-                select(CachedMetadata.tag_names).where(*conditions)
-            ).all()
+            tag_name_jsons = session.exec(select(CachedMetadata.tag_names).where(*conditions)).all()
 
         seen: set[str] = set()
         for tag_names_json in tag_name_jsons:
@@ -438,9 +447,11 @@ class ArchiverService:
 
 # ── Phase 3: Tag / Untag ───────────────────────────────────────────────────────
 
+
 def _get_cluster(cluster_id: str):
     """Look up a ClusterConfig by ID from the loaded config."""
     from ts_admin.config import load_config
+
     config = load_config()
     cluster = config.clusters.get(cluster_id)
     if cluster is None:
@@ -468,12 +479,15 @@ async def execute(
         await _execute_delete(job_id, cluster_id, org_id, object_ids)
         return
 
-    import asyncio
-    from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.models.audit_log import AuditLog
     from ts_admin.services.job_service import (
-        mark_running, update_progress, mark_complete, mark_failed, mark_partial,
+        mark_complete,
+        mark_failed,
+        mark_partial,
+        mark_running,
+        update_progress,
     )
+    from ts_admin.ts_client import ThoughtSpotClient
 
     total = len(object_ids)
     mark_running(job_id, total)
@@ -544,7 +558,12 @@ async def execute(
 
         logger.info(
             "archive.%s job=%s cluster=%s tag=%r succeeded=%d failed=%d",
-            action, job_id, cluster_id, tag_name, succeeded, len(failed_ids),
+            action,
+            job_id,
+            cluster_id,
+            tag_name,
+            succeeded,
+            len(failed_ids),
         )
 
     except Exception as exc:
@@ -553,6 +572,7 @@ async def execute(
 
 
 # ── Phase 5: Delete with mandatory TML safety net ─────────────────────────────
+
 
 async def _execute_delete(
     job_id: str,
@@ -574,14 +594,21 @@ async def _execute_delete(
     Phase C — Audit:
       Write AuditLog + structured log line.
     """
-    from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.ts_client.models import MetadataType
+    from sqlmodel import col
+    from sqlmodel import delete as sql_delete
+
     from ts_admin.models.archive_record import ArchiveRecord
     from ts_admin.models.audit_log import AuditLog
     from ts_admin.services.job_service import (
-        mark_running, update_progress, mark_complete, mark_failed, mark_partial, is_cancelled,
+        is_cancelled,
+        mark_complete,
+        mark_failed,
+        mark_partial,
+        mark_running,
+        update_progress,
     )
-    from sqlmodel import delete as sql_delete, col
+    from ts_admin.ts_client import ThoughtSpotClient
+    from ts_admin.ts_client.models import MetadataType
 
     total = len(object_ids)
     mark_running(job_id, total)
@@ -601,21 +628,23 @@ async def _execute_delete(
         archive_rows: list[ArchiveRecord] = []
         for guid in object_ids:
             obj = obj_map.get(guid)
-            archive_rows.append(ArchiveRecord(
-                cluster_id=cluster_id,
-                job_id=job_id,
-                ts_guid=guid,
-                name=obj.name if obj else guid,
-                object_type=obj.object_type if obj else "UNKNOWN",
-                owner_guid=obj.owner_guid if obj else "",
-                owner_name=obj.owner_name if obj else "",
-                org_id=org_id,
-                last_accessed_at=obj.last_accessed_at if obj else None,
-                days_unused=_compute_days_unused(obj) if obj else 0,
-                tags=obj.tag_names if obj else "[]",
-                tml_export_status="PENDING",
-                archived_at=now,
-            ))
+            archive_rows.append(
+                ArchiveRecord(
+                    cluster_id=cluster_id,
+                    job_id=job_id,
+                    ts_guid=guid,
+                    name=obj.name if obj else guid,
+                    object_type=obj.object_type if obj else "UNKNOWN",
+                    owner_guid=obj.owner_guid if obj else "",
+                    owner_name=obj.owner_name if obj else "",
+                    org_id=org_id,
+                    last_accessed_at=obj.last_accessed_at if obj else None,
+                    days_unused=_compute_days_unused(obj) if obj else 0,
+                    tags=obj.tag_names if obj else "[]",
+                    tml_export_status="PENDING",
+                    archived_at=now,
+                )
+            )
         # expire_on_commit=False keeps id/ts_guid readable after the session closes
         with Session(_db.get_engine(), expire_on_commit=False) as session:
             for row in archive_rows:
@@ -639,7 +668,7 @@ async def _execute_delete(
                     s.commit()
 
         # ── Phase A: TML Export ───────────────────────────────────────────────
-        delete_batch: list[str] = []   # GUIDs successfully exported
+        delete_batch: list[str] = []  # GUIDs successfully exported
         failed_tml: list[str] = []
 
         cluster = _get_cluster(cluster_id)
@@ -648,7 +677,6 @@ async def _execute_delete(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
         ) as client:
-
             for chunk in _chunks(object_ids, 50):
                 try:
                     tml_results = await client.tml_export(object_ids=chunk)
@@ -671,21 +699,25 @@ async def _execute_delete(
                         tml_path = job_tml_dir / f"{guid}.tml"
                         tml_path.write_text(edoc, encoding="utf-8")
                         delete_batch.append(guid)
-                        _update_record(guid,
+                        _update_record(
+                            guid,
                             tml_export_status="SUCCESS",
                             tml_path=str(tml_path),
                         )
                     else:
                         error = info.get("error_message") or "TML export returned empty content"
                         failed_tml.append(guid)
-                        _update_record(guid,
+                        _update_record(
+                            guid,
                             tml_export_status="FAILED",
                             tml_export_error=error[:500],
                         )
 
             logger.info(
                 "archive.delete job=%s TML export done: %d ok, %d failed",
-                job_id, len(delete_batch), len(failed_tml),
+                job_id,
+                len(delete_batch),
+                len(failed_tml),
             )
 
             # ── Phase B: Delete (cancel-aware) ───────────────────────────────
@@ -697,9 +729,7 @@ async def _execute_delete(
             type_groups: dict[str, list[str]] = {}
             for guid in delete_batch:
                 obj = obj_map.get(guid)
-                type_groups.setdefault(
-                    obj.object_type if obj else "LIVEBOARD", []
-                ).append(guid)
+                type_groups.setdefault(obj.object_type if obj else "LIVEBOARD", []).append(guid)
 
             for obj_type, guids in type_groups.items():
                 if cancelled:
@@ -722,11 +752,7 @@ async def _execute_delete(
 
                         # Remove from CachedMetadata cache
                         with Session(_db.get_engine()) as session:
-                            session.exec(
-                                sql_delete(CachedMetadata).where(
-                                    col(CachedMetadata.ts_guid).in_(chunk)
-                                )
-                            )
+                            session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(chunk)))
                             session.commit()
 
                         succeeded += len(chunk)
@@ -737,10 +763,7 @@ async def _execute_delete(
                     update_progress(job_id, succeeded)
 
         # ── Phase C: Audit ───────────────────────────────────────────────────
-        status = (
-            "PARTIAL" if (failed_tml or failed_delete or cancelled)
-            else "COMPLETE"
-        )
+        status = "PARTIAL" if (failed_tml or failed_delete or cancelled) else "COMPLETE"
         result = {
             "succeeded": succeeded,
             "failed_tml_export": len(failed_tml),
@@ -758,10 +781,12 @@ async def _execute_delete(
                 items_affected=succeeded,
                 status=status,
             )
-            entry.set_parameters({
-                "object_ids": object_ids,
-                **result,
-            })
+            entry.set_parameters(
+                {
+                    "object_ids": object_ids,
+                    **result,
+                }
+            )
             session.add(entry)
             session.commit()
 
@@ -773,10 +798,13 @@ async def _execute_delete(
             mark_complete(job_id, result)
 
         logger.info(
-            "archive.delete job=%s cluster=%s succeeded=%d "
-            "failed_tml=%d failed_delete=%d cancelled=%s",
-            job_id, cluster_id, succeeded,
-            len(failed_tml), len(failed_delete), cancelled,
+            "archive.delete job=%s cluster=%s succeeded=%d failed_tml=%d failed_delete=%d cancelled=%s",
+            job_id,
+            cluster_id,
+            succeeded,
+            len(failed_tml),
+            len(failed_delete),
+            cancelled,
         )
 
     except Exception as exc:
@@ -785,6 +813,7 @@ async def _execute_delete(
 
 
 # ── Phase 4: Dry-run impact check ─────────────────────────────────────────────
+
 
 async def dryrun(
     job_id: str,
@@ -800,8 +829,9 @@ async def dryrun(
     No objects are modified.
     """
     import asyncio
+
+    from ts_admin.services.job_service import mark_complete, mark_failed, mark_running
     from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.services.job_service import mark_running, mark_complete, mark_failed
 
     total = len(object_ids)
     mark_running(job_id, total)
@@ -818,21 +848,14 @@ async def dryrun(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
         ) as client:
-
             # ── Permission check (concurrent, Semaphore(10)) ──────────────────
             sem = asyncio.Semaphore(10)
 
             async def _check_perms(guid: str, obj_type: str):
                 async with sem:
-                    return guid, await client.fetch_permissions(
-                        ts_guid=guid, object_type=obj_type
-                    )
+                    return guid, await client.fetch_permissions(ts_guid=guid, object_type=obj_type)
 
-            pairs = [
-                (guid, obj_map[guid].object_type)
-                for guid in object_ids
-                if guid in obj_map
-            ]
+            pairs = [(guid, obj_map[guid].object_type) for guid in object_ids if guid in obj_map]
             perm_results = await asyncio.gather(
                 *[_check_perms(g, t) for g, t in pairs],
                 return_exceptions=True,
@@ -840,9 +863,7 @@ async def dryrun(
 
             # ── Dependency check (single batch call) ──────────────────────────
             dep_objects = [
-                {"identifier": guid, "type": obj_map[guid].object_type}
-                for guid in object_ids
-                if guid in obj_map
+                {"identifier": guid, "type": obj_map[guid].object_type} for guid in object_ids if guid in obj_map
             ]
             try:
                 dep_map = await client.fetch_dependents(objects=dep_objects)
@@ -858,9 +879,11 @@ async def dryrun(
         # Objects not in cache (deleted between selection and dryrun)
         missing_guids = [g for g in object_ids if g not in obj_map]
 
-        principals: dict[str, dict] = {}   # principal_id → {name, type, object_count}
+        principals: dict[str, dict] = {}  # principal_id → {name, type, object_count}
         shared_count = 0
-        errors: list[dict] = [{"ts_guid": g, "error": "Not found in local cache (may have been deleted)"} for g in missing_guids]
+        errors: list[dict] = [
+            {"ts_guid": g, "error": "Not found in local cache (may have been deleted)"} for g in missing_guids
+        ]
 
         for item in perm_results:
             if isinstance(item, Exception):
@@ -882,15 +905,17 @@ async def dryrun(
         for guid, deps in dep_map.items():
             if deps and guid in obj_map:
                 obj = obj_map[guid]
-                dependency_warnings.append({
-                    "ts_guid": guid,
-                    "name": obj.name,
-                    "object_type": obj.object_type,
-                    "dependents": [
-                        {"name": d.get("name", ""), "type": d.get("type", d.get("object_type", ""))}
-                        for d in deps[:10]   # cap at 10 per object
-                    ],
-                })
+                dependency_warnings.append(
+                    {
+                        "ts_guid": guid,
+                        "name": obj.name,
+                        "object_type": obj.object_type,
+                        "dependents": [
+                            {"name": d.get("name", ""), "type": d.get("type", d.get("object_type", ""))}
+                            for d in deps[:10]  # cap at 10 per object
+                        ],
+                    }
+                )
 
         result = {
             "total": len(object_ids),
@@ -903,8 +928,12 @@ async def dryrun(
         mark_complete(job_id, result)
         logger.info(
             "archive.dryrun job=%s cluster=%s total=%d shared=%d deps=%d errors=%d",
-            job_id, cluster_id, len(object_ids), shared_count,
-            len(dependency_warnings), len(errors),
+            job_id,
+            cluster_id,
+            len(object_ids),
+            shared_count,
+            len(dependency_warnings),
+            len(errors),
         )
 
     except Exception as exc:
@@ -943,7 +972,7 @@ def dryrun_objects(
     total = len(object_ids)
 
     # Paginate the ID list, then fetch from SQLite ordered by staleness
-    page_ids = object_ids[record_offset: record_offset + page_size]
+    page_ids = object_ids[record_offset : record_offset + page_size]
     if not page_ids:
         return [], total
 
@@ -955,18 +984,18 @@ def dryrun_objects(
 
     items = [
         {
-            "ts_guid":          r.ts_guid,
-            "name":             r.name,
-            "object_type":      r.object_type,
-            "owner_guid":       r.owner_guid,
-            "owner_name":       r.owner_name,
-            "org_id":           r.org_id,
+            "ts_guid": r.ts_guid,
+            "name": r.name,
+            "object_type": r.object_type,
+            "owner_guid": r.owner_guid,
+            "owner_name": r.owner_name,
+            "org_id": r.org_id,
             "last_accessed_at": r.last_accessed_at.isoformat() if r.last_accessed_at else None,
-            "modified_at":      r.modified_at.isoformat() if r.modified_at else None,
-            "created_at":       r.created_at.isoformat() if r.created_at else None,
-            "view_count":       r.view_count,
-            "days_unused":      _compute_days_unused(r),
-            "tags":             r.get_tag_names(),
+            "modified_at": r.modified_at.isoformat() if r.modified_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "view_count": r.view_count,
+            "days_unused": _compute_days_unused(r),
+            "tags": r.get_tag_names(),
         }
         for r in rows
     ]
@@ -974,6 +1003,7 @@ def dryrun_objects(
 
 
 # ── Phase 6: Restore & History ─────────────────────────────────────────────────
+
 
 async def restore(
     job_id: str,
@@ -992,12 +1022,16 @@ async def restore(
 
     Records with missing TML or tml_export_status != "SUCCESS" are skipped.
     """
-    from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.models.archive_record import ArchiveRecord
     from ts_admin.models.audit_log import AuditLog
     from ts_admin.services.job_service import (
-        mark_running, update_progress, mark_complete, mark_failed, mark_partial,
+        mark_complete,
+        mark_failed,
+        mark_partial,
+        mark_running,
+        update_progress,
     )
+    from ts_admin.ts_client import ThoughtSpotClient
 
     total = len(archive_record_ids)
     mark_running(job_id, total)
@@ -1007,11 +1041,7 @@ async def restore(
 
         # Load ArchiveRecord rows
         with Session(_db.get_engine()) as session:
-            records = session.exec(
-                select(ArchiveRecord).where(
-                    col(ArchiveRecord.id).in_(archive_record_ids)
-                )
-            ).all()
+            records = session.exec(select(ArchiveRecord).where(col(ArchiveRecord.id).in_(archive_record_ids))).all()
         rec_map = {r.id: r for r in records}
 
         succeeded = 0
@@ -1022,16 +1052,12 @@ async def restore(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
         ) as client:
-
             for chunk_ids in _chunks(archive_record_ids, 10):
                 chunk_recs = [rec_map[rid] for rid in chunk_ids if rid in rec_map]
 
                 # Filter to restorable
                 restorable = [
-                    r for r in chunk_recs
-                    if r.tml_export_status == "SUCCESS"
-                    and r.restored_at is None
-                    and r.tml_path
+                    r for r in chunk_recs if r.tml_export_status == "SUCCESS" and r.restored_at is None and r.tml_path
                 ]
                 skip_ids = [r.id for r in chunk_recs if r not in restorable]
                 skipped.extend(skip_ids)
@@ -1067,17 +1093,18 @@ async def restore(
                 now = datetime.now(timezone.utc)
                 for idx, rec in enumerate(valid_recs):
                     result_item = import_results[idx] if idx < len(import_results) else {}
-                    # TS REST v2 import response: {"response": {"header": {"id_guid": "..."}, "status": {"status_code": "OK"}}}
+                    # TS REST v2 import response shape:
+                    # {"response": {"header": {"id_guid": "..."}, "status": {"status_code": "OK"}}}
                     resp = result_item.get("response") or {}
                     new_guid = (
-                        resp.get("header", {}).get("id_guid")         # primary path (v2)
-                        or result_item.get("object_id")               # newer TS versions
+                        resp.get("header", {}).get("id_guid")  # primary path (v2)
+                        or result_item.get("object_id")  # newer TS versions
                         or result_item.get("id")
                         or (result_item.get("header") or {}).get("id_guid")
                         or ""
                     )
                     status_code = (
-                        resp.get("status", {}).get("status_code")     # primary path (v2)
+                        resp.get("status", {}).get("status_code")  # primary path (v2)
                         or result_item.get("status", {}).get("status_code")
                         or "UNKNOWN"
                     )
@@ -1139,13 +1166,15 @@ async def restore(
                 items_affected=succeeded,
                 status="COMPLETE" if not failed else "PARTIAL",
             )
-            entry.set_parameters({
-                "archive_record_ids": archive_record_ids,
-                "succeeded": succeeded,
-                "failed": len(failed),
-                "skipped": len(skipped),
-                "job_id": job_id,
-            })
+            entry.set_parameters(
+                {
+                    "archive_record_ids": archive_record_ids,
+                    "succeeded": succeeded,
+                    "failed": len(failed),
+                    "skipped": len(skipped),
+                    "job_id": job_id,
+                }
+            )
             session.add(entry)
             session.commit()
 
@@ -1159,7 +1188,11 @@ async def restore(
 
         logger.info(
             "archive.restore job=%s cluster=%s succeeded=%d failed=%d skipped=%d",
-            job_id, cluster_id, succeeded, len(failed), len(skipped),
+            job_id,
+            cluster_id,
+            succeeded,
+            len(failed),
+            len(skipped),
         )
 
     except Exception as exc:
@@ -1168,6 +1201,7 @@ async def restore(
 
 
 # ── Phase 6: History & Restore ─────────────────────────────────────────────────
+
 
 def history(
     *,
@@ -1195,9 +1229,7 @@ def history(
             .group_by(ArchiveRecord.job_id)
             .order_by(desc("archived_at"))
         )
-        total_rows = session.exec(
-            select(func.count()).select_from(job_ids_q.subquery())
-        ).one()
+        total_rows = session.exec(select(func.count()).select_from(job_ids_q.subquery())).one()
 
         page_rows = session.exec(job_ids_q.offset(record_offset).limit(page_size)).all()
         job_ids = [r[0] for r in page_rows]
@@ -1208,21 +1240,21 @@ def history(
         # Aggregate per job
         sessions = []
         for job_id, archived_at in page_rows:
-            records = session.exec(
-                select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)
-            ).all()
+            records = session.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()
             total = len(records)
             succeeded = sum(1 for r in records if r.tml_export_status == "SUCCESS" and r.restored_at is None)
             failed_tml = sum(1 for r in records if r.tml_export_status == "FAILED")
             failed_delete = 0  # hard to determine post-hoc; use 0 for now
-            sessions.append({
-                "job_id": job_id,
-                "archived_at": archived_at.isoformat() if archived_at else None,
-                "total": total,
-                "succeeded": succeeded,
-                "failed_tml_export": failed_tml,
-                "failed_delete": failed_delete,
-            })
+            sessions.append(
+                {
+                    "job_id": job_id,
+                    "archived_at": archived_at.isoformat() if archived_at else None,
+                    "total": total,
+                    "succeeded": succeeded,
+                    "failed_tml_export": failed_tml,
+                    "failed_delete": failed_delete,
+                }
+            )
 
     return sessions, total_rows
 
@@ -1248,9 +1280,9 @@ def all_archive_records(
     from ts_admin.models.archive_record import ArchiveRecord
 
     _sortable = {
-        "name":        ArchiveRecord.name,
+        "name": ArchiveRecord.name,
         "object_type": ArchiveRecord.object_type,
-        "owner_name":  ArchiveRecord.owner_name,
+        "owner_name": ArchiveRecord.owner_name,
         "archived_at": ArchiveRecord.archived_at,
     }
     sort_col = _sortable.get(sort_field, ArchiveRecord.archived_at)
@@ -1276,28 +1308,22 @@ def all_archive_records(
         conditions.append(col(ArchiveRecord.archived_at) >= archived_after_dt)
 
     with Session(_db.get_engine()) as session:
-        total = session.exec(
-            select(func.count()).select_from(ArchiveRecord).where(*conditions)
-        ).one()
+        total = session.exec(select(func.count()).select_from(ArchiveRecord).where(*conditions)).one()
 
         rows = session.exec(
-            select(ArchiveRecord)
-            .where(*conditions)
-            .order_by(order_expr)
-            .offset(record_offset)
-            .limit(page_size)
+            select(ArchiveRecord).where(*conditions).order_by(order_expr).offset(record_offset).limit(page_size)
         ).all()
 
     items = [
         {
-            "id":                r.id,
-            "ts_guid":           r.ts_guid,
-            "name":              r.name,
-            "object_type":       r.object_type,
-            "owner_name":        r.owner_name,
-            "archived_at":       r.archived_at.isoformat(),
+            "id": r.id,
+            "ts_guid": r.ts_guid,
+            "name": r.name,
+            "object_type": r.object_type,
+            "owner_name": r.owner_name,
+            "archived_at": r.archived_at.isoformat(),
             "tml_export_status": r.tml_export_status,
-            "job_id":            r.job_id,
+            "job_id": r.job_id,
         }
         for r in rows
     ]
@@ -1320,7 +1346,9 @@ def history_session(
 
     with Session(_db.get_engine()) as session:
         total = session.exec(
-            select(func.count()).select_from(ArchiveRecord).where(
+            select(func.count())
+            .select_from(ArchiveRecord)
+            .where(
                 ArchiveRecord.job_id == job_id,
                 ArchiveRecord.cluster_id == cluster_id,
             )
@@ -1336,21 +1364,20 @@ def history_session(
 
     items = [
         {
-            "id":                 r.id,
-            "ts_guid":            r.ts_guid,
-            "name":               r.name,
-            "object_type":        r.object_type,
-            "owner_name":         r.owner_name,
-            "last_accessed_at":   r.last_accessed_at.isoformat() if r.last_accessed_at else None,
-            "days_unused":        r.days_unused,
-            "tags":               json.loads(r.tags) if r.tags else [],
-            "tml_export_status":  r.tml_export_status,
-            "archived_at":        r.archived_at.isoformat(),
-            "restored_at":        r.restored_at.isoformat() if r.restored_at else None,
-            "restored_as_guid":   r.restored_as_guid,
-            "is_restorable":      r.tml_export_status == "SUCCESS" and r.restored_at is None,
+            "id": r.id,
+            "ts_guid": r.ts_guid,
+            "name": r.name,
+            "object_type": r.object_type,
+            "owner_name": r.owner_name,
+            "last_accessed_at": r.last_accessed_at.isoformat() if r.last_accessed_at else None,
+            "days_unused": r.days_unused,
+            "tags": json.loads(r.tags) if r.tags else [],
+            "tml_export_status": r.tml_export_status,
+            "archived_at": r.archived_at.isoformat(),
+            "restored_at": r.restored_at.isoformat() if r.restored_at else None,
+            "restored_as_guid": r.restored_as_guid,
+            "is_restorable": r.tml_export_status == "SUCCESS" and r.restored_at is None,
         }
         for r in rows
     ]
     return items, total
-

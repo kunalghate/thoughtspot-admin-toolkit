@@ -27,6 +27,7 @@ router = APIRouter(prefix="/metadata", tags=["Metadata"])
 
 # ── Response schemas ───────────────────────────────────────────────────────────
 
+
 class MetadataObjectResponse(BaseModel):
     ts_guid: str
     name: str
@@ -41,7 +42,7 @@ class MetadataObjectResponse(BaseModel):
     view_count: int
 
     @classmethod
-    def from_cache(cls, obj: CachedMetadata) -> "MetadataObjectResponse":
+    def from_cache(cls, obj: CachedMetadata) -> MetadataObjectResponse:
         return cls(
             ts_guid=obj.ts_guid,
             name=obj.name,
@@ -74,8 +75,8 @@ class MetadataStatsResponse(BaseModel):
 class PermissionEntry(BaseModel):
     principal_id: str
     principal_name: str
-    principal_type: str   # "USER" or "USER_GROUP"
-    share_mode: str       # "READ_ONLY" or "MODIFY"
+    principal_type: str  # "USER" or "USER_GROUP"
+    share_mode: str  # "READ_ONLY" or "MODIFY"
 
 
 class PermissionsResponse(BaseModel):
@@ -85,6 +86,7 @@ class PermissionsResponse(BaseModel):
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=MetadataListResponse)
 def list_metadata(
@@ -118,6 +120,7 @@ def list_metadata(
     """
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
 
     items, total = MetadataService.search(
@@ -159,6 +162,7 @@ def metadata_stats(
     """Aggregate stats for the dashboard health card."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     stats = MetadataService.stats(cluster_id=cluster_id, org_id=org_id)
     return MetadataStatsResponse(**stats)
@@ -222,6 +226,7 @@ def get_metadata(
     """Return a single metadata object by ThoughtSpot GUID."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     obj = MetadataService.get(cluster_id=cluster_id, org_id=org_id, ts_guid=ts_guid)
     if obj is None:

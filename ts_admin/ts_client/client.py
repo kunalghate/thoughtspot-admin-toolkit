@@ -27,8 +27,8 @@ from ts_admin.ts_client.exceptions import (
     TSInvalidParametersError,
     TSObjectNotFoundError,
     TSResponseParseError,
-    TSSSLError,
     TSServerError,
+    TSSSLError,
 )
 from ts_admin.ts_client.models import (
     MetadataType,
@@ -38,7 +38,6 @@ from ts_admin.ts_client.models import (
     TSOrg,
     TSPermission,
     TSTag,
-    TSTokenResponse,
     TSUser,
 )
 from ts_admin.ts_client.retry import with_retry
@@ -127,29 +126,19 @@ class ThoughtSpotClient:
                 msg = str(exc)
                 if "ssl" in msg.lower() or "tls" in msg.lower() or "certificate" in msg.lower():
                     raise TSSSLError(f"TLS error connecting to ThoughtSpot: {exc}") from exc
-                raise TSConnectionError(
-                    f"Cannot reach ThoughtSpot at {self._base_url}: {exc}"
-                ) from exc
+                raise TSConnectionError(f"Cannot reach ThoughtSpot at {self._base_url}: {exc}") from exc
 
             if response.status_code == 401:
                 self._auth.invalidate()
-                raise TSAuthenticationError(
-                    "ThoughtSpot rejected credentials — session may have expired"
-                )
+                raise TSAuthenticationError("ThoughtSpot rejected credentials — session may have expired")
             if response.status_code == 403:
-                raise TSInsufficientPrivilegesError(
-                    f"Insufficient privileges for {method} {path}"
-                )
+                raise TSInsufficientPrivilegesError(f"Insufficient privileges for {method} {path}")
             if response.status_code == 400:
-                raise TSInvalidParametersError(
-                    f"Invalid parameters for {method} {path}: {response.text[:200]}"
-                )
+                raise TSInvalidParametersError(f"Invalid parameters for {method} {path}: {response.text[:200]}")
             if response.status_code == 404:
                 raise TSObjectNotFoundError(object_type="resource", identifier=path)
             if response.status_code >= 500:
-                raise TSServerError(
-                    status_code=response.status_code, body=response.text
-                )
+                raise TSServerError(status_code=response.status_code, body=response.text)
 
             response.raise_for_status()
 
@@ -289,13 +278,13 @@ class ThoughtSpotClient:
         """
         # Each spec: (api_type, subtypes_filter, effective_type_to_store)
         specs = [
-            ("LIVEBOARD",     None,                    MetadataType.LIVEBOARD),
-            ("ANSWER",        None,                    MetadataType.ANSWER),
-            ("LOGICAL_TABLE", ["WORKSHEET"],           MetadataType.WORKSHEET),
-            ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"],  MetadataType.ONE_TO_ONE_LOGICAL),
-            ("LOGICAL_TABLE", ["AGGR_WORKSHEET"],      MetadataType.AGGR_WORKSHEET),
-            ("LOGICAL_TABLE", ["SQL_VIEW"],            MetadataType.SQL_VIEW),
-            ("LOGICAL_TABLE", ["USER_DEFINED"],        MetadataType.USER_DEFINED),
+            ("LIVEBOARD", None, MetadataType.LIVEBOARD),
+            ("ANSWER", None, MetadataType.ANSWER),
+            ("LOGICAL_TABLE", ["WORKSHEET"], MetadataType.WORKSHEET),
+            ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"], MetadataType.ONE_TO_ONE_LOGICAL),
+            ("LOGICAL_TABLE", ["AGGR_WORKSHEET"], MetadataType.AGGR_WORKSHEET),
+            ("LOGICAL_TABLE", ["SQL_VIEW"], MetadataType.SQL_VIEW),
+            ("LOGICAL_TABLE", ["USER_DEFINED"], MetadataType.USER_DEFINED),
         ]
 
         for api_type, subtypes, effective_type in specs:
@@ -344,9 +333,7 @@ class ThoughtSpotClient:
             items = data if isinstance(data, list) else data.get("tags", [])
             return [TSTag.model_validate(t) for t in items]
         except ValidationError as exc:
-            raise TSResponseParseError(
-                url="/api/rest/2.0/tags/search", detail=str(exc)
-            ) from exc
+            raise TSResponseParseError(url="/api/rest/2.0/tags/search", detail=str(exc)) from exc
 
     async def assign_tag(self, *, object_ids: list[str], tag_id: str) -> None:
         """Assign a tag to one or more objects."""
@@ -381,9 +368,7 @@ class ThoughtSpotClient:
             items = data if isinstance(data, list) else data.get("orgs", [])
             return [TSOrg.model_validate(o) for o in items]
         except ValidationError as exc:
-            raise TSResponseParseError(
-                url="/api/rest/2.0/orgs/search", detail=str(exc)
-            ) from exc
+            raise TSResponseParseError(url="/api/rest/2.0/orgs/search", detail=str(exc)) from exc
 
     # ── Sharing ────────────────────────────────────────────────────────────────
 
@@ -398,17 +383,13 @@ class ThoughtSpotClient:
         Share a list of objects with a list of users or groups.
         Raises TSPartialSuccessError if some objects fail.
         """
-        from ts_admin.ts_client.exceptions import TSPartialSuccessError
 
         await self._request(
             "POST",
             "/api/rest/2.0/security/share",
             json={
                 "metadata_list": [{"identifier": oid} for oid in object_ids],
-                "permissions": [
-                    {"principal": {"identifier": pid}, "share_mode": permission}
-                    for pid in principal_ids
-                ],
+                "permissions": [{"principal": {"identifier": pid}, "share_mode": permission} for pid in principal_ids],
             },
             context="share_objects",
         )
@@ -417,11 +398,11 @@ class ThoughtSpotClient:
 
     # Subtypes that the permissions API doesn't know about — map them to LOGICAL_TABLE
     _PERMISSIONS_TYPE_MAP: dict[str, str] = {
-        "WORKSHEET":          "LOGICAL_TABLE",
+        "WORKSHEET": "LOGICAL_TABLE",
         "ONE_TO_ONE_LOGICAL": "LOGICAL_TABLE",
-        "AGGR_WORKSHEET":     "LOGICAL_TABLE",
-        "SQL_VIEW":           "LOGICAL_TABLE",
-        "USER_DEFINED":       "LOGICAL_TABLE",
+        "AGGR_WORKSHEET": "LOGICAL_TABLE",
+        "SQL_VIEW": "LOGICAL_TABLE",
+        "USER_DEFINED": "LOGICAL_TABLE",
     }
 
     async def fetch_permissions(
@@ -447,7 +428,7 @@ class ThoughtSpotClient:
             json={
                 "metadata": [{"identifier": ts_guid, "type": api_type}],
                 "record_size": -1,
-                "permission_type": "DEFINED",   # explicitly shared only, matches TS UI
+                "permission_type": "DEFINED",  # explicitly shared only, matches TS UI
             },
             context="fetch_permissions",
         )
@@ -463,18 +444,20 @@ class ThoughtSpotClient:
         # }]}
         details = data.get("metadata_permission_details") or [] if isinstance(data, dict) else []
         for item in details:
-            for group in (item.get("principal_permission_info") or []):
+            for group in item.get("principal_permission_info") or []:
                 principal_type = group.get("principal_type", "USER")
-                for entry in (group.get("principal_permissions") or []):
+                for entry in group.get("principal_permissions") or []:
                     share_mode = entry.get("permission", "")
                     if not share_mode or share_mode == "NO_ACCESS":
                         continue
-                    permissions.append(TSPermission(
-                        principal_id=entry.get("principal_id", ""),
-                        principal_name=entry.get("principal_name", ""),
-                        principal_type=principal_type,
-                        share_mode=share_mode,
-                    ))
+                    permissions.append(
+                        TSPermission(
+                            principal_id=entry.get("principal_id", ""),
+                            principal_name=entry.get("principal_name", ""),
+                            principal_type=principal_type,
+                            share_mode=share_mode,
+                        )
+                    )
         return permissions
 
     # ── Metadata deletion ──────────────────────────────────────────────────────
@@ -484,12 +467,7 @@ class ThoughtSpotClient:
         await self._request(
             "POST",
             "/api/rest/2.0/metadata/delete",
-            json={
-                "metadata": [
-                    {"identifier": oid, "type": object_type}
-                    for oid in object_ids
-                ]
-            },
+            json={"metadata": [{"identifier": oid, "type": object_type} for oid in object_ids]},
             context="delete_metadata",
         )
 

@@ -50,14 +50,15 @@ async def with_retry(
         try:
             return await operation()
 
-        except httpx.TimeoutException as exc:
-            last_exception = TSTimeoutError(
-                f"ThoughtSpot did not respond ({context})"
-            )
+        except httpx.TimeoutException:
+            last_exception = TSTimeoutError(f"ThoughtSpot did not respond ({context})")
             wait = BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
             logger.warning(
                 "Timeout on attempt %d/%d for %s — retrying in %.1fs",
-                attempt, MAX_RETRIES, context, wait,
+                attempt,
+                MAX_RETRIES,
+                context,
+                wait,
             )
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(wait)
@@ -69,7 +70,10 @@ async def with_retry(
                 wait = retry_after or BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
                 logger.warning(
                     "Rate limited on attempt %d/%d for %s — retrying in %.1fs",
-                    attempt, MAX_RETRIES, context, wait,
+                    attempt,
+                    MAX_RETRIES,
+                    context,
+                    wait,
                 )
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(wait)
@@ -81,7 +85,10 @@ async def with_retry(
                 )
                 logger.warning(
                     "Server error %d on attempt %d/%d for %s — retrying once",
-                    exc.response.status_code, attempt, MAX_RETRIES, context,
+                    exc.response.status_code,
+                    attempt,
+                    MAX_RETRIES,
+                    context,
                 )
                 if attempt == 1:
                     await asyncio.sleep(BASE_BACKOFF_SECONDS)

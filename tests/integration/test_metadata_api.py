@@ -12,25 +12,27 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 
-
 # ── Fixtures ───────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def in_memory_db(monkeypatch):
     # StaticPool forces all sessions to reuse the same in-memory connection.
     # Without it, each Session() opens a NEW empty SQLite in-memory DB.
     from sqlalchemy.pool import StaticPool
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     import ts_admin.database as db_module
+
     monkeypatch.setattr(db_module, "get_engine", lambda: engine)
     db_module.init_db()
     return engine
@@ -39,6 +41,7 @@ def in_memory_db(monkeypatch):
 @pytest.fixture
 def client(in_memory_db):
     from ts_admin.main import create_app
+
     app = create_app()
     return TestClient(app)
 
@@ -47,30 +50,59 @@ def client(in_memory_db):
 def seeded(in_memory_db):
     """Seed the DB with a cluster and 3 metadata objects."""
     with Session(in_memory_db) as session:
-        session.add(Cluster(id="c1", name="Prod", url="https://prod.thoughtspot.cloud", username="admin", auth_type="basic"))
+        session.add(
+            Cluster(id="c1", name="Prod", url="https://prod.thoughtspot.cloud", username="admin", auth_type="basic")
+        )
         now = datetime.now(tz=timezone.utc)
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0, ts_guid="lb-1", name="Sales Dashboard",
-            object_type="LIVEBOARD", owner_guid="u1", owner_name="Alice",
-            tag_names=json.dumps(["Finance"]), last_accessed_at=now - timedelta(days=5), synced_at=now,
-        ))
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0, ts_guid="ans-1", name="Revenue Answer",
-            object_type="ANSWER", owner_guid="u2", owner_name="Bob",
-            tag_names=json.dumps([]), last_accessed_at=now - timedelta(days=100), synced_at=now,
-        ))
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0, ts_guid="lb-2", name="HR Overview",
-            object_type="LIVEBOARD", owner_guid="u1", owner_name="Alice",
-            tag_names=json.dumps(["HR"]), last_accessed_at=None, synced_at=now,
-        ))
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-1",
+                name="Sales Dashboard",
+                object_type="LIVEBOARD",
+                owner_guid="u1",
+                owner_name="Alice",
+                tag_names=json.dumps(["Finance"]),
+                last_accessed_at=now - timedelta(days=5),
+                synced_at=now,
+            )
+        )
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="ans-1",
+                name="Revenue Answer",
+                object_type="ANSWER",
+                owner_guid="u2",
+                owner_name="Bob",
+                tag_names=json.dumps([]),
+                last_accessed_at=now - timedelta(days=100),
+                synced_at=now,
+            )
+        )
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-2",
+                name="HR Overview",
+                object_type="LIVEBOARD",
+                owner_guid="u1",
+                owner_name="Alice",
+                tag_names=json.dumps(["HR"]),
+                last_accessed_at=None,
+                synced_at=now,
+            )
+        )
         session.commit()
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
-class TestListMetadata:
 
+class TestListMetadata:
     def test_returns_all_objects(self, client, seeded):
         r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0")
         assert r.status_code == 200
@@ -94,8 +126,8 @@ class TestListMetadata:
         r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0&stale_days=90")
         assert r.status_code == 200
         guids = {i["ts_guid"] for i in r.json()["items"]}
-        assert "ans-1" in guids   # 100 days ago
-        assert "lb-2" in guids    # never accessed
+        assert "ans-1" in guids  # 100 days ago
+        assert "lb-2" in guids  # never accessed
         assert "lb-1" not in guids  # only 5 days ago
 
     def test_empty_when_no_data(self, client):
@@ -103,13 +135,13 @@ class TestListMetadata:
         assert r.status_code == 200
         assert r.json()["total"] == 0
 
-    def test_requires_cluster_id(self, client):
+    def test_falls_back_to_active_cluster(self, client, seeded):
+        # cluster_id is optional now — omitting it falls back to the active cluster.
         r = client.get("/api/v1/metadata?org_id=0")
-        assert r.status_code == 422  # FastAPI validation error
+        assert r.status_code == 200
 
 
 class TestGetMetadata:
-
     def test_returns_object(self, client, seeded):
         r = client.get("/api/v1/metadata/lb-1?cluster_id=c1&org_id=0")
         assert r.status_code == 200
@@ -125,7 +157,6 @@ class TestGetMetadata:
 
 
 class TestMetadataStats:
-
     def test_returns_stats(self, client, seeded):
         r = client.get("/api/v1/metadata/stats?cluster_id=c1&org_id=0")
         assert r.status_code == 200

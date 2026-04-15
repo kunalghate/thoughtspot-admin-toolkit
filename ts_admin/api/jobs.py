@@ -6,10 +6,10 @@ GET  /api/v1/jobs/{job_id}  — get status of a specific job
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -32,20 +32,18 @@ class JobResponse(BaseModel):
 @router.get("", response_model=list[JobResponse])
 async def list_jobs(limit: int = 20) -> list[JobResponse]:
     """Return the most recent jobs for the active cluster."""
+    from sqlmodel import select
+
     from ts_admin.config import load_config
     from ts_admin.database import get_session
     from ts_admin.models.job import Job
-    from sqlmodel import select
 
     config = load_config()
     cluster_id = config.active_cluster.id
 
     with get_session() as session:
         jobs = session.exec(
-            select(Job)
-            .where(Job.cluster_id == cluster_id)
-            .order_by(Job.created_at.desc())
-            .limit(limit)
+            select(Job).where(Job.cluster_id == cluster_id).order_by(Job.created_at.desc()).limit(limit)
         ).all()
 
     return [_job_to_response(j) for j in jobs]

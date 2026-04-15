@@ -11,6 +11,7 @@ class TSAdminError(Exception):
 
 # ── Configuration errors ───────────────────────────────────────────────────────
 
+
 class ConfigNotFoundError(TSAdminError):
     """No cluster configuration exists. Admin must complete setup first."""
 
@@ -24,6 +25,7 @@ class KeyringError(TSAdminError):
 
 
 # ── Connection errors ──────────────────────────────────────────────────────────
+
 
 class TSConnectionError(TSAdminError):
     """Cannot reach the ThoughtSpot instance (DNS failure, network issue)."""
@@ -39,6 +41,7 @@ class TSTimeoutError(TSAdminError):
 
 # ── Authentication errors ──────────────────────────────────────────────────────
 
+
 class TSAuthenticationError(TSAdminError):
     """Credentials are wrong or the session has expired (HTTP 401)."""
 
@@ -48,6 +51,7 @@ class TSInsufficientPrivilegesError(TSAdminError):
 
 
 # ── API errors ─────────────────────────────────────────────────────────────────
+
 
 class TSObjectNotFoundError(TSAdminError):
     """The requested ThoughtSpot object does not exist (HTTP 404)."""
@@ -92,6 +96,7 @@ class TSResponseParseError(TSAdminError):
 
 # ── Partial success ────────────────────────────────────────────────────────────
 
+
 class TSPartialSuccessError(TSAdminError):
     """
     A bulk operation completed but some items failed.
@@ -101,12 +106,11 @@ class TSPartialSuccessError(TSAdminError):
     def __init__(self, succeeded: list, failed: list) -> None:
         self.succeeded = succeeded
         self.failed = failed
-        super().__init__(
-            f"Partial success: {len(succeeded)} succeeded, {len(failed)} failed"
-        )
+        super().__init__(f"Partial success: {len(succeeded)} succeeded, {len(failed)} failed")
 
 
 # ── TML errors ─────────────────────────────────────────────────────────────────
+
 
 class TMLValidationError(TSAdminError):
     """TML content failed validation before import."""
@@ -126,6 +130,7 @@ class TMLDependencyError(TSAdminError):
 
 # ── Job errors ─────────────────────────────────────────────────────────────────
 
+
 class JobInterruptedError(TSAdminError):
     """A background job was interrupted before completing."""
 
@@ -133,6 +138,4 @@ class JobInterruptedError(TSAdminError):
         self.job_id = job_id
         self.completed = completed
         self.total = total
-        super().__init__(
-            f"Job {job_id} interrupted at {completed}/{total} items"
-        )
+        super().__init__(f"Job {job_id} interrupted at {completed}/{total} items")

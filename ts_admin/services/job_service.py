@@ -15,6 +15,7 @@ def create_job(*, job_type: str, parameters: dict) -> str:
     Returns the job ID.
     """
     from ts_admin.config import load_config
+
     config = load_config()
     cluster_id = config.active_cluster.id
 
