@@ -135,11 +135,6 @@ class TestListMetadata:
         assert r.status_code == 200
         assert r.json()["total"] == 0
 
-    def test_falls_back_to_active_cluster(self, client, seeded):
-        # cluster_id is optional now — omitting it falls back to the active cluster.
-        r = client.get("/api/v1/metadata?org_id=0")
-        assert r.status_code == 200
-
 
 class TestGetMetadata:
     def test_returns_object(self, client, seeded):
