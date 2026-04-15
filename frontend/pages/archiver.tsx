@@ -474,21 +474,30 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
       });
       pollUntilDone(job_id, (job) => {
         const result = (job as any).result;
-        const succeeded = result?.succeeded ?? guids.length;
-        if (action === "tag") {
+        const verb = action === "tag" ? "tag" : "untag";
+        const pastVerb = action === "tag" ? "Tagged" : "Removed";
+        const tagLabel = action === "tag" ? resolvedTagName : tagForAction;
+
+        if (job.status === "COMPLETE") {
+          const succeeded = result?.succeeded ?? guids.length;
+          const plural = succeeded !== 1 ? "s" : "";
           showToast(
-            job.status === "COMPLETE"
-              ? `Tagged ${succeeded} object${succeeded !== 1 ? "s" : ""} as "${resolvedTagName}"`
-              : `Partially tagged: ${succeeded} succeeded, ${result?.failed ?? 0} failed`,
-            job.status === "COMPLETE",
+            action === "tag"
+              ? `${pastVerb} ${succeeded} object${plural} as "${tagLabel}"`
+              : `${pastVerb} "${tagLabel}" from ${succeeded} object${plural}`,
+            true,
+          );
+        } else if (job.status === "PARTIAL") {
+          const succeeded = result?.succeeded ?? 0;
+          const failed = result?.failed ?? 0;
+          showToast(
+            `Partially ${verb}ged "${tagLabel}": ${succeeded} succeeded, ${failed} failed`,
+            false,
           );
         } else {
-          showToast(
-            job.status === "COMPLETE"
-              ? `Removed "${tagForAction}" from ${succeeded} object${succeeded !== 1 ? "s" : ""}`
-              : `Partially removed "${tagForAction}": ${succeeded} succeeded`,
-            job.status === "COMPLETE",
-          );
+          // FAILED — no chunks ran, or outer exception
+          const reason = job.error ?? "unknown error";
+          showToast(`Failed to ${verb} "${tagLabel}": ${reason}`, false);
         }
         reloadGrid();
       });

@@ -322,18 +322,28 @@ class ThoughtSpotClient:
     # ── Tags ───────────────────────────────────────────────────────────────────
 
     async def search_tags(self) -> list[TSTag]:
-        """Return all tags defined on the instance."""
-        data = await self._request(
-            "POST",
-            "/api/rest/2.0/tags/search",
-            json={},
-            context="search_tags",
-        )
-        try:
-            items = data if isinstance(data, list) else data.get("tags", [])
-            return [TSTag.model_validate(t) for t in items]
-        except ValidationError as exc:
-            raise TSResponseParseError(url="/api/rest/2.0/tags/search", detail=str(exc)) from exc
+        """Return all tags visible in the current auth/org scope, paginated."""
+        all_tags: list[TSTag] = []
+        offset = 0
+        while True:
+            data = await self._request(
+                "POST",
+                "/api/rest/2.0/tags/search",
+                json={"record_offset": offset, "record_size": PAGE_SIZE},
+                context="search_tags",
+            )
+            try:
+                items = data if isinstance(data, list) else data.get("tags", [])
+                page = [TSTag.model_validate(t) for t in items]
+            except ValidationError as exc:
+                raise TSResponseParseError(url="/api/rest/2.0/tags/search", detail=str(exc)) from exc
+            if not page:
+                break
+            all_tags.extend(page)
+            if len(page) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+        return all_tags
 
     async def assign_tag(self, *, object_ids: list[str], tag_id: str) -> None:
         """Assign a tag to one or more objects."""

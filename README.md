@@ -75,7 +75,7 @@ The Content Archiver helps admins identify, tag, and safely delete stale Liveboa
 **Workflow:**
 1. **Set criteria** — a single **Stale: 90d AND 90d** pill opens a compact editor where you pick both `Last Accessed ≥` and `Last Modified ≥` thresholds plus the AND/OR operator. Scope further with type chips (Liveboard / Answer) and per-tag include/exclude.
 2. **Review** — browse stale objects in a grid; every column funnel applies real backend filters (name · type · owner · tag substring, numeric ranges on Views / Days Unused, date ranges on Last Accessed / Modified / Created). System-owned objects are hidden automatically.
-3. **Tag** — bulk-tag selected rows (e.g. `Stale`) with one click; choose from existing cluster tags or create new ones. Tags currently on the selection appear as red pill chips in the toolbar — click one to remove that tag from every selected row.
+3. **Tag** — bulk-tag selected rows (e.g. `Stale`) with one click; choose from existing cluster tags or create new ones. Tag lookup is case-insensitive and scoped to the selected org (including the Primary org, `org_id=0`); if the name already exists elsewhere on the cluster the Archiver reuses it instead of failing. Tags currently on the selection appear as red pill chips in the toolbar — click one to remove that tag from every selected row.
 4. **Delete (safe)** — click **Delete selected** → dry-run checks permissions and dependencies → type `DELETE` to confirm → every object gets a TML backup before deletion.
 5. **History** — browse all past archive sessions; download individual TML backups for any deleted object. Same column-filter model as the Archive tab.
 

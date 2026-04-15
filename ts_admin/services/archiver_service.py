@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import asc, desc, func, nulls_last
 from sqlmodel import Session, col, or_, select
 
@@ -496,18 +497,39 @@ async def execute(
         cluster = _get_cluster(cluster_id)
         async with ThoughtSpotClient(
             url=cluster.url,
-            auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
+            auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
-            # Resolve or create the tag
+            # Resolve or create the tag (case-insensitive match — TS tag names are unique by name)
+            def _find_tag(tag_list: list, name: str):
+                lowered = name.lower()
+                return next((t for t in tag_list if t.name.lower() == lowered), None)
+
             tags = await client.search_tags()
-            tag = next((t for t in tags if t.name == tag_name), None)
+            tag = _find_tag(tags, tag_name)
 
             if tag is None:
                 if not create_tag_if_missing:
                     mark_failed(job_id, f"Tag {tag_name!r} not found on cluster")
                     return
-                tag = await client.create_tag(name=tag_name)
-                logger.info("Created tag %r on cluster %s", tag_name, cluster_id)
+                try:
+                    tag = await client.create_tag(name=tag_name)
+                    logger.info("Created tag %r on cluster %s", tag_name, cluster_id)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 409:
+                        raise
+                    # Tag name already exists (possibly in another org or just created
+                    # concurrently). Re-search and reuse.
+                    logger.info("create_tag 409 for %r — re-searching to reuse existing tag", tag_name)
+                    tags = await client.search_tags()
+                    tag = _find_tag(tags, tag_name)
+                    if tag is None:
+                        mark_failed(
+                            job_id,
+                            f"Tag {tag_name!r} exists on the cluster but is not visible "
+                            f"in the current org. Switch to the org that owns the tag, or "
+                            f"use a different tag name.",
+                        )
+                        return
 
             succeeded = 0
             failed_ids: list[str] = []
@@ -675,7 +697,7 @@ async def _execute_delete(
 
         async with ThoughtSpotClient(
             url=cluster.url,
-            auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
+            auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
             for chunk in _chunks(object_ids, 50):
                 try:
@@ -846,7 +868,7 @@ async def dryrun(
 
         async with ThoughtSpotClient(
             url=cluster.url,
-            auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
+            auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
             # ── Permission check (concurrent, Semaphore(10)) ──────────────────
             sem = asyncio.Semaphore(10)
@@ -1050,7 +1072,7 @@ async def restore(
 
         async with ThoughtSpotClient(
             url=cluster.url,
-            auth=cluster.build_auth_strategy(org_id if org_id != 0 else None),
+            auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
             for chunk_ids in _chunks(archive_record_ids, 10):
                 chunk_recs = [rec_map[rid] for rid in chunk_ids if rid in rec_map]
