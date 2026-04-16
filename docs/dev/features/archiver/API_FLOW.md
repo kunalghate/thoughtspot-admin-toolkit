@@ -69,7 +69,7 @@ TML export are not deleted.
 
 (Optional: `GET /history` for session view, `GET /history/{job_id}` for one session.)
 
-### 7. Restore an archived record
+### 7. Restore an archived record ( Hidden/Roadmap )
 
 1. `POST /restore` — `{archive_record_ids}` → `{job_id}`.
 2. Poll `GET /jobs/{job_id}` until complete. Restored objects get **new GUIDs**.
