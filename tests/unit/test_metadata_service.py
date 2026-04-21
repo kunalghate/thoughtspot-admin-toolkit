@@ -11,25 +11,27 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, create_engine
 
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.services.metadata_service import MetadataService
 
-
 # ── Fixtures ───────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def in_memory_db(monkeypatch):
     """Patch get_engine() to use an in-memory SQLite DB for each test."""
     from sqlalchemy.pool import StaticPool
+
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     import ts_admin.database as db_module
+
     monkeypatch.setattr(db_module, "get_engine", lambda: engine)
     db_module.init_db()
     return engine
@@ -43,20 +45,43 @@ def session(in_memory_db):
 
 @pytest.fixture
 def cluster(session):
-    c = Cluster(id="test-cluster", name="Test", url="https://test.thoughtspot.cloud", username="admin", auth_type="basic")
+    c = Cluster(
+        id="test-cluster", name="Test", url="https://test.thoughtspot.cloud", username="admin", auth_type="basic"
+    )
     session.add(c)
     session.commit()
     return c
 
 
-def _make_obj(session, *, cluster_id="test-cluster", org_id=0, guid, name, object_type="LIVEBOARD",
-              owner_guid="owner-1", owner_name="Alice", tag_names=None, last_accessed_days_ago=10):
-    last = datetime.now(tz=timezone.utc) - timedelta(days=last_accessed_days_ago) if last_accessed_days_ago is not None else None
+def _make_obj(
+    session,
+    *,
+    cluster_id="test-cluster",
+    org_id=0,
+    guid,
+    name,
+    object_type="LIVEBOARD",
+    owner_guid="owner-1",
+    owner_name="Alice",
+    tag_names=None,
+    last_accessed_days_ago=10,
+):
+    last = (
+        datetime.now(tz=timezone.utc) - timedelta(days=last_accessed_days_ago)
+        if last_accessed_days_ago is not None
+        else None
+    )
     obj = CachedMetadata(
-        cluster_id=cluster_id, org_id=org_id, ts_guid=guid, name=name,
-        object_type=object_type, owner_guid=owner_guid, owner_name=owner_name,
-        tag_names=json.dumps(tag_names or []),   # stored as JSON string
-        last_accessed_at=last, synced_at=datetime.now(tz=timezone.utc),
+        cluster_id=cluster_id,
+        org_id=org_id,
+        ts_guid=guid,
+        name=name,
+        object_type=object_type,
+        owner_guid=owner_guid,
+        owner_name=owner_name,
+        tag_names=json.dumps(tag_names or []),  # stored as JSON string
+        last_accessed_at=last,
+        synced_at=datetime.now(tz=timezone.utc),
     )
     session.add(obj)
     session.commit()
@@ -65,8 +90,8 @@ def _make_obj(session, *, cluster_id="test-cluster", org_id=0, guid, name, objec
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
 
-class TestMetadataServiceSearch:
 
+class TestMetadataServiceSearch:
     def test_returns_all_for_cluster_org(self, session, cluster):
         _make_obj(session, guid="a", name="Sales Dashboard")
         _make_obj(session, guid="b", name="Revenue Report")
@@ -126,13 +151,12 @@ class TestMetadataServiceSearch:
     def test_pagination(self, session, cluster):
         for i in range(10):
             _make_obj(session, guid=f"guid-{i}", name=f"Object {i}")
-        items, total = MetadataService.search(cluster_id="test-cluster", org_id=0, page=1, page_size=3)
+        items, total = MetadataService.search(cluster_id="test-cluster", org_id=0, record_offset=0, page_size=3)
         assert total == 10
         assert len(items) == 3
 
 
 class TestMetadataServiceGet:
-
     def test_returns_object_by_guid(self, session, cluster):
         _make_obj(session, guid="abc-123", name="My Liveboard")
         obj = MetadataService.get(cluster_id="test-cluster", org_id=0, ts_guid="abc-123")
@@ -145,7 +169,6 @@ class TestMetadataServiceGet:
 
 
 class TestMetadataServiceStats:
-
     def test_returns_correct_totals(self, session, cluster):
         _make_obj(session, guid="a", name="A", object_type="LIVEBOARD", last_accessed_days_ago=10)
         _make_obj(session, guid="b", name="B", object_type="ANSWER", last_accessed_days_ago=10)

@@ -11,13 +11,11 @@ class CachedOrg(SQLModel, table=True):
     """
 
     __tablename__ = "ts_orgs"
-    __table_args__ = (
-        UniqueConstraint("cluster_id", "ts_org_id", name="uq_ts_orgs_cluster_org"),
-    )
+    __table_args__ = (UniqueConstraint("cluster_id", "ts_org_id", name="uq_ts_orgs_cluster_org"),)
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
-    ts_org_id: int = Field(index=True)      # ThoughtSpot's numeric org ID (0 = primary)
+    ts_org_id: int = Field(index=True)  # ThoughtSpot's numeric org ID (0 = primary)
     name: str
     description: str = ""
     status: str = "ACTIVE"

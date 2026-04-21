@@ -32,6 +32,47 @@ export function useShell(): ShellContextValue {
   return useContext(ShellContext);
 }
 
+// ── Org persistence helpers ────────────────────────────────────────────────────
+// Full org object stored as JSON so it can be restored synchronously before
+// the async org-list fetch completes — eliminates the flash of the primary org.
+
+const _ORG_KEY = (clusterId: string) => `ts_admin_active_org_${clusterId}`;
+
+/** Read cached org synchronously — used to set org BEFORE async calls fire. */
+function _readCachedOrg(clusterId: string): Org | null {
+  try {
+    const raw = localStorage.getItem(_ORG_KEY(clusterId));
+    if (raw) return JSON.parse(raw) as Org;
+  } catch { /* localStorage unavailable or corrupt */ }
+  return null;
+}
+
+/**
+ * After the org list loads, confirm the saved org is still valid.
+ * Falls back to list[0] if the saved org was removed from the cluster.
+ */
+function _restoreOrg(orgs: Org[], clusterId: string): Org | null {
+  try {
+    const raw = localStorage.getItem(_ORG_KEY(clusterId));
+    if (raw) {
+      const saved = JSON.parse(raw) as Org;
+      const match = orgs.find((o) => o.org_id === saved.org_id);
+      if (match) return match;
+    }
+  } catch { /* localStorage unavailable */ }
+  return orgs[0] ?? null;
+}
+
+function _saveOrg(org: Org | null, clusterId: string): void {
+  try {
+    if (org != null) {
+      localStorage.setItem(_ORG_KEY(clusterId), JSON.stringify(org));
+    } else {
+      localStorage.removeItem(_ORG_KEY(clusterId));
+    }
+  } catch { /* localStorage unavailable */ }
+}
+
 interface AppShellProps {
   pageTitle: string;
   entityType?: EntityType;      // determines which sync log entry to show in topbar
@@ -72,6 +113,11 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
 
     setClusterOnline(null);  // reset to "checking"
 
+    // Restore saved org immediately from cache so there is no flash of the
+    // primary org while the async org-list fetch is in flight.
+    const cached = _readCachedOrg(activeCluster.id);
+    if (cached) setActiveOrg(cached);
+
     // Non-blocking: test connectivity first, then load orgs
     clustersApi.testConnection(activeCluster.id).then((result) => {
       const online = result.success;
@@ -81,13 +127,13 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
         // Cluster is reachable — fetch orgs live
         return clustersApi.listOrgs(activeCluster.id).then((list) => {
           setOrgs(list);
-          setActiveOrg(list[0] ?? null);
+          setActiveOrg(_restoreOrg(list, activeCluster.id));
         });
       } else {
         // Cluster offline — fall back to SQLite cache
         return clustersApi.listCachedOrgs(activeCluster.id).then((list) => {
           setOrgs(list);
-          setActiveOrg(list[0] ?? null);
+          setActiveOrg(_restoreOrg(list, activeCluster.id));
         });
       }
     }).catch(() => {
@@ -95,7 +141,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
       setClusterOnline(false);
       clustersApi.listCachedOrgs(activeCluster.id).then((list) => {
         setOrgs(list);
-        setActiveOrg(list[0] ?? null);
+        setActiveOrg(_restoreOrg(list, activeCluster.id));
       }).catch(() => {});
     });
   }, [activeCluster?.id]);
@@ -172,7 +218,10 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           orgs={orgs}
           syncLog={activeSyncLog}
           syncProgress={syncProgress}
-          onOrgChange={setActiveOrg}
+          onOrgChange={(org) => {
+            setActiveOrg(org);
+            if (activeCluster) _saveOrg(org, activeCluster.id);
+          }}
           onSync={handleSync}
           isSyncing={isSyncing}
           clusterOnline={clusterOnline}

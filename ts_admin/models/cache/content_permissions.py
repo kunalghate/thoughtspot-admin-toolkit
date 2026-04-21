@@ -1,4 +1,5 @@
 from datetime import datetime
+
 from sqlmodel import Field, SQLModel
 
 
@@ -39,8 +40,8 @@ class ContentPermission(SQLModel, table=True):
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
     org_id: int = Field(index=True)
     # Logical FK → (ts_orgs.cluster_id, ts_orgs.ts_org_id). Not DB-enforced (composite key).
-    metadata_guid: str = Field(index=True)      # FK → ts_metadata.ts_guid
-    principal_type: str                          # "user" | "group"
-    principal_guid: str = Field(index=True)      # FK → ts_users.ts_guid or ts_groups.ts_guid
-    permission: str                              # "READ_ONLY" | "MODIFY"
+    metadata_guid: str = Field(index=True)  # FK → ts_metadata.ts_guid
+    principal_type: str  # "user" | "group"
+    principal_guid: str = Field(index=True)  # FK → ts_users.ts_guid or ts_groups.ts_guid
+    permission: str  # "READ_ONLY" | "MODIFY"
     synced_at: datetime | None = None

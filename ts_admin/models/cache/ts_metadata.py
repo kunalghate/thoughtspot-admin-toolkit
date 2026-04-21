@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+
 from sqlmodel import Field, SQLModel
 
 
@@ -23,10 +24,10 @@ class CachedMetadata(SQLModel, table=True):
     # Logical FK → (ts_orgs.cluster_id, ts_orgs.ts_org_id). Not DB-enforced (composite key).
     ts_guid: str = Field(index=True)
     name: str
-    object_type: str                      # LIVEBOARD | ANSWER | LOGICAL_TABLE | ...
-    owner_guid: str = ""                  # GUID of the owning user
-    owner_name: str = ""                  # display name of owner (denormalized)
-    tag_names: str = "[]"                 # JSON list of tag names
+    object_type: str  # LIVEBOARD | ANSWER | LOGICAL_TABLE | ...
+    owner_guid: str = ""  # GUID of the owning user
+    owner_name: str = ""  # display name of owner (denormalized)
+    tag_names: str = "[]"  # JSON list of tag names
     created_at: datetime | None = None
     modified_at: datetime | None = None
     last_accessed_at: datetime | None = None

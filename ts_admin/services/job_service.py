@@ -15,6 +15,7 @@ def create_job(*, job_type: str, parameters: dict) -> str:
     Returns the job ID.
     """
     from ts_admin.config import load_config
+
     config = load_config()
     cluster_id = config.active_cluster.id
 
@@ -74,3 +75,22 @@ def mark_failed(job_id: str, error: str) -> None:
             job.completed_at = datetime.now(timezone.utc)
             session.add(job)
             session.commit()
+
+
+def mark_partial(job_id: str, result: dict) -> None:
+    """Mark a job PARTIAL — some items succeeded, some failed."""
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if job:
+            job.status = "PARTIAL"
+            job.completed_at = datetime.now(timezone.utc)
+            job.set_result(result)
+            session.add(job)
+            session.commit()
+
+
+def is_cancelled(job_id: str) -> bool:
+    """Return True if the job has been cancelled. Reads fresh from DB each call."""
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        return bool(job and job.is_cancelled)

@@ -1,5 +1,5 @@
-import json
 from datetime import datetime
+
 from sqlmodel import Field, SQLModel
 
 
@@ -22,11 +22,11 @@ class CachedUser(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
-    ts_guid: str = Field(index=True)        # ThoughtSpot's GUID for this user
+    ts_guid: str = Field(index=True)  # ThoughtSpot's GUID for this user
     username: str
     display_name: str = ""
     email: str = ""
-    status: str = "ACTIVE"                  # ACTIVE | INACTIVE
+    status: str = "ACTIVE"  # ACTIVE | INACTIVE
     created_at: datetime | None = None
     modified_at: datetime | None = None
     synced_at: datetime | None = None
@@ -44,8 +44,8 @@ class UserOrgMembership(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
-    ts_guid: str = Field(index=True)        # FK to ts_users.ts_guid
-    org_id: int = Field(index=True)         # ThoughtSpot org ID (0 = primary org)
+    ts_guid: str = Field(index=True)  # FK to ts_users.ts_guid
+    org_id: int = Field(index=True)  # ThoughtSpot org ID (0 = primary org)
     synced_at: datetime | None = None
 
 
@@ -70,7 +70,7 @@ class UserGroupMembership(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
-    org_id: int = Field(index=True)         # ThoughtSpot org ID (0 = primary org)
-    user_guid: str = Field(index=True)      # FK to ts_users.ts_guid
-    group_guid: str = Field(index=True)     # FK to ts_groups.ts_guid
+    org_id: int = Field(index=True)  # ThoughtSpot org ID (0 = primary org)
+    user_guid: str = Field(index=True)  # FK to ts_users.ts_guid
+    group_guid: str = Field(index=True)  # FK to ts_groups.ts_guid
     synced_at: datetime | None = None

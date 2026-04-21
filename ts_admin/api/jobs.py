@@ -6,10 +6,10 @@ GET  /api/v1/jobs/{job_id}  — get status of a specific job
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -32,20 +32,18 @@ class JobResponse(BaseModel):
 @router.get("", response_model=list[JobResponse])
 async def list_jobs(limit: int = 20) -> list[JobResponse]:
     """Return the most recent jobs for the active cluster."""
+    from sqlmodel import select
+
     from ts_admin.config import load_config
     from ts_admin.database import get_session
     from ts_admin.models.job import Job
-    from sqlmodel import select
 
     config = load_config()
     cluster_id = config.active_cluster.id
 
     with get_session() as session:
         jobs = session.exec(
-            select(Job)
-            .where(Job.cluster_id == cluster_id)
-            .order_by(Job.created_at.desc())
-            .limit(limit)
+            select(Job).where(Job.cluster_id == cluster_id).order_by(Job.created_at.desc()).limit(limit)
         ).all()
 
     return [_job_to_response(j) for j in jobs]
@@ -64,6 +62,30 @@ async def get_job(job_id: str) -> JobResponse:
         raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
 
     return _job_to_response(job)
+
+
+@router.delete("/{job_id}/cancel", status_code=204)
+async def cancel_job(job_id: str) -> None:
+    """
+    Request cancellation of a running job.
+
+    Sets job.is_cancelled = True. The running background task checks this
+    flag at each chunk boundary and stops cleanly if set.
+
+    Returns 409 if the job is already done.
+    """
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id!r} not found")
+        if job.is_done:
+            raise HTTPException(status_code=409, detail=f"Job {job_id!r} is already {job.status}")
+        job.is_cancelled = True
+        session.add(job)
+        session.commit()
 
 
 def _job_to_response(job) -> JobResponse:

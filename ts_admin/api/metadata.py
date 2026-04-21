@@ -27,6 +27,7 @@ router = APIRouter(prefix="/metadata", tags=["Metadata"])
 
 # ── Response schemas ───────────────────────────────────────────────────────────
 
+
 class MetadataObjectResponse(BaseModel):
     ts_guid: str
     name: str
@@ -41,7 +42,7 @@ class MetadataObjectResponse(BaseModel):
     view_count: int
 
     @classmethod
-    def from_cache(cls, obj: CachedMetadata) -> "MetadataObjectResponse":
+    def from_cache(cls, obj: CachedMetadata) -> MetadataObjectResponse:
         return cls(
             ts_guid=obj.ts_guid,
             name=obj.name,
@@ -74,8 +75,8 @@ class MetadataStatsResponse(BaseModel):
 class PermissionEntry(BaseModel):
     principal_id: str
     principal_name: str
-    principal_type: str   # "USER" or "USER_GROUP"
-    share_mode: str       # "READ_ONLY" or "MODIFY"
+    principal_type: str  # "USER" or "USER_GROUP"
+    share_mode: str  # "READ_ONLY" or "MODIFY"
 
 
 class PermissionsResponse(BaseModel):
@@ -86,6 +87,7 @@ class PermissionsResponse(BaseModel):
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
+
 @router.get("", response_model=MetadataListResponse)
 def list_metadata(
     cluster_id: str | None = Query(default=None, description="Cluster ID (defaults to active cluster)"),
@@ -95,6 +97,16 @@ def list_metadata(
     tag_names: list[str] | None = Query(default=None, description="Filter by tag name(s)"),
     search: str | None = Query(default=None, description="Substring search on name"),
     stale_days: int | None = Query(default=None, ge=1, description="Only objects unused for N+ days"),
+    owner_name_search: str | None = Query(default=None, description="Substring match on owner display name"),
+    tag_search: str | None = Query(default=None, description="Substring match on tag names"),
+    views_min: int | None = Query(default=None, ge=0),
+    views_max: int | None = Query(default=None, ge=0),
+    last_accessed_before: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+    last_accessed_after: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+    modified_before: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+    modified_after: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+    created_before: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
+    created_after: str | None = Query(default=None, description="ISO date YYYY-MM-DD"),
     sort_field: str = Query(default="modified_at", description="Field to sort by"),
     sort_order: Literal["asc", "desc"] = Query(default="desc", description="Sort direction"),
     record_offset: int = Query(default=0, ge=0),
@@ -108,6 +120,7 @@ def list_metadata(
     """
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
 
     items, total = MetadataService.search(
@@ -118,6 +131,16 @@ def list_metadata(
         tag_names=tag_names,
         search=search,
         stale_days=stale_days,
+        owner_name_search=owner_name_search,
+        tag_search=tag_search,
+        views_min=views_min,
+        views_max=views_max,
+        last_accessed_before=last_accessed_before,
+        last_accessed_after=last_accessed_after,
+        modified_before=modified_before,
+        modified_after=modified_after,
+        created_before=created_before,
+        created_after=created_after,
         sort_field=sort_field,
         sort_order=sort_order,
         record_offset=record_offset,
@@ -139,6 +162,7 @@ def metadata_stats(
     """Aggregate stats for the dashboard health card."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     stats = MetadataService.stats(cluster_id=cluster_id, org_id=org_id)
     return MetadataStatsResponse(**stats)
@@ -202,6 +226,7 @@ def get_metadata(
     """Return a single metadata object by ThoughtSpot GUID."""
     if not cluster_id:
         from ts_admin.config import load_config
+
         cluster_id = load_config().active_cluster.id
     obj = MetadataService.get(cluster_id=cluster_id, org_id=org_id, ts_guid=ts_guid)
     if obj is None:

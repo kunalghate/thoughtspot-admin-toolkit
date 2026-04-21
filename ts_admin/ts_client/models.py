@@ -21,29 +21,31 @@ class TSBaseModel(BaseModel):
 
 # ── Enums ──────────────────────────────────────────────────────────────────────
 
+
 class MetadataType(StrEnum):
-    LIVEBOARD          = "LIVEBOARD"
-    ANSWER             = "ANSWER"
-    LOGICAL_TABLE      = "LOGICAL_TABLE"       # generic (used in TS API type field)
-    WORKSHEET          = "WORKSHEET"           # subtype: standard worksheet
+    LIVEBOARD = "LIVEBOARD"
+    ANSWER = "ANSWER"
+    LOGICAL_TABLE = "LOGICAL_TABLE"  # generic (used in TS API type field)
+    WORKSHEET = "WORKSHEET"  # subtype: standard worksheet
     ONE_TO_ONE_LOGICAL = "ONE_TO_ONE_LOGICAL"  # subtype: physical table
-    AGGR_WORKSHEET     = "AGGR_WORKSHEET"      # subtype: materialized view / agg worksheet
-    SQL_VIEW           = "SQL_VIEW"            # subtype: SQL view
-    USER_DEFINED       = "USER_DEFINED"        # subtype: user-defined data source
+    AGGR_WORKSHEET = "AGGR_WORKSHEET"  # subtype: materialized view / agg worksheet
+    SQL_VIEW = "SQL_VIEW"  # subtype: SQL view
+    USER_DEFINED = "USER_DEFINED"  # subtype: user-defined data source
 
 
 class UserStatus(StrEnum):
-    ACTIVE   = "ACTIVE"
+    ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
 
 
 class AuthType(StrEnum):
-    BASIC   = "basic"
+    BASIC = "basic"
     TRUSTED = "trusted"
-    BEARER  = "bearer"
+    BEARER = "bearer"
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
+
 
 class TSUser(TSBaseModel):
     id: str = Field(alias="id")
@@ -66,6 +68,7 @@ class TSUsersResponse(TSBaseModel):
 
 # ── Groups ─────────────────────────────────────────────────────────────────────
 
+
 class TSGroup(TSBaseModel):
     id: str
     name: str
@@ -84,10 +87,15 @@ class TSGroupsResponse(TSBaseModel):
 
 # ── Metadata (content) ─────────────────────────────────────────────────────────
 
+
 class TSTag(TSBaseModel):
     id: str
     name: str
-    color: str = Field(default="")
+    color: str | None = Field(default=None)
+
+    @property
+    def color_str(self) -> str:
+        return self.color or ""
 
 
 class TSMetadataObject(TSBaseModel):
@@ -98,11 +106,12 @@ class TSMetadataObject(TSBaseModel):
     Nested under metadata_header: id, name, author, authorDisplayName,
                                    created (epoch ms), modified (epoch ms), tags
     """
+
     id: str = Field(alias="metadata_id")
     name: str = Field(alias="metadata_name")
     type: MetadataType = Field(alias="metadata_type")
     owner_id: str = ""
-    author_name: str = ""       # authorDisplayName from metadata_header
+    author_name: str = ""  # authorDisplayName from metadata_header
     created: datetime | None = None
     modified: datetime | None = None
     tags: list[TSTag] = Field(default_factory=list)
@@ -115,26 +124,30 @@ class TSMetadataObject(TSBaseModel):
         if isinstance(obj, dict) and "metadata_header" in obj:
             header = obj.get("metadata_header") or {}
             flat = dict(obj)
-            flat["owner_id"]    = header.get("author", "")
+            flat["owner_id"] = header.get("author", "")
             flat["author_name"] = header.get("authorDisplayName", "")
-            created_ms  = header.get("created")
+            created_ms = header.get("created")
             modified_ms = header.get("modified")
             if created_ms:
                 from datetime import timezone
+
                 flat["created"] = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
             if modified_ms:
                 from datetime import timezone
+
                 flat["modified"] = datetime.fromtimestamp(modified_ms / 1000, tz=timezone.utc)
             raw_tags = header.get("tags") or []
             flat["tags"] = [
                 {"id": t.get("id", ""), "name": t.get("name", ""), "color": t.get("color", "")}
-                for t in raw_tags if isinstance(t, dict)
+                for t in raw_tags
+                if isinstance(t, dict)
             ]
             # stats object: {"views": int, "last_accessed": epoch_ms | None, ...}
             stats = obj.get("stats") or {}
             last_accessed_ms = stats.get("last_accessed")
             if last_accessed_ms:
                 from datetime import timezone
+
                 flat["last_accessed"] = datetime.fromtimestamp(last_accessed_ms / 1000, tz=timezone.utc)
             flat["view_count"] = stats.get("views", 0) or 0
             obj = flat
@@ -147,8 +160,9 @@ class TSMetadataResponse(TSBaseModel):
 
 # ── Orgs ───────────────────────────────────────────────────────────────────────
 
+
 class TSOrgStatus(StrEnum):
-    ACTIVE   = "ACTIVE"
+    ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
 
 
@@ -166,8 +180,10 @@ class TSOrgsResponse(TSBaseModel):
 
 # ── Dependencies ───────────────────────────────────────────────────────────────
 
+
 class TSDependency(TSBaseModel):
     """A directed dependency edge: source object depends on target object."""
+
     source_id: str
     source_type: MetadataType
     target_id: str
@@ -175,6 +191,7 @@ class TSDependency(TSBaseModel):
 
 
 # ── Auth / session ─────────────────────────────────────────────────────────────
+
 
 class TSTokenResponse(TSBaseModel):
     token: str
@@ -185,9 +202,10 @@ class TSTokenResponse(TSBaseModel):
 
 # ── Sharing / Permissions ──────────────────────────────────────────────────────
 
+
 class SharePermission(StrEnum):
     READ_ONLY = "READ_ONLY"
-    MODIFY    = "MODIFY"
+    MODIFY = "MODIFY"
     NO_ACCESS = "NO_ACCESS"
 
 
@@ -199,7 +217,8 @@ class TSShareResult(TSBaseModel):
 
 class TSPermission(TSBaseModel):
     """One principal's access level on a metadata object."""
+
     principal_id: str
     principal_name: str
-    principal_type: str    # "USER" or "USER_GROUP"
+    principal_type: str  # "USER" or "USER_GROUP"
     share_mode: SharePermission

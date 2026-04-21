@@ -34,8 +34,117 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ThoughtSpot Admin Toolkit...")
     init_db()
     logger.info("Database ready.")
+    _recover_stuck_jobs()
+    _cleanup_old_tml_exports()
     yield
     logger.info("Shutting down.")
+
+
+def _recover_stuck_jobs() -> None:
+    """
+    Mark any RUNNING or QUEUED jobs as FAILED on startup.
+
+    For archive delete jobs where TML export succeeded before the crash,
+    conservatively remove those CachedMetadata rows (assume the delete went
+    through — they can be restored from ArchiveRecord if not).
+    """
+    from datetime import datetime, timezone
+
+    from sqlmodel import col, select
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.database import get_session
+    from ts_admin.models.archive_record import ArchiveRecord
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        stuck = session.exec(select(Job).where(col(Job.status).in_(["RUNNING", "QUEUED"]))).all()
+
+        if not stuck:
+            return
+
+        for job in stuck:
+            # For archive delete jobs: remove CachedMetadata rows that were
+            # successfully exported (conservative assumption: they were deleted)
+            if job.job_type == "archive" and job.parameters:
+                params = job.get_parameters()
+                if params.get("action") == "delete":
+                    exported_guids = session.exec(
+                        select(ArchiveRecord.ts_guid).where(
+                            ArchiveRecord.job_id == job.id,
+                            ArchiveRecord.tml_export_status == "SUCCESS",
+                        )
+                    ).all()
+                    if exported_guids:
+                        session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(exported_guids)))
+                        logger.warning(
+                            "Startup recovery: removed %d CachedMetadata rows "
+                            "for stuck archive job %s (TML export succeeded — "
+                            "assumed deleted)",
+                            len(exported_guids),
+                            job.id,
+                        )
+
+            job.status = "FAILED"
+            job.error = "Server restarted while job was running"
+            job.completed_at = datetime.now(timezone.utc)
+            session.add(job)
+
+        session.commit()
+        logger.info("Startup recovery: marked %d stuck job(s) as FAILED", len(stuck))
+
+
+def _cleanup_old_tml_exports() -> None:
+    """
+    Remove TML export directories older than 90 days where all ArchiveRecords
+    for that job_id have been restored (restored_at IS NOT NULL).
+
+    Safe to skip on error — this is housekeeping only.
+    """
+    import shutil
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import func, select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.archive_record import ArchiveRecord
+    from ts_admin.services.archiver_service import TML_EXPORT_DIR
+
+    if not TML_EXPORT_DIR.exists():
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+
+    try:
+        for job_dir in TML_EXPORT_DIR.iterdir():
+            if not job_dir.is_dir():
+                continue
+
+            # Check mtime — skip recent directories
+            mtime = datetime.fromtimestamp(job_dir.stat().st_mtime, tz=timezone.utc)
+            if mtime > cutoff:
+                continue
+
+            job_id = job_dir.name
+            with get_session() as session:
+                total = session.exec(
+                    select(func.count()).select_from(ArchiveRecord).where(ArchiveRecord.job_id == job_id)
+                ).one()
+                restored = session.exec(
+                    select(func.count())
+                    .select_from(ArchiveRecord)
+                    .where(
+                        ArchiveRecord.job_id == job_id,
+                        ArchiveRecord.restored_at.isnot(None),
+                    )
+                ).one()
+
+            if total > 0 and total == restored:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                logger.info("Cleaned up TML export dir for fully-restored job %s", job_id)
+    except Exception as exc:
+        logger.warning("TML export cleanup skipped due to error: %s", exc)
 
 
 def create_app(port: int = 8080) -> FastAPI:
@@ -126,13 +235,14 @@ def create_app(port: int = 8080) -> FastAPI:
 
 
 def _register_routers(app: FastAPI) -> None:
-    from ts_admin.api import clusters, sync, jobs, health, metadata
+    from ts_admin.api import archiver, clusters, health, jobs, metadata, sync
 
-    app.include_router(health.router,    prefix="/api/v1")
-    app.include_router(clusters.router,  prefix="/api/v1")
-    app.include_router(sync.router,      prefix="/api/v1")
-    app.include_router(jobs.router,      prefix="/api/v1")
-    app.include_router(metadata.router,  prefix="/api/v1")
+    app.include_router(health.router, prefix="/api/v1")
+    app.include_router(clusters.router, prefix="/api/v1")
+    app.include_router(sync.router, prefix="/api/v1")
+    app.include_router(jobs.router, prefix="/api/v1")
+    app.include_router(metadata.router, prefix="/api/v1")
+    app.include_router(archiver.router, prefix="/api/v1")
 
 
 # Module-level app instance for uvicorn: uvicorn ts_admin.main:app

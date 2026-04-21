@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+
 from sqlmodel import Field, SQLModel
 
 
@@ -8,18 +9,17 @@ class Job(SQLModel, table=True):
 
     __tablename__ = "jobs"
 
-    id: str = Field(primary_key=True)       # UUID assigned at creation
+    id: str = Field(primary_key=True)  # UUID assigned at creation
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
-    job_type: str                           # "archive" | "share" | "sync" | ...
-    status: str = "QUEUED"                  # QUEUED | RUNNING | COMPLETE | FAILED | PARTIAL
-    progress: int = 0                       # items processed so far
-    total: int = 0                          # total items to process
-    parameters: str = "{}"                 # JSON string of job input params
-    result: str | None = None              # JSON string of result summary
+    job_type: str  # "archive" | "share" | "sync" | ...
+    status: str = "QUEUED"  # QUEUED | RUNNING | COMPLETE | FAILED | PARTIAL
+    progress: int = 0  # items processed so far
+    total: int = 0  # total items to process
+    parameters: str = "{}"  # JSON string of job input params
+    result: str | None = None  # JSON string of result summary
     error: str | None = None
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    is_cancelled: bool = False  # set True by DELETE /jobs/{id}/cancel
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
