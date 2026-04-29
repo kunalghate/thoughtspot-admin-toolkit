@@ -36,20 +36,28 @@ class JobListResponse(BaseModel):
     page_size: int
 
 
+_SORTABLE_FIELDS = {"created_at", "completed_at", "started_at", "status", "job_type", "progress"}
+
+
 @router.get("", response_model=JobListResponse)
 async def list_jobs(
     cluster_id: str | None = Query(default=None),
     job_types: list[str] | None = Query(default=None, description="Filter by job_type — repeat the param"),
     statuses: list[str] | None = Query(default=None, description="Filter by status (QUEUED|RUNNING|COMPLETE|PARTIAL|FAILED)"),
+    sort_field: str = Query(default="created_at", description="created_at|completed_at|started_at|status|job_type|progress"),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     record_offset: int = Query(default=0, ge=0),
-    page_size: int = Query(default=200, ge=1, le=1000),
+    page_size: int = Query(default=50, ge=1, le=1000),
 ) -> JobListResponse:
     """
     Paginated list of background jobs for the active cluster (or a
-    specific cluster_id), most recent first. Surfaces every job_type:
-    archive, archive_dryrun, bulk_delete, bulk_delete_dryrun, sync,
-    etc.
+    specific cluster_id). Surfaces every job_type: archive,
+    archive_dryrun, bulk_delete, bulk_delete_dryrun, sync, etc.
+
+    Sortable columns: created_at, completed_at, started_at, status,
+    job_type, progress. Default sort is created_at desc (newest first).
     """
+    from sqlalchemy import asc, desc, nulls_last
     from sqlmodel import col, func, select
 
     from ts_admin.config import load_config
@@ -65,12 +73,18 @@ async def list_jobs(
     if statuses:
         conditions.append(col(Job.status).in_(statuses))
 
+    # Whitelist the sort field; fall back to created_at on anything unexpected.
+    sf = sort_field if sort_field in _SORTABLE_FIELDS else "created_at"
+    sort_col = getattr(Job, sf)
+    direction = asc if sort_order.lower() == "asc" else desc
+    order_expr = nulls_last(direction(sort_col))
+
     with get_session() as session:
         total = session.exec(select(func.count()).select_from(Job).where(*conditions)).one()
         rows = session.exec(
             select(Job)
             .where(*conditions)
-            .order_by(Job.created_at.desc())
+            .order_by(order_expr)
             .offset(record_offset)
             .limit(page_size)
         ).all()

@@ -15,7 +15,7 @@ import { useShell } from "@/components/Shell";
 import { jobsApi } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/types";
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 50;
 
 const JOB_TYPE_LABELS: Record<string, string> = {
   archive:              "Archive (tag/untag/delete)",
@@ -57,7 +57,7 @@ const JOB_COLUMNS: ColDef<Job>[] = [
     headerName: "Type",
     flex: 2,
     minWidth: 200,
-    sortable: false,
+    sortable: true,
     cellRenderer: (p: { value: string }) => (
       <span style={{ fontFamily: "Geist, sans-serif", fontSize: 13 }}>
         {JOB_TYPE_LABELS[p.value] ?? p.value}
@@ -68,7 +68,7 @@ const JOB_COLUMNS: ColDef<Job>[] = [
     field: "status",
     headerName: "Status",
     width: 120,
-    sortable: false,
+    sortable: true,
     cellRenderer: (p: { value: JobStatus }) => {
       const c = STATUS_COLORS[p.value] ?? { bg: "#F3F4F6", fg: "#374151" };
       return (
@@ -81,9 +81,10 @@ const JOB_COLUMNS: ColDef<Job>[] = [
     },
   },
   {
+    colId: "progress",
     headerName: "Progress",
     width: 140,
-    sortable: false,
+    sortable: true,
     valueGetter: (p) => {
       const job = p.data as Job | undefined;
       if (!job) return "";
@@ -112,14 +113,15 @@ const JOB_COLUMNS: ColDef<Job>[] = [
     field: "created_at",
     headerName: "Created",
     width: 130,
-    sortable: false,
+    sortable: true,
+    sort: "desc",
     valueFormatter: (p) => relativeDate(p.value),
   },
   {
     field: "completed_at",
     headerName: "Completed",
     width: 130,
-    sortable: false,
+    sortable: true,
     valueFormatter: (p) => relativeDate(p.value),
   },
   {
@@ -149,15 +151,21 @@ export function JobsList() {
   const { activeCluster } = useShell();
   const gridRef = useRef<AgGridReact<Job>>(null);
   const [total, setTotal] = useState<number | null>(null);
+  const [sortField, setSortField] = useState("created_at");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
 
   const reloadGrid = useCallback(() => {
     if (!activeCluster?.id) return;
     const cid = activeCluster.id;
+    const sf = sortField;
+    const so = sortOrder;
     const ds: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
           const res = await jobsApi.list({
             cluster_id: cid,
+            sort_field: sf,
+            sort_order: so,
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
           });
@@ -169,7 +177,7 @@ export function JobsList() {
       },
     };
     gridRef.current?.api?.setGridOption("datasource", ds);
-  }, [activeCluster?.id]);
+  }, [activeCluster?.id, sortField, sortOrder]);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid]);
 
@@ -177,6 +185,19 @@ export function JobsList() {
     reloadGrid();
     setTimeout(() => gridRef.current?.api?.sizeColumnsToFit(), 0);
   }, [reloadGrid]);
+
+  const handleSortChanged = useCallback(() => {
+    const cols = gridRef.current?.api.getColumnState() ?? [];
+    const sorted = cols.find((c) => c.sort);
+    if (sorted?.colId) {
+      setSortField(sorted.colId);
+      setSortOrder(sorted.sort as "asc" | "desc");
+    } else {
+      // User cleared the sort — fall back to default (newest first).
+      setSortField("created_at");
+      setSortOrder("desc");
+    }
+  }, []);
 
   const displayCount = total == null ? "" : `${total.toLocaleString()} job${total === 1 ? "" : "s"}`;
 
@@ -208,13 +229,19 @@ export function JobsList() {
           cacheBlockSize={PAGE_SIZE}
           maxBlocksInCache={10}
           infiniteInitialRowCount={PAGE_SIZE}
+          pagination
+          paginationPageSize={PAGE_SIZE}
+          paginationPageSizeSelector={[25, 50, 100, 200]}
           defaultColDef={{
             resizable: true,
+            sortable: true,
+            sortingOrder: ["asc", "desc"],
             wrapHeaderText: true,
             autoHeaderHeight: true,
           }}
           onGridReady={handleGridReady}
           onGridSizeChanged={() => gridRef.current?.api?.sizeColumnsToFit()}
+          onSortChanged={handleSortChanged}
           overlayNoRowsTemplate="No jobs yet."
         />
       </div>

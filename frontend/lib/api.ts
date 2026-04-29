@@ -158,6 +158,8 @@ export const jobsApi = {
     cluster_id?: string;
     job_types?: string[];
     statuses?: string[];
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
     record_offset?: number;
     page_size?: number;
   }) => {
@@ -165,6 +167,8 @@ export const jobsApi = {
     if (params?.cluster_id)         q.set("cluster_id", params.cluster_id);
     if (params?.job_types)          params.job_types.forEach((t) => q.append("job_types", t));
     if (params?.statuses)           params.statuses.forEach((s) => q.append("statuses", s));
+    if (params?.sort_field)         q.set("sort_field", params.sort_field);
+    if (params?.sort_order)         q.set("sort_order", params.sort_order);
     if (params?.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params?.page_size)          q.set("page_size", String(params.page_size));
     const qs = q.toString();
