@@ -208,3 +208,40 @@ export interface ArchiveSessionSummary {
   failed_tml_export: number;
   failed_delete: number;
 }
+
+// ── Bulk Deleter ──────────────────────────────────────────────────────────────
+
+export type DeleterMode = "downstream" | "tag" | "list";
+
+// DeleterItem mirrors ArchiverItem but with a wider object_type union — Bulk
+// Deleter operates on Worksheets, Tables, Models, etc., not just Liveboard/Answer.
+export interface DeleterItem {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_guid: string;
+  owner_name: string;
+  org_id: number;
+  last_accessed_at: string | null;
+  modified_at: string | null;
+  created_at: string | null;
+  view_count: number;
+  days_unused: number;
+  tags: string[];
+}
+
+export interface DeleterResolveResponse {
+  items: DeleterItem[];
+  total: number;
+  by_type: Record<string, number>;
+  root_guid?: string | null;
+  tag_name?: string | null;
+  unrecognized?: string[];
+}
+
+export interface RootSearchItem {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_name: string;
+}

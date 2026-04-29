@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Users, UsersRound, FolderSearch,
-  Archive, Share2, GitFork, Briefcase, Settings,
+  Archive, Trash2, Share2, GitFork, Briefcase, Settings,
 } from "lucide-react";
 import type { Cluster } from "@/lib/types";
 
@@ -13,6 +13,7 @@ const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/groups",        label: "Groups",        icon: UsersRound },
   { href: "/metadata",      label: "Metadata",      icon: FolderSearch },
   { href: "/archiver",      label: "Archiver",      icon: Archive },
+  { href: "/deleter",       label: "Bulk Delete",   icon: Trash2 },
   { href: "/sharing",       label: "Bulk Sharing",  icon: Share2 },
   { href: "/relationships", label: "Relationships", icon: GitFork },
 ];
