@@ -309,7 +309,7 @@ async def _execute_delete(
 
     except Exception as exc:
         logger.exception("_execute_delete job %s failed: %s", job_id, exc)
-        mark_failed(job_id, str(exc))
+        mark_failed(job_id, exc)
 
 
 # ── Phase 4: Dry-run impact check ─────────────────────────────────────────────
@@ -439,7 +439,7 @@ async def dryrun(
 
     except Exception as exc:
         logger.exception("dryrun job %s failed: %s", job_id, exc)
-        mark_failed(job_id, str(exc))
+        mark_failed(job_id, exc)
 
 
 def dryrun_objects(

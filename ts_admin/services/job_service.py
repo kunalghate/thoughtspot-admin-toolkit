@@ -2,6 +2,7 @@
 Job service — creates and updates background job records in SQLite.
 """
 
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -66,12 +67,42 @@ def mark_complete(job_id: str, result: dict) -> None:
             session.commit()
 
 
-def mark_failed(job_id: str, error: str) -> None:
+def mark_failed(
+    job_id: str,
+    error: "str | Exception",
+    *,
+    traceback_str: str | None = None,
+) -> None:
+    """Mark a job FAILED.
+
+    `error` accepts either a plain string (legacy callers) or an Exception
+    instance. When an Exception is passed we capture its class name and a
+    full traceback so the failure can be debugged after the process exits.
+    """
+    if isinstance(error, BaseException):
+        from ts_admin.services.error_formatter import format_error
+
+        exc = error
+        formatted = format_error(exc)
+        raw_detail = str(exc) or type(exc).__name__
+        # Friendly line for the grid; raw detail prepended to traceback so it's
+        # never lost.
+        error_str = formatted.display
+        error_type = formatted.error_type
+        if traceback_str is None:
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            traceback_str = f"{raw_detail}\n\n{tb}"
+    else:
+        error_str = error
+        error_type = None
+
     with get_session() as session:
         job = session.get(Job, job_id)
         if job:
             job.status = "FAILED"
-            job.error = error
+            job.error = error_str
+            job.error_type = error_type
+            job.error_traceback = traceback_str
             job.completed_at = datetime.now(timezone.utc)
             session.add(job)
             session.commit()

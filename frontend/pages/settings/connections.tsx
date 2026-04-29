@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, CheckCircle, XCircle, Pencil } from "lucide-react";
 import AppShell from "@/components/Shell";
+import { SettingsTabs } from "@/components/SettingsTabs";
 import { clustersApi } from "@/lib/api";
 import type { Cluster } from "@/lib/types";
 
@@ -46,6 +47,7 @@ export default function ConnectionsPage() {
   return (
     <AppShell pageTitle="Settings — Connections">
       <div style={{ padding: 28, maxWidth: 760 }}>
+        <SettingsTabs current="connections" />
 
         {/* Header row */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>

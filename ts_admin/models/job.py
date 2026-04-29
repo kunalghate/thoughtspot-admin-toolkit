@@ -18,6 +18,8 @@ class Job(SQLModel, table=True):
     parameters: str = "{}"  # JSON string of job input params
     result: str | None = None  # JSON string of result summary
     error: str | None = None
+    error_type: str | None = None  # exception class name, e.g. "TSTimeoutError"
+    error_traceback: str | None = None  # full traceback, captured at failure
     is_cancelled: bool = False  # set True by DELETE /jobs/{id}/cancel
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None

@@ -851,6 +851,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           <div style={{ width: 1, height: 18, background: "#C4B5FD" }} />
 
           <ActionButton
+            data-testid="open-dryrun-modal"
             onClick={handleDeleteSelected}
             style={{ color: "#991B1B", borderColor: "#FECACA", background: "#FEF2F2" }}
           >
@@ -936,7 +937,16 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
 
 // HistoryTab is now shared with the Bulk Deleter — see @/components/Deleter/HistoryTab.
 
-function ActionButton({ children, onClick, style }: { children: React.ReactNode; onClick: () => void; style?: React.CSSProperties }) {
+function ActionButton({
+  children,
+  onClick,
+  style,
+  ...rest
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  style?: React.CSSProperties;
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "onClick" | "style" | "children">) {
   return (
     <button
       onClick={onClick}
@@ -945,6 +955,7 @@ function ActionButton({ children, onClick, style }: { children: React.ReactNode;
         cursor: "pointer", border: "1px solid #E8E1D5", background: "#fff",
         color: "#1A1714", fontFamily: "Geist, sans-serif", ...style,
       }}
+      {...rest}
     >
       {children}
     </button>

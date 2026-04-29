@@ -48,6 +48,52 @@ logger = logging.getLogger(__name__)
 PAGE_SIZE = 500
 
 
+# Cached `object_type` values → the `type` enum metadata/search accepts.
+# All tabular subtypes collapse to LOGICAL_TABLE; leaves keep their own type.
+_SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
+    "LIVEBOARD":          "LIVEBOARD",
+    "ANSWER":             "ANSWER",
+    "WORKSHEET":          "LOGICAL_TABLE",
+    "ONE_TO_ONE_LOGICAL": "LOGICAL_TABLE",
+    "AGGR_WORKSHEET":     "LOGICAL_TABLE",
+    "SQL_VIEW":           "LOGICAL_TABLE",
+    "USER_DEFINED":       "LOGICAL_TABLE",
+    "TABLE":              "LOGICAL_TABLE",
+    "MODEL":              "LOGICAL_TABLE",
+    "VIEW":               "LOGICAL_TABLE",
+    "LOGICAL_TABLE":      "LOGICAL_TABLE",
+    "CONNECTION":         "CONNECTION",
+}
+
+
+def _flatten_dependent_objects(items: list[dict], *, root_guid: str) -> list[dict]:
+    """
+    Walk a metadata/search response and pull dependents for `root_guid`.
+
+    `dependent_objects` is documented as `object` only — observed shapes are
+    `{<root_guid>: {<TYPE>: [{id,name,type}, ...]}}` and the un-keyed
+    `{<TYPE>: [...]}` variant. Both are accepted; anything that quacks like
+    a dependent dict (has id/identifier/guid) is collected.
+    """
+    out: list[dict] = []
+    for item in items:
+        if item.get("metadata_id") and item["metadata_id"] != root_guid:
+            continue
+        blob = item.get("dependent_objects") or {}
+        if not isinstance(blob, dict):
+            continue
+        # Strip the optional outer GUID layer.
+        if root_guid in blob and isinstance(blob[root_guid], dict):
+            blob = blob[root_guid]
+        for value in blob.values():
+            if not isinstance(value, list):
+                continue
+            for dep in value:
+                if isinstance(dep, dict) and (dep.get("id") or dep.get("identifier") or dep.get("guid")):
+                    out.append(dep)
+    return out
+
+
 class ThoughtSpotClient:
     """
     Async HTTP client for the ThoughtSpot REST API v2.
@@ -570,33 +616,50 @@ class ThoughtSpotClient:
     async def fetch_dependents(
         self,
         *,
-        objects: list[dict],  # [{"identifier": guid, "type": "LIVEBOARD"}, ...]
+        objects: list[dict],  # [{"identifier": guid, "type": "<cache type>"}, ...]
     ) -> dict[str, list[dict]]:
         """
         Return a map of { guid → [dependent objects] } for the given objects.
 
-        POST /api/rest/2.0/dependency/listdependents
+        Implemented via POST /api/rest/2.0/metadata/search with
+        include_dependent_objects=True. (TS REST v2 has no standalone
+        listdependents endpoint — the cluster returns 404 for that path.)
 
-        ⚠ The actual response shape must be verified against a live cluster
-        before the parser below is considered authoritative. Adjust key names
-        if the real API differs.
+        Cache subtypes (WORKSHEET, AGGR_WORKSHEET, ONE_TO_ONE_LOGICAL,
+        SQL_VIEW, USER_DEFINED, TABLE, MODEL, VIEW) all collapse to
+        LOGICAL_TABLE for the search payload — that's the only valid type
+        enum for tabular objects in metadata/search.
         """
-        data = await self._request(
-            "POST",
-            "/api/rest/2.0/dependency/listdependents",
-            json={"metadata": objects},
-            context="fetch_dependents",
-        )
         result: dict[str, list[dict]] = {}
-        try:
-            items = data if isinstance(data, list) else data.get("dependency_response", [])
-            for item in items:
-                guid = item.get("id") or item.get("identifier", "")
-                if guid:
-                    result[guid] = item.get("dependents", [])
-        except (KeyError, TypeError, AttributeError) as exc:
-            raise TSResponseParseError(
-                url="/api/rest/2.0/dependency/listdependents",
-                detail=f"Unexpected response shape: {exc}",
-            ) from exc
+        if not objects:
+            return result
+
+        for obj in objects:
+            guid = obj.get("identifier", "")
+            if not guid:
+                continue
+            api_type = _SEARCH_TYPE_FOR_DEPENDENTS.get(
+                obj.get("type", "").upper(), "LOGICAL_TABLE",
+            )
+            data = await self._request(
+                "POST",
+                "/api/rest/2.0/metadata/search",
+                json={
+                    "metadata": [{"identifier": guid, "type": api_type}],
+                    "include_dependent_objects": True,
+                    "dependent_objects_record_size": 1000,
+                    "include_headers": False,
+                    "record_size": -1,
+                    "record_offset": 0,
+                },
+                context="fetch_dependents",
+            )
+            items = data if isinstance(data, list) else data.get("metadata_details", [])
+            try:
+                result[guid] = _flatten_dependent_objects(items, root_guid=guid)
+            except (KeyError, TypeError, AttributeError) as exc:
+                raise TSResponseParseError(
+                    url="/api/rest/2.0/metadata/search",
+                    detail=f"Unexpected dependent_objects shape: {exc}",
+                ) from exc
         return result

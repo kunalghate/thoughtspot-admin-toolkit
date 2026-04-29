@@ -227,7 +227,10 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
       />
 
       {/* Modal panel */}
-      <div style={{
+      <div
+        data-testid="dryrun-modal"
+        data-state={state}
+        style={{
         position: "fixed", top: "50%", left: "50%",
         transform: "translate(-50%, -50%)",
         width: 680, maxHeight: "85vh",
@@ -350,6 +353,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
                   Type <strong style={{ color: "#991B1B", fontFamily: "Geist Mono, monospace" }}>DELETE</strong> to confirm
                 </label>
                 <input
+                  data-testid="dryrun-confirm-input"
                   value={confirmInput}
                   onChange={(e) => setConfirmInput(e.target.value)}
                   placeholder="DELETE"
@@ -452,6 +456,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
               Cancel
             </button>
             <button
+              data-testid="dryrun-execute"
               disabled={confirmInput !== "DELETE"}
               onClick={handleConfirm}
               style={{

@@ -184,6 +184,23 @@ export const jobsApi = {
     request<void>(`/jobs/${jobId}/cancel`, { method: "DELETE" }),
 };
 
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+export const diagnosticsApi = {
+  /** Return the last N lines of the application log as plain text. */
+  tailLogs: async (lines: number = 500): Promise<string> => {
+    const res = await fetch(`${BASE}/diagnostics/logs?lines=${lines}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    return res.text();
+  },
+
+  /** Absolute URL to download the support bundle as a zip. */
+  bundleUrl: (jobId?: string): string => {
+    const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
+    return `${BASE}/diagnostics/bundle${q}`;
+  },
+};
+
 // ── Archiver ──────────────────────────────────────────────────────────────────
 
 export const archiverApi = {

@@ -45,6 +45,8 @@ export interface Job {
   created_at: string;
   completed_at: string | null;
   error: string | null;
+  error_type: string | null;
+  error_traceback: string | null;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

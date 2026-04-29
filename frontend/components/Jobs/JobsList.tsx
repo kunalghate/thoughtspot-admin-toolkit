@@ -5,14 +5,14 @@
  * archive, archive_dryrun, bulk_delete, bulk_delete_dryrun, share,
  * etc. — anything that hit the Job table.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { ColDef, IDatasource, IGetRowsParams } from "ag-grid-community";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import { useShell } from "@/components/Shell";
-import { jobsApi } from "@/lib/api";
+import { diagnosticsApi, jobsApi } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/types";
 
 const PAGE_SIZE = 50;
@@ -51,7 +51,8 @@ function relativeDate(iso: string | null): string {
   return `${Math.floor(days / 365)}y ago`;
 }
 
-const JOB_COLUMNS: ColDef<Job>[] = [
+function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
+  return [
   {
     field: "job_type",
     headerName: "Type",
@@ -128,11 +129,29 @@ const JOB_COLUMNS: ColDef<Job>[] = [
     field: "error",
     headerName: "Error",
     flex: 2,
-    minWidth: 200,
+    minWidth: 240,
     sortable: false,
-    cellRenderer: (p: { value: string | null }) => p.value
-      ? <span style={{ color: "#991B1B", fontSize: 12, fontFamily: "Geist, sans-serif" }}>{p.value}</span>
-      : <span style={{ color: "#C4B5FD", fontSize: 12 }}>—</span>,
+    cellRenderer: (p: { value: string | null; data?: Job }) => {
+      const job = p.data;
+      if (!p.value || !job) {
+        return <span style={{ color: "#C4B5FD", fontSize: 12 }}>—</span>;
+      }
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "#991B1B", fontSize: 12, fontFamily: "Geist, sans-serif" }}>
+            {p.value}
+          </span>
+          <button
+            onClick={(e) => { e.stopPropagation(); onShowDetails(job); }}
+            style={{
+              padding: "1px 8px", fontSize: 11, fontWeight: 500,
+              background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 4,
+              cursor: "pointer", color: "#991B1B", fontFamily: "Geist, sans-serif",
+            }}
+          >Details</button>
+        </span>
+      );
+    },
   },
   {
     field: "id",
@@ -145,7 +164,8 @@ const JOB_COLUMNS: ColDef<Job>[] = [
       </span>
     ),
   },
-];
+  ];
+}
 
 export function JobsList() {
   const { activeCluster } = useShell();
@@ -153,6 +173,12 @@ export function JobsList() {
   const [total, setTotal] = useState<number | null>(null);
   const [sortField, setSortField] = useState("created_at");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
+  const [detailsJob, setDetailsJob] = useState<Job | null>(null);
+
+  const columnDefs = useMemo(
+    () => buildJobColumns((job) => setDetailsJob(job)),
+    []
+  );
 
   const reloadGrid = useCallback(() => {
     if (!activeCluster?.id) return;
@@ -224,7 +250,7 @@ export function JobsList() {
       <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%" }}>
         <AgGridReact<Job>
           ref={gridRef}
-          columnDefs={JOB_COLUMNS}
+          columnDefs={columnDefs}
           rowModelType="infinite"
           cacheBlockSize={PAGE_SIZE}
           maxBlocksInCache={10}
@@ -244,6 +270,138 @@ export function JobsList() {
           onSortChanged={handleSortChanged}
           overlayNoRowsTemplate="No jobs yet."
         />
+      </div>
+
+      {detailsJob && (
+        <JobErrorDetailsModal job={detailsJob} onClose={() => setDetailsJob(null)} />
+      )}
+    </div>
+  );
+}
+
+
+function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void }) {
+  const [showTraceback, setShowTraceback] = useState(false);
+
+  // The friendly error is "Title — Hint"; split on the first em-dash for display.
+  const [friendlyTitle, friendlyHint] = useMemo(() => {
+    if (!job.error) return ["Job failed", ""];
+    const idx = job.error.indexOf(" — ");
+    if (idx === -1) return [job.error, ""];
+    return [job.error.slice(0, idx), job.error.slice(idx + 3)];
+  }, [job.error]);
+
+  const bundleUrl = diagnosticsApi.bundleUrl(job.id);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(15, 12, 10, 0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 1000, padding: 24,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#FFFEFB", borderRadius: 12,
+          maxWidth: 720, width: "100%", maxHeight: "85vh",
+          display: "flex", flexDirection: "column",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+          border: "1px solid #E8E1D5", fontFamily: "Geist, sans-serif",
+        }}
+      >
+        <div style={{
+          padding: "18px 22px", borderBottom: "1px solid #E8E1D5",
+          display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: "#1A1714" }}>
+              {friendlyTitle}
+            </div>
+            {friendlyHint && (
+              <div style={{ fontSize: 13, color: "#574F47", marginTop: 4 }}>
+                {friendlyHint}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: "transparent", border: "none", cursor: "pointer",
+              fontSize: 22, color: "#7A7068", padding: "0 4px", lineHeight: 1,
+            }}
+          >×</button>
+        </div>
+
+        <div style={{ padding: "16px 22px", overflowY: "auto", flex: 1 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14, fontSize: 12 }}>
+            {job.error_type && (
+              <span style={{
+                background: "#FEF2F2", color: "#991B1B",
+                padding: "3px 10px", borderRadius: 12, fontFamily: "Geist Mono, monospace",
+              }}>{job.error_type}</span>
+            )}
+            <span style={{
+              background: "#F3F0EA", color: "#574F47",
+              padding: "3px 10px", borderRadius: 12, fontFamily: "Geist Mono, monospace",
+            }}>{JOB_TYPE_LABELS[job.job_type] ?? job.job_type}</span>
+            <span title={job.id} style={{
+              background: "#F3F0EA", color: "#574F47",
+              padding: "3px 10px", borderRadius: 12, fontFamily: "Geist Mono, monospace",
+            }}>{job.id.slice(0, 8)}…</span>
+          </div>
+
+          {job.error_traceback ? (
+            <>
+              <button
+                onClick={() => setShowTraceback((v) => !v)}
+                style={{
+                  padding: "6px 12px", fontSize: 12, fontWeight: 500,
+                  background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
+                  cursor: "pointer", color: "#1A1714", fontFamily: "Geist, sans-serif",
+                  marginBottom: 10,
+                }}
+              >{showTraceback ? "Hide technical details" : "Show technical details"}</button>
+              {showTraceback && (
+                <pre style={{
+                  background: "#1A1714", color: "#F3F0EA",
+                  padding: 14, borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
+                  fontFamily: "Geist Mono, monospace",
+                  maxHeight: "40vh", overflow: "auto",
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                }}>{job.error_traceback}</pre>
+              )}
+            </>
+          ) : (
+            <div style={{ fontSize: 12, color: "#7A7068", fontStyle: "italic" }}>
+              No traceback was captured for this job.
+            </div>
+          )}
+        </div>
+
+        <div style={{
+          padding: "14px 22px", borderTop: "1px solid #E8E1D5",
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
+        }}>
+          <a
+            href={bundleUrl}
+            style={{
+              fontSize: 12, color: "#6D28D9", fontWeight: 500,
+              textDecoration: "none",
+            }}
+          >Download diagnostics for this job</a>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "6px 14px", fontSize: 12, fontWeight: 500,
+              background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
+              cursor: "pointer", color: "#1A1714", fontFamily: "Geist, sans-serif",
+            }}
+          >Close</button>
+        </div>
       </div>
     </div>
   );

@@ -75,3 +75,4 @@ See [docs/dev/TODOS.md](docs/dev/TODOS.md). Key deferred items:
 - Every write operation: verify live before executing, dry-run first, audit log after.
 - CORS must be restricted to `http://localhost:{port}` — never `*`.
 - TS URL must be validated as HTTPS and not a private/loopback address (SSRF prevention).
+- **Tests follow code.** When you modify `ts_admin/services/*` or `ts_admin/api/*`, update or create the matching test file in the same change. New destructive endpoints must be registered in `DRYRUN_ENDPOINTS` in `tests/integration/test_dryrun_safety.py`; new list/read endpoints in `READ_ENDPOINTS` in `tests/integration/test_cluster_isolation.py`. See [docs/dev/TESTING.md](docs/dev/TESTING.md). Run `/test` before declaring a task done.

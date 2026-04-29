@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { GridApi } from "ag-grid-community";
-import { GitBranch, Tag, ClipboardList } from "lucide-react";
+import { GitBranch, Tag, ClipboardList, X } from "lucide-react";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
@@ -27,7 +27,7 @@ import { DownstreamPicker } from "@/components/DeleterIntake/DownstreamPicker";
 import { TagPicker } from "@/components/DeleterIntake/TagPicker";
 import { ListPaste } from "@/components/DeleterIntake/ListPaste";
 import { deleterApi } from "@/lib/api";
-import type { DeleterItem, DeleterMode, RootSearchItem } from "@/lib/types";
+import type { DeleterItem, DeleterMode, DeleterResolveResponse, RootSearchItem } from "@/lib/types";
 
 const MODES: { id: DeleterMode; label: string; icon: typeof GitBranch; tagline: string }[] = [
   { id: "downstream", label: "Downstream", icon: GitBranch,    tagline: "Delete everything that depends on a root object." },
@@ -151,10 +151,22 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
 
   // ── Pick handlers fan out to resolve fns ─────────────────────────────────
 
-  function handlePickRoot(r: RootSearchItem | null) {
+  function handlePickRoot(r: RootSearchItem | null, prefetched?: DeleterResolveResponse) {
     setPickedRoot(r);
-    if (r) void resolveDownstream(r);
-    else setItems([]);
+    if (!r) {
+      setItems([]);
+      return;
+    }
+    if (prefetched) {
+      // Drawer already resolved dependents — reuse the response to avoid a
+      // duplicate API call and a visible delay before the grid populates.
+      setItems(prefetched.items);
+      setByType(prefetched.by_type);
+      setUnrecognized([]);
+      setError(null);
+    } else {
+      void resolveDownstream(r);
+    }
   }
 
   function handlePickTag(t: string | null) {
@@ -196,6 +208,10 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
     if (selected.length === 0) return;
     setPendingDeleteGuids(selected.map((r) => r.ts_guid));
     setDryRunOpen(true);
+  }
+
+  function handleClearSelection() {
+    gridRef.current?.api?.deselectAll();
   }
 
   function handleDryRunClose(reloadNeeded: boolean) {
@@ -305,9 +321,66 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
           />
         )}
 
+        {/* Selection bar (shown when rows are checked) */}
+        {items.length > 0 && selectedCount > 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+            background: "#EDE9FE", border: "1px solid #C4B5FD", borderRadius: 6, flexShrink: 0,
+            flexWrap: "wrap",
+          }}>
+            <span style={{ fontSize: 13, color: "#6D28D9", fontWeight: 500, fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>
+              {selectedCount} of {items.length} selected
+            </span>
+
+            <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+              · TML backup will be taken before each delete (restorable from History)
+            </span>
+
+            <div style={{ flex: 1 }} />
+
+            <button
+              data-testid="open-dryrun-modal"
+              onClick={handleDeleteClick}
+              style={{
+                padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
+                cursor: "pointer", border: "1px solid #FECACA", background: "#FEF2F2",
+                color: "#991B1B", fontFamily: "Geist, sans-serif",
+              }}
+            >
+              Delete {selectedCount} item{selectedCount === 1 ? "" : "s"}…
+            </button>
+
+            <button
+              onClick={handleClearSelection}
+              style={{
+                display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
+                borderRadius: 4, border: "1px solid #E8E1D5", background: "transparent",
+                fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+              }}
+            >
+              <X size={11} /> Clear
+            </button>
+          </div>
+        )}
+
+        {/* Hint (shown when nothing selected) */}
+        {items.length > 0 && selectedCount === 0 && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
+            background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
+            flexShrink: 0,
+          }}>
+            <span style={{ fontSize: 13, color: "#C4B5FD" }}>☑</span>
+            <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", lineHeight: 1.5 }}>
+              Check rows to select objects — then{" "}
+              <strong style={{ color: "#991B1B" }}>Delete selected</strong> for a safety-checked deletion with TML backup.
+            </span>
+          </div>
+        )}
+
         {/* Grid */}
         {items.length > 0 && (
-          <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, width: "100%" }}>
+          <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%" }}>
             <AgGridReact<DeleterItem>
               ref={gridRef}
               rowData={items}
@@ -336,36 +409,6 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
             onClose={handleDryRunClose}
             onViewHistory={onViewHistory}
           />
-        )}
-
-        {/* Action bar */}
-        {items.length > 0 && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-            background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
-            flexShrink: 0,
-          }}>
-            <span style={{ fontSize: 13, color: "#0F0E0D", fontFamily: "Geist, sans-serif" }}>
-              <strong>{selectedCount}</strong> of {items.length} selected
-            </span>
-            <span style={{ fontSize: 12, color: "#7A7068" }}>
-              · TML backup will be taken before each delete (restorable from History)
-            </span>
-            <button
-              disabled={selectedCount === 0}
-              onClick={handleDeleteClick}
-              style={{
-                marginLeft: "auto", padding: "8px 16px", fontSize: 13, fontWeight: 600,
-                background: selectedCount === 0 ? "#E8E1D5" : "#991B1B",
-                color: selectedCount === 0 ? "#9CA3AF" : "white",
-                border: "none", borderRadius: 6,
-                cursor: selectedCount === 0 ? "not-allowed" : "pointer",
-                fontFamily: "Geist, sans-serif",
-              }}
-            >
-              Delete {selectedCount} item{selectedCount === 1 ? "" : "s"}…
-            </button>
-          </div>
         )}
       </div>
     </div>

@@ -23,6 +23,8 @@ class JobResponse(BaseModel):
     total: int
     progress_pct: float
     error: str | None = None
+    error_type: str | None = None
+    error_traceback: str | None = None
     result: dict | None = None
     created_at: datetime
     started_at: datetime | None = None
@@ -145,6 +147,8 @@ def _job_to_response(job) -> JobResponse:
         total=job.total,
         progress_pct=job.progress_pct,
         error=job.error,
+        error_type=job.error_type,
+        error_traceback=job.error_traceback,
         result=job.get_result(),
         created_at=job.created_at,
         started_at=job.started_at,

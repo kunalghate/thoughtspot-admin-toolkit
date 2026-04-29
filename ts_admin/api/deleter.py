@@ -29,6 +29,15 @@ from pydantic import BaseModel
 
 from ts_admin.api.archiver import ArchiverResultItem, DryRunObjectsResponse
 from ts_admin.services import deleter_service, deletion_service
+from ts_admin.ts_client.exceptions import (
+    TSAuthenticationError,
+    TSConnectionError,
+    TSInsufficientPrivilegesError,
+    TSInvalidParametersError,
+    TSObjectNotFoundError,
+    TSResponseParseError,
+    TSServerError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/deleter", tags=["Bulk Deleter"])
@@ -113,12 +122,23 @@ async def resolve_downstream(body: DownstreamRequest) -> ResolveResponse:
         raise HTTPException(status_code=422, detail="root_guid is required")
     cluster_id = _resolve_cluster_id(body.cluster_id)
 
-    result = await deleter_service.resolve_downstream(
-        root_guid=body.root_guid,
-        root_type=body.root_type,
-        cluster_id=cluster_id,
-        org_id=body.org_id,
-    )
+    try:
+        result = await deleter_service.resolve_downstream(
+            root_guid=body.root_guid,
+            root_type=body.root_type,
+            cluster_id=cluster_id,
+            org_id=body.org_id,
+        )
+    except TSObjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TSAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except TSInsufficientPrivilegesError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except TSInvalidParametersError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (TSConnectionError, TSServerError, TSResponseParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return ResolveResponse(
         items=[ArchiverResultItem(**i) for i in result["items"]],
         total=result["total"],

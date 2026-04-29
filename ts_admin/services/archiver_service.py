@@ -558,7 +558,7 @@ async def execute(
 
     except Exception as exc:
         logger.exception("execute job %s failed: %s", job_id, exc)
-        mark_failed(job_id, str(exc))
+        mark_failed(job_id, exc)
 
 
 # Phases 4 (dry-run) and 5 (delete) live in ts_admin.services.deletion_service —
@@ -760,7 +760,7 @@ async def restore(
 
     except Exception as exc:
         logger.exception("restore job %s failed: %s", job_id, exc)
-        mark_failed(job_id, str(exc))
+        mark_failed(job_id, exc)
 
 
 # ── Phase 6: History & Restore ─────────────────────────────────────────────────
