@@ -23,7 +23,6 @@ import "ag-grid-community/styles/ag-theme-alpine.css";
 import AppShell, { useShell } from "@/components/Shell";
 import { OBJECT_COLUMNS } from "@/components/Deleter/columns";
 import { DryRunModal } from "@/components/Deleter/DryRunModal";
-import { HistoryTab } from "@/components/Deleter/HistoryTab";
 import { DownstreamPicker } from "@/components/DeleterIntake/DownstreamPicker";
 import { TagPicker } from "@/components/DeleterIntake/TagPicker";
 import { ListPaste } from "@/components/DeleterIntake/ListPaste";
@@ -37,44 +36,11 @@ const MODES: { id: DeleterMode; label: string; icon: typeof GitBranch; tagline: 
 ];
 
 export default function DeleterPage() {
+  // History was moved to /jobs (shared with Archiver).
   return (
     <AppShell pageTitle="Bulk Delete" entityType="metadata">
-      <DeleterShell />
+      <DeleterContent onViewHistory={() => { window.location.href = "/jobs"; }} />
     </AppShell>
-  );
-}
-
-function DeleterShell() {
-  const [activeTab, setActiveTab] = useState<"delete" | "history">("delete");
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* Outer tab strip — Delete | History */}
-      <div style={{
-        display: "flex", gap: 0, borderBottom: "1px solid #E8E1D5",
-        background: "#FAF8F4", paddingLeft: 24, flexShrink: 0,
-      }}>
-        {(["delete", "history"] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: "10px 18px", fontSize: 13, fontWeight: activeTab === tab ? 600 : 400,
-              fontFamily: "Geist, sans-serif", cursor: "pointer", border: "none",
-              background: "transparent", color: activeTab === tab ? "#6D28D9" : "#7A7068",
-              borderBottom: activeTab === tab ? "2px solid #8B5CF6" : "2px solid transparent",
-              marginBottom: -1,
-            }}
-          >
-            {tab === "delete" ? "Delete" : "History"}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === "delete"
-        ? <DeleterContent onViewHistory={() => setActiveTab("history")} />
-        : <HistoryTab />}
-    </div>
   );
 }
 

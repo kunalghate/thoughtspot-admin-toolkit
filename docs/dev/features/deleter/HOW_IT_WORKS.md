@@ -11,8 +11,9 @@ pipeline, different intake.
 | Archiver       | discovery-driven      | "find rotten content automatically"       |
 | Bulk Deleter   | targeting-driven      | "delete this exact set, I already know"   |
 
-Both write to the same `archive_records` table; the History tab and
-Restore flow are shared.
+Both write to the same `archive_records` table. The deletion **History
+lives at `/jobs`** — one shared view for both features. Each tool's
+"View in History →" link in the post-delete modal navigates there.
 
 ## Three intake modes
 
@@ -77,10 +78,11 @@ Restore flow are shared.
 - [ts_admin/ts_client/client.py](../../../../ts_admin/ts_client/client.py) — `delete_metadata`, `delete_tag`, `fetch_dependents`
 
 **Frontend:**
-- [frontend/pages/deleter.tsx](../../../../frontend/pages/deleter.tsx) — page with mode tabs and Delete | History
+- [frontend/pages/deleter.tsx](../../../../frontend/pages/deleter.tsx) — page with three intake-mode tabs
+- [frontend/pages/jobs.tsx](../../../../frontend/pages/jobs.tsx) — hosts the shared deletion History view
 - [frontend/components/DeleterIntake/](../../../../frontend/components/DeleterIntake/) — DownstreamPicker, TagPicker, ListPaste
 - [frontend/components/Deleter/DryRunModal.tsx](../../../../frontend/components/Deleter/DryRunModal.tsx) — shared with Archiver
-- [frontend/components/Deleter/HistoryTab.tsx](../../../../frontend/components/Deleter/HistoryTab.tsx) — shared deletion history
+- [frontend/components/Deleter/HistoryTab.tsx](../../../../frontend/components/Deleter/HistoryTab.tsx) — mounted by `/jobs`
 - [frontend/components/Deleter/columns.ts](../../../../frontend/components/Deleter/columns.ts) — shared metadata-grid columns
 
 ## Safety guarantees

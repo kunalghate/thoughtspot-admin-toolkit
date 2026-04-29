@@ -8,7 +8,6 @@ import "ag-grid-community/styles/ag-theme-alpine.css";
 import AppShell, { useShell } from "@/components/Shell";
 import { OBJECT_COLUMNS as ARCHIVER_COLUMNS, serializeFilterModel } from "@/components/Deleter/columns";
 import { DryRunModal } from "@/components/Deleter/DryRunModal";
-import { HistoryTab } from "@/components/Deleter/HistoryTab";
 import { archiverApi, jobsApi } from "@/lib/api";
 import type { ArchiverItem, Job } from "@/lib/types";
 
@@ -58,40 +57,13 @@ export default function ArchiverPage() {
 // ── Main content ───────────────────────────────────────────────────────────────
 
 function ArchiverContent({ syncVersion }: { syncVersion: number }) {
-  const [activeTab, setActiveTab] = useState<"archive" | "history">("archive");
-
+  // History was moved to /jobs (shared between Archiver + Bulk Deleter).
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* Tab strip */}
-      <div style={{
-        display: "flex", gap: 0, borderBottom: "1px solid #E8E1D5",
-        background: "#FAF8F4", paddingLeft: 24, flexShrink: 0,
-      }}>
-        {(["archive", "history"] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: "10px 18px", fontSize: 13, fontWeight: activeTab === tab ? 600 : 400,
-              fontFamily: "Geist, sans-serif", cursor: "pointer", border: "none",
-              background: "transparent", color: activeTab === tab ? "#6D28D9" : "#7A7068",
-              borderBottom: activeTab === tab ? "2px solid #8B5CF6" : "2px solid transparent",
-              marginBottom: -1,
-            }}
-          >
-            {tab === "archive" ? "Archive" : "History"}
-          </button>
-        ))}
-      </div>
-
-      {/* Tab panels */}
-      <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
-        {activeTab === "archive" ? (
-          <ArchiveTab syncVersion={syncVersion} onViewHistory={() => setActiveTab("history")} />
-        ) : (
-          <HistoryTab />
-        )}
-      </div>
+      <ArchiveTab
+        syncVersion={syncVersion}
+        onViewHistory={() => { window.location.href = "/jobs"; }}
+      />
     </div>
   );
 }
