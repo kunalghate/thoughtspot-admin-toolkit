@@ -109,7 +109,7 @@ def _cleanup_old_tml_exports() -> None:
 
     from ts_admin.database import get_session
     from ts_admin.models.archive_record import ArchiveRecord
-    from ts_admin.services.archiver_service import TML_EXPORT_DIR
+    from ts_admin.services.deletion_service import TML_EXPORT_DIR
 
     if not TML_EXPORT_DIR.exists():
         return
