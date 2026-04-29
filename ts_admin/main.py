@@ -235,7 +235,7 @@ def create_app(port: int = 8080) -> FastAPI:
 
 
 def _register_routers(app: FastAPI) -> None:
-    from ts_admin.api import archiver, clusters, health, jobs, metadata, sync
+    from ts_admin.api import archiver, clusters, deleter, health, jobs, metadata, sync
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(clusters.router, prefix="/api/v1")
@@ -243,6 +243,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(jobs.router, prefix="/api/v1")
     app.include_router(metadata.router, prefix="/api/v1")
     app.include_router(archiver.router, prefix="/api/v1")
+    app.include_router(deleter.router, prefix="/api/v1")
 
 
 # Module-level app instance for uvicorn: uvicorn ts_admin.main:app
