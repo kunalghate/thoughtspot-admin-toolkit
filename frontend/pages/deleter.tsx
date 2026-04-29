@@ -13,15 +13,16 @@
  *
  * Phase 3 wires intake + grid + selection. Phase 4 hooks the modal.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, GridApi } from "ag-grid-community";
+import type { GridApi } from "ag-grid-community";
 import { GitBranch, Tag, ClipboardList } from "lucide-react";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import AppShell, { useShell } from "@/components/Shell";
-import { ARCHIVER_COLUMNS } from "@/components/ArchiverGrid/columns";
+import { OBJECT_COLUMNS } from "@/components/Deleter/columns";
+import { DryRunModal } from "@/components/Deleter/DryRunModal";
 import { DownstreamPicker } from "@/components/DeleterIntake/DownstreamPicker";
 import { TagPicker } from "@/components/DeleterIntake/TagPicker";
 import { ListPaste } from "@/components/DeleterIntake/ListPaste";
@@ -60,6 +61,10 @@ function DeleterContent() {
   // Selection state — driven by AG Grid checkboxes
   const gridRef = useRef<AgGridReact<DeleterItem>>(null);
   const [selectedCount, setSelectedCount] = useState(0);
+
+  // Dry-run modal state
+  const [dryRunOpen, setDryRunOpen] = useState(false);
+  const [pendingDeleteGuids, setPendingDeleteGuids] = useState<string[]>([]);
 
   // Reset everything if cluster/org changes
   useEffect(() => {
@@ -164,11 +169,7 @@ function DeleterContent() {
 
   // ── Grid wiring ──────────────────────────────────────────────────────────
 
-  // Cast: ARCHIVER_COLUMNS is typed for ArchiverItem (LIVEBOARD|ANSWER); DeleterItem
-  // has a wider object_type union but is otherwise structurally identical, so the
-  // ColDef field references resolve correctly at runtime. Phase 4 will move the
-  // columns to a shared module typed against both.
-  const columns = useMemo(() => ARCHIVER_COLUMNS as unknown as ColDef<DeleterItem>[], []);
+  const columns = OBJECT_COLUMNS;
 
   function handleGridReady(params: { api: GridApi<DeleterItem> }) {
     // Pre-select all rows so the user starts in "delete all" mode and deselects exceptions.
@@ -192,8 +193,18 @@ function DeleterContent() {
   function handleDeleteClick() {
     const selected = gridRef.current?.api?.getSelectedRows() ?? [];
     if (selected.length === 0) return;
-    // Phase 4 will replace this stub with the DryRunModal trigger.
-    alert(`[Phase 4 stub] Will dry-run + delete ${selected.length} items.`);
+    setPendingDeleteGuids(selected.map((r) => r.ts_guid));
+    setDryRunOpen(true);
+  }
+
+  function handleDryRunClose(reloadNeeded: boolean) {
+    setDryRunOpen(false);
+    setPendingDeleteGuids([]);
+    if (reloadNeeded) {
+      // Items were deleted — drop them from the grid.
+      const deletedSet = new Set(pendingDeleteGuids);
+      setItems((prev) => prev.filter((i) => !deletedSet.has(i.ts_guid)));
+    }
   }
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -298,6 +309,22 @@ function DeleterContent() {
               overlayNoRowsTemplate="No items resolved."
             />
           </div>
+        )}
+
+        {/* DryRun modal */}
+        {dryRunOpen && activeOrg != null && (
+          <DryRunModal
+            api={{
+              dryrun: deleterApi.dryrun,
+              dryrunObjects: deleterApi.dryrunObjects,
+              execute: deleterApi.execute,
+            }}
+            objectIds={pendingDeleteGuids}
+            clusterId={activeCluster.id}
+            orgId={activeOrg.org_id}
+            onClose={handleDryRunClose}
+            onViewHistory={() => { window.location.href = "/archiver?tab=history"; }}
+          />
         )}
 
         {/* Action bar */}

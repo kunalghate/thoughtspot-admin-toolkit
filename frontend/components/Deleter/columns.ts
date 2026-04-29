@@ -1,13 +1,24 @@
+/**
+ * Shared AG Grid column defs for the metadata-object grids used by both
+ * the Archiver and the Bulk Deleter pages, and by the DryRunModal.
+ *
+ * Typed as `ColDef[]` (i.e. ColDef<any>) so it accepts both ArchiverItem
+ * (LIVEBOARD | ANSWER, narrower object_type) and DeleterItem (wider
+ * object_type) without per-page casts.
+ */
 import type { ColDef } from "ag-grid-community";
-import type { ArchiverItem } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 
 const TYPE_LABELS: Record<string, string> = {
   LIVEBOARD: "Liveboard",
   ANSWER:    "Answer",
+  WORKSHEET: "Worksheet",
+  TABLE:     "Table",
+  MODEL:     "Model",
+  VIEW:      "View",
 };
 
-export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
+export const OBJECT_COLUMNS: ColDef[] = [
   // ── Checkbox (pinned) ────────────────────────────────────────────────────
   {
     colId: "checkbox",
@@ -19,7 +30,6 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     pinned: "left",
     suppressSizeToFit: true,
   },
-  // ── Matches Metadata Explorer column layout exactly ───────────────────────
   {
     field: "name",
     headerName: "Name",
@@ -63,7 +73,6 @@ export const ARCHIVER_COLUMNS: ColDef<ArchiverItem>[] = [
     filterParams: { suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => formatDate(p.value),
   },
-  // ── Archiver-specific ─────────────────────────────────────────────────────
   {
     field: "days_unused",
     headerName: "Days Unused",

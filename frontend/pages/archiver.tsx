@@ -6,8 +6,8 @@ import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import AppShell, { useShell } from "@/components/Shell";
-import { ARCHIVER_COLUMNS, serializeFilterModel } from "@/components/ArchiverGrid/columns";
-import { DryRunModal } from "@/components/ArchiverGrid/DryRunModal";
+import { OBJECT_COLUMNS as ARCHIVER_COLUMNS, serializeFilterModel } from "@/components/Deleter/columns";
+import { DryRunModal } from "@/components/Deleter/DryRunModal";
 import { archiverApi, jobsApi } from "@/lib/api";
 import type { ArchiverItem, ArchiveRecordFlatItem, Job } from "@/lib/types";
 
@@ -945,6 +945,11 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
       {/* DryRun modal */}
       {dryRunOpen && activeCluster && activeOrg != null && (
         <DryRunModal
+          api={{
+            dryrun: archiverApi.dryrun,
+            dryrunObjects: archiverApi.dryrunObjects,
+            execute: (body) => archiverApi.execute({ ...body, action: "delete" }),
+          }}
           objectIds={pendingDeleteGuids}
           clusterId={activeCluster.id}
           orgId={activeOrg.org_id}
