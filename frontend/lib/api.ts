@@ -154,8 +154,24 @@ export const metadataApi = {
 // ── Jobs ──────────────────────────────────────────────────────────────────────
 
 export const jobsApi = {
-  list: () =>
-    request<Job[]>(`/jobs`),
+  list: (params?: {
+    cluster_id?: string;
+    job_types?: string[];
+    statuses?: string[];
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.cluster_id)         q.set("cluster_id", params.cluster_id);
+    if (params?.job_types)          params.job_types.forEach((t) => q.append("job_types", t));
+    if (params?.statuses)           params.statuses.forEach((s) => q.append("statuses", s));
+    if (params?.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params?.page_size)          q.set("page_size", String(params.page_size));
+    const qs = q.toString();
+    return request<{ items: Job[]; total: number; record_offset: number; page_size: number }>(
+      qs ? `/jobs?${qs}` : `/jobs`,
+    );
+  },
 
   get: (jobId: string) =>
     request<Job>(`/jobs/${jobId}`),

@@ -32,7 +32,7 @@ export interface SyncLog {
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
 
-export type JobStatus = "PENDING" | "RUNNING" | "COMPLETE" | "PARTIAL" | "FAILED";
+export type JobStatus = "QUEUED" | "PENDING" | "RUNNING" | "COMPLETE" | "PARTIAL" | "FAILED";
 
 export interface Job {
   id: string;
