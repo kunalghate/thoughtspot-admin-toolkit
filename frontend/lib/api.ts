@@ -374,6 +374,12 @@ export const deleterApi = {
       body: JSON.stringify(body),
     }),
 
+  deleteTagOnly: (body: { cluster_id: string; org_id: number; tag_name: string }) =>
+    request<{ tag_id: string; tag_name: string; removed_from: number }>("/deleter/delete-tag-only", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   resolveList: (body: { cluster_id: string; org_id: number; guids: string[] }) =>
     request<DeleterResolveResponse>("/deleter/resolve/list", {
       method: "POST",

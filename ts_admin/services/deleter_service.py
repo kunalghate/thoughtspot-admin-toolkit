@@ -143,6 +143,77 @@ def resolve_tag(*, tag_name: str, cluster_id: str, org_id: int) -> dict:
     }
 
 
+async def delete_tag_only(*, tag_name: str, cluster_id: str, org_id: int) -> dict:
+    """
+    Delete the *tag itself* — objects are untouched, but the label is removed
+    from every object that carried it (a single TS API call).
+
+    Mirrors the CLI's `bulk-deleter from-tag --tag-only` flag. Used as a
+    safety undo when a tag was applied by mistake. Writes an audit log
+    entry with action_type='bulk_delete_tag' and items_affected=1.
+
+    Returns {tag_id, tag_name, removed_from} where removed_from is the
+    count of locally-cached objects that had the tag (best-effort, since
+    we can't trust the cache to reflect every object on the cluster).
+    """
+    from ts_admin.models.audit_log import AuditLog
+    from ts_admin.services.archiver_service import _get_cluster, _remove_tag
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    cluster = _get_cluster(cluster_id)
+
+    # Fetch the cluster's current tag list to resolve name -> id (case-insensitive).
+    async with ThoughtSpotClient(
+        url=cluster.url,
+        auth=cluster.build_auth_strategy(org_id=org_id),
+    ) as client:
+        tags = await client.search_tags()
+        lowered = tag_name.lower()
+        tag = next((t for t in tags if t.name.lower() == lowered), None)
+        if tag is None:
+            raise ValueError(f"Tag {tag_name!r} not found on cluster")
+
+        await client.delete_tag(tag_id=tag.id)
+
+    # Strip the tag from every CachedMetadata row that carried it locally,
+    # so the UI doesn't keep showing a now-deleted tag.
+    removed_from = 0
+    with Session(_db.get_engine()) as session:
+        like_pattern = f"%{json.dumps(tag_name)[1:-1]}%"
+        rows = session.exec(
+            select(CachedMetadata).where(
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+                col(CachedMetadata.tag_names).like(like_pattern),
+            )
+        ).all()
+        for r in rows:
+            if tag_name in r.get_tag_names():
+                r.tag_names = _remove_tag(r.tag_names, tag_name)
+                session.add(r)
+                removed_from += 1
+        session.commit()
+
+        entry = AuditLog(
+            cluster_id=cluster_id,
+            action_type="bulk_delete_tag",
+            entity_type="tag",
+            items_affected=1,
+            status="COMPLETE",
+        )
+        entry.set_parameters({"tag_id": tag.id, "tag_name": tag.name, "removed_from": removed_from})
+        session.add(entry)
+        session.commit()
+
+    logger.info(
+        "bulk_delete_tag job=tag-only cluster=%s tag=%r removed_from=%d",
+        cluster_id,
+        tag_name,
+        removed_from,
+    )
+    return {"tag_id": tag.id, "tag_name": tag.name, "removed_from": removed_from}
+
+
 def list_available_tags(*, cluster_id: str, org_id: int) -> list[str]:
     """
     Return sorted list of distinct tag names present on at least one

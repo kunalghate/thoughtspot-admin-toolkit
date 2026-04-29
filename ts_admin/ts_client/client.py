@@ -363,6 +363,21 @@ class ThoughtSpotClient:
             context="unassign_tag",
         )
 
+    async def delete_tag(self, *, tag_id: str) -> None:
+        """
+        Permanently delete a tag from the cluster.
+
+        Deleting a tag automatically removes it from every object it was
+        assigned to (one API call instead of unassigning per-object first).
+        Irreversible.
+        """
+        await self._request(
+            "POST",
+            "/api/rest/2.0/tags/delete",
+            json={"tag": [{"identifier": tag_id}]},
+            context="delete_tag",
+        )
+
     # ── Orgs ───────────────────────────────────────────────────────────────────
 
     async def search_orgs(self) -> list[TSOrg]:

@@ -295,12 +295,22 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
           />
         )}
         {mode === "tag" && (
-          <TagPicker
-            clusterId={activeCluster.id}
-            orgId={activeOrg?.org_id ?? 0}
-            pickedTag={pickedTag}
-            onPick={handlePickTag}
-          />
+          <>
+            <TagPicker
+              clusterId={activeCluster.id}
+              orgId={activeOrg?.org_id ?? 0}
+              pickedTag={pickedTag}
+              onPick={handlePickTag}
+            />
+            {pickedTag && (
+              <TagOnlyAction
+                tagName={pickedTag}
+                clusterId={activeCluster.id}
+                orgId={activeOrg?.org_id ?? 0}
+                onDeleted={() => handlePickTag(null)}
+              />
+            )}
+          </>
         )}
         {mode === "list" && (
           <ListPaste
@@ -438,6 +448,81 @@ function ResolveSummary({
             borderRadius: 4, fontSize: 11, color: "#7A7068", maxHeight: 120, overflowY: "auto",
           }}>{unrecognized.join("\n")}</pre>
         </details>
+      )}
+    </div>
+  );
+}
+
+function TagOnlyAction({
+  tagName, clusterId, orgId, onDeleted,
+}: {
+  tagName: string;
+  clusterId: string;
+  orgId: number;
+  onDeleted: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDeleteTag() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await deleterApi.deleteTagOnly({ cluster_id: clusterId, org_id: orgId, tag_name: tagName });
+      alert(`Tag "${res.tag_name}" deleted. Removed from ${res.removed_from} cached object${res.removed_from === 1 ? "" : "s"}.`);
+      setConfirmOpen(false);
+      onDeleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+      background: "#FFFBEB", border: "1px dashed #FCD34D", borderRadius: 6,
+      fontFamily: "Geist, sans-serif",
+    }}>
+      <div style={{ flex: 1, fontSize: 12, color: "#92400E" }}>
+        <strong>Or:</strong> delete <em>just the tag</em> (objects stay; the label is removed from every object).
+      </div>
+      {!confirmOpen ? (
+        <button
+          onClick={() => setConfirmOpen(true)}
+          style={{
+            padding: "6px 12px", fontSize: 12, fontWeight: 500,
+            background: "white", border: "1px solid #FCD34D", borderRadius: 6,
+            cursor: "pointer", color: "#92400E", fontFamily: "Geist, sans-serif",
+          }}
+        >Delete tag only</button>
+      ) : (
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            onClick={() => setConfirmOpen(false)}
+            disabled={busy}
+            style={{
+              padding: "6px 10px", fontSize: 12, background: "white",
+              border: "1px solid #E8E1D5", borderRadius: 6, cursor: busy ? "not-allowed" : "pointer",
+              color: "#7A7068", fontFamily: "Geist, sans-serif",
+            }}
+          >Cancel</button>
+          <button
+            onClick={handleDeleteTag}
+            disabled={busy}
+            style={{
+              padding: "6px 12px", fontSize: 12, fontWeight: 600,
+              background: busy ? "#FCD34D" : "#D97706", color: "white",
+              border: "none", borderRadius: 6, cursor: busy ? "not-allowed" : "pointer",
+              fontFamily: "Geist, sans-serif",
+            }}
+          >{busy ? "Deleting…" : `Confirm delete "${tagName}"`}</button>
+        </div>
+      )}
+      {error && (
+        <span style={{ fontSize: 12, color: "#991B1B" }}>{error}</span>
       )}
     </div>
   );

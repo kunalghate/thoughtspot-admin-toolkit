@@ -127,6 +127,35 @@ async def resolve_downstream(body: DownstreamRequest) -> ResolveResponse:
     )
 
 
+class DeleteTagOnlyResponse(BaseModel):
+    tag_id: str
+    tag_name: str
+    removed_from: int
+
+
+@router.post("/delete-tag-only", response_model=DeleteTagOnlyResponse)
+async def delete_tag_only(body: TagRequest) -> DeleteTagOnlyResponse:
+    """
+    Delete just the tag itself — leaves objects in place, only strips the label.
+
+    Synchronous because it's a single TS API call + a small local cache update.
+    Mirrors the CLI's `bulk-deleter from-tag --tag-only`.
+    """
+    if not body.tag_name:
+        raise HTTPException(status_code=422, detail="tag_name is required")
+    cluster_id = _resolve_cluster_id(body.cluster_id)
+
+    try:
+        result = await deleter_service.delete_tag_only(
+            tag_name=body.tag_name,
+            cluster_id=cluster_id,
+            org_id=body.org_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return DeleteTagOnlyResponse(**result)
+
+
 @router.post("/resolve/tag", response_model=ResolveResponse)
 def resolve_tag(body: TagRequest) -> ResolveResponse:
     """Return all CachedMetadata rows tagged with the given tag name."""
