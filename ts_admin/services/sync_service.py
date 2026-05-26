@@ -40,7 +40,7 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
         await handler(org_id=org_id, job_id=job_id)
     except Exception as exc:
         logger.exception("Sync failed for %s org=%s: %s", entity_type, org_id, exc)
-        mark_failed(job_id, str(exc))
+        mark_failed(job_id, exc)
         _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
 
 

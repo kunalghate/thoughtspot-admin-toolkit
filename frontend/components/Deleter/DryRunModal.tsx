@@ -1,27 +1,42 @@
 /**
- * DryRunModal — impact check + delete confirmation modal.
+ * DryRunModal — shared between Archiver and Bulk Deleter.
  *
  * State machine:
- *   idle → polling → ready → running → complete
+ *   polling → ready → running → complete
  *
- * - polling:  POST /archiver/dryrun → poll job every 2s
+ * - polling:  POST {api.dryrun} → poll job every 2s
  * - ready:    show impact cards + object list + DELETE confirmation input
- * - running:  POST /archiver/execute → poll job every 2s, show progress bar + Cancel
+ * - running:  POST {api.execute} → poll job every 2s, show progress bar
  * - complete: color-coded result summary + "View in History →" link
+ *
+ * The modal is API-agnostic — the consumer passes a small `api` adapter
+ * object so the same UI works for /archiver/* and /deleter/* endpoints.
  */
-
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { IDatasource, IGetRowsParams } from "ag-grid-community";
-import { X, Loader2, AlertTriangle, Users, Share2, CheckCircle, XCircle, AlertCircle } from "lucide-react";
+import { X, Loader2, AlertTriangle, Share2, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 
-import { archiverApi, jobsApi } from "@/lib/api";
-import type { ArchiverItem, DryRunSummary, Job } from "@/lib/types";
-import { ARCHIVER_COLUMNS } from "./columns";
+import { jobsApi } from "@/lib/api";
+import type { DeleterItem, DryRunSummary, Job, PaginatedResponse } from "@/lib/types";
+import { OBJECT_COLUMNS } from "./columns";
 
 type ModalState = "polling" | "ready" | "running" | "complete";
 
+export interface DeleteApiAdapter {
+  /** Start a dryrun job; returns its id. */
+  dryrun: (body: { cluster_id: string; org_id: number; object_ids: string[] }) => Promise<{ job_id: string }>;
+  /** Paginated objects queued in the dryrun job (for the modal grid). */
+  dryrunObjects: (
+    job_id: string,
+    params: { cluster_id: string; record_offset?: number; page_size?: number },
+  ) => Promise<PaginatedResponse<DeleterItem>>;
+  /** Start the actual delete job; returns its id. */
+  execute: (body: { cluster_id: string; org_id: number; object_ids: string[] }) => Promise<{ job_id: string }>;
+}
+
 interface Props {
+  api: DeleteApiAdapter;
   objectIds: string[];
   clusterId: string;
   orgId: number;
@@ -31,7 +46,12 @@ interface Props {
 
 const PAGE_SIZE = 100;
 
-export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistory }: Props) {
+const TYPE_LABEL: Record<string, string> = {
+  LIVEBOARD: "Liveboard", ANSWER: "Answer",
+  WORKSHEET: "Worksheet", TABLE: "Table", MODEL: "Model", VIEW: "View",
+};
+
+export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewHistory }: Props) {
   const [state, setState] = useState<ModalState>("polling");
   const [dryRunJobId, setDryRunJobId] = useState<string | null>(null);
   const [executeJobId, setExecuteJobId] = useState<string | null>(null);
@@ -39,13 +59,13 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
   const [executeJob, setExecuteJob] = useState<Job | null>(null);
   const [confirmInput, setConfirmInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const gridRef = useRef<AgGridReact<ArchiverItem>>(null);
+  const gridRef = useRef<AgGridReact<DeleterItem>>(null);
 
   // ── Kick off dry-run on mount ──────────────────────────────────────────────
 
   useEffect(() => {
     let cancelled = false;
-    archiverApi.dryrun({ cluster_id: clusterId, org_id: orgId, object_ids: objectIds })
+    api.dryrun({ cluster_id: clusterId, org_id: orgId, object_ids: objectIds })
       .then(({ job_id }) => {
         if (!cancelled) setDryRunJobId(job_id);
       })
@@ -53,6 +73,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
         if (!cancelled) setError(err.message ?? "Failed to start dry-run");
       });
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);  // run once on mount
 
   // ── Poll dry-run job ───────────────────────────────────────────────────────
@@ -69,7 +90,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
             return;
           }
           setSummary((job.result ?? {}) as unknown as DryRunSummary);
-          setError(null);   // clear any transient polling error
+          setError(null);
           setState("ready");
         }
       } catch {
@@ -88,7 +109,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
     const ds: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
-          const res = await archiverApi.dryrunObjects(jid, {
+          const res = await api.dryrunObjects(jid, {
             cluster_id: clusterId,
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
@@ -100,7 +121,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
       },
     };
     gridRef.current?.api?.setGridOption("datasource", ds);
-  }, [dryRunJobId, clusterId]);
+  }, [dryRunJobId, clusterId, api]);
 
   useEffect(() => {
     if (state === "ready") loadObjectDatasource();
@@ -111,16 +132,15 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
   const handleConfirm = async () => {
     if (confirmInput !== "DELETE") return;
     try {
-      const { job_id } = await archiverApi.execute({
+      const { job_id } = await api.execute({
         cluster_id: clusterId,
         org_id: orgId,
         object_ids: objectIds,
-        action: "delete",
       });
       setExecuteJobId(job_id);
       setState("running");
-    } catch (err: any) {
-      setError(err.message ?? "Failed to start delete job");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start delete job");
     }
   };
 
@@ -174,15 +194,27 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
   const resultText = () => {
     const r = ((executeJob?.result ?? {}) as Record<string, number>);
     const t = resultType();
-    if (t === "success") return `${r.succeeded ?? objectIds.length} objects archived successfully.`;
+    if (t === "success") return `${r.succeeded ?? objectIds.length} objects deleted successfully.`;
     if (t === "partial") return `${r.succeeded} deleted · ${(r.failed_tml_export ?? 0) + (r.failed_delete ?? 0)} skipped. View History for details.`;
-    return `Archive completed but 0 objects deleted — ${r.failed_tml_export ?? 0} TML export${r.failed_tml_export !== 1 ? "s" : ""} failed.`;
+    return `Delete completed but 0 objects deleted — ${r.failed_tml_export ?? 0} TML export${r.failed_tml_export !== 1 ? "s" : ""} failed.`;
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Adaptive impact cards ──────────────────────────────────────────────────
 
-  // Column defs for modal grid — no checkbox, no actions column
-  const modalColumns = ARCHIVER_COLUMNS.filter(
+  const impactCards = useMemo(() => {
+    if (!summary) return [];
+    const cards: { label: string; value: number }[] = [{ label: "Total", value: summary.total }];
+    const types = Object.entries(summary.by_type ?? {})
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+    for (const [t, n] of types) {
+      cards.push({ label: TYPE_LABEL[t] ?? t, value: n });
+    }
+    return cards;
+  }, [summary]);
+
+  // Column defs for modal grid — no checkbox
+  const modalColumns = OBJECT_COLUMNS.filter(
     (c) => c.colId !== "checkbox" && c.colId !== "actions"
   );
 
@@ -195,7 +227,10 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
       />
 
       {/* Modal panel */}
-      <div style={{
+      <div
+        data-testid="dryrun-modal"
+        data-state={state}
+        style={{
         position: "fixed", top: "50%", left: "50%",
         transform: "translate(-50%, -50%)",
         width: 680, maxHeight: "85vh",
@@ -214,7 +249,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
             {state === "polling"  && "Checking impact…"}
             {state === "ready"    && `Delete ${objectIds.length.toLocaleString()} objects`}
             {state === "running"  && "Deleting objects…"}
-            {state === "complete" && "Archive complete"}
+            {state === "complete" && "Delete complete"}
           </span>
           {(state === "ready" || state === "complete") && (
             <button onClick={() => onClose(state === "complete")} style={{ background: "none", border: "none", cursor: "pointer", color: "#7A7068", padding: 4 }}>
@@ -226,14 +261,13 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
         {/* ── Body ── */}
         <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Error state — only shown in polling/ready; complete state has its own summary */}
           {error && state !== "complete" && (
             <div style={{ padding: 12, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 6, color: "#991B1B", fontSize: 13, fontFamily: "Geist, sans-serif" }}>
               {error}
             </div>
           )}
 
-          {/* ── Polling state ── */}
+          {/* Polling */}
           {state === "polling" && !error && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "32px 0", color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
               <Loader2 size={28} style={{ animation: "spin 1s linear infinite", color: "#8B5CF6" }} />
@@ -244,16 +278,12 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
             </div>
           )}
 
-          {/* ── Ready state ── */}
+          {/* Ready */}
           {state === "ready" && summary && (
             <>
-              {/* Impact cards */}
+              {/* Impact cards (adaptive) */}
               <div style={{ display: "flex", gap: 10 }}>
-                {[
-                  { label: "Total", value: summary.total },
-                  { label: "Liveboards", value: summary.by_type["LIVEBOARD"] ?? 0 },
-                  { label: "Answers", value: summary.by_type["ANSWER"] ?? 0 },
-                ].map(({ label, value }) => (
+                {impactCards.map(({ label, value }) => (
                   <div key={label} style={{
                     flex: 1, padding: "12px 14px", borderRadius: 8,
                     background: "#FAF8F4", border: "1px solid #E8E1D5", textAlign: "center",
@@ -268,7 +298,6 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
                 ))}
               </div>
 
-              {/* Shared access warning */}
               {summary.shared_count > 0 && (
                 <WarningBox icon={<Share2 size={14} />} title={`${summary.shared_count} shared object${summary.shared_count !== 1 ? "s" : ""} — access will be revoked`}>
                   <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 4 }}>
@@ -278,7 +307,6 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
                 </WarningBox>
               )}
 
-              {/* Dependency warning */}
               {summary.dependency_warnings.length > 0 && (
                 <WarningBox icon={<AlertTriangle size={14} />} title={`${summary.dependency_warnings.length} object${summary.dependency_warnings.length !== 1 ? "s" : ""} have active dependents — HIGH RISK`} color="red">
                   <ul style={{ margin: "4px 0 0 0", padding: "0 0 0 16px", fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
@@ -292,7 +320,6 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
                 </WarningBox>
               )}
 
-              {/* Check errors */}
               {summary.errors.length > 0 && (
                 <WarningBox icon={<AlertCircle size={14} />} title={`${summary.errors.length} object${summary.errors.length !== 1 ? "s" : ""} could not be checked`} color="gray">
                   <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 4 }}>
@@ -307,7 +334,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
                   Objects to be deleted
                 </div>
                 <div className="ag-theme-alpine" style={{ height: 200 }}>
-                  <AgGridReact<ArchiverItem>
+                  <AgGridReact<DeleterItem>
                     ref={gridRef}
                     columnDefs={modalColumns}
                     rowModelType="infinite"
@@ -326,6 +353,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
                   Type <strong style={{ color: "#991B1B", fontFamily: "Geist Mono, monospace" }}>DELETE</strong> to confirm
                 </label>
                 <input
+                  data-testid="dryrun-confirm-input"
                   value={confirmInput}
                   onChange={(e) => setConfirmInput(e.target.value)}
                   placeholder="DELETE"
@@ -341,7 +369,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
             </>
           )}
 
-          {/* ── Running state ── */}
+          {/* Running */}
           {state === "running" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "16px 0" }}>
               {executeJob ? (
@@ -374,7 +402,7 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
             </div>
           )}
 
-          {/* ── Complete state ── */}
+          {/* Complete */}
           {state === "complete" && executeJob && (() => {
             const t = resultType();
             const c = resultColors[t];
@@ -411,41 +439,38 @@ export function DryRunModal({ objectIds, clusterId, orgId, onClose, onViewHistor
           })()}
         </div>
 
-        {/* ── Footer ── */}
+        {/* Footer */}
         {state === "ready" && (
           <div style={{
             display: "flex", justifyContent: "flex-end", gap: 8,
             padding: "12px 20px", borderTop: "1px solid #E8E1D5", flexShrink: 0,
           }}>
-            {state === "ready" && (
-              <>
-                <button
-                  onClick={() => onClose(false)}
-                  style={{
-                    padding: "7px 16px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-                    border: "1px solid #E8E1D5", background: "#FAF8F4",
-                    color: "#7A7068", fontFamily: "Geist, sans-serif",
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  disabled={confirmInput !== "DELETE"}
-                  onClick={handleConfirm}
-                  style={{
-                    padding: "7px 16px", borderRadius: 6, fontSize: 13,
-                    fontWeight: 500, fontFamily: "Geist, sans-serif",
-                    cursor: confirmInput === "DELETE" ? "pointer" : "default",
-                    border: "none",
-                    background: confirmInput === "DELETE" ? "#DC2626" : "#FCA5A5",
-                    color: "#fff",
-                    transition: "background 0.15s",
-                  }}
-                >
-                  Delete {objectIds.length.toLocaleString()} objects
-                </button>
-              </>
-            )}
+            <button
+              onClick={() => onClose(false)}
+              style={{
+                padding: "7px 16px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                border: "1px solid #E8E1D5", background: "#FAF8F4",
+                color: "#7A7068", fontFamily: "Geist, sans-serif",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              data-testid="dryrun-execute"
+              disabled={confirmInput !== "DELETE"}
+              onClick={handleConfirm}
+              style={{
+                padding: "7px 16px", borderRadius: 6, fontSize: 13,
+                fontWeight: 500, fontFamily: "Geist, sans-serif",
+                cursor: confirmInput === "DELETE" ? "pointer" : "default",
+                border: "none",
+                background: confirmInput === "DELETE" ? "#DC2626" : "#FCA5A5",
+                color: "#fff",
+                transition: "background 0.15s",
+              }}
+            >
+              Delete {objectIds.length.toLocaleString()} objects
+            </button>
           </div>
         )}
       </div>

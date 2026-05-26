@@ -2,6 +2,7 @@
 Job service — creates and updates background job records in SQLite.
 """
 
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -9,15 +10,23 @@ from ts_admin.database import get_session
 from ts_admin.models.job import Job
 
 
-def create_job(*, job_type: str, parameters: dict) -> str:
+def create_job(*, job_type: str, parameters: dict, cluster_id: str | None = None) -> str:
     """
     Create a new job record in QUEUED state.
+
+    `cluster_id` should be passed by the caller (they've already resolved it from
+    the request body or the active cluster). It also accepts `parameters["cluster_id"]`
+    when present, so existing callers that pass it inside `parameters` keep working.
+    Falls back to load_config() only if neither source supplies it.
+
     Returns the job ID.
     """
-    from ts_admin.config import load_config
+    if cluster_id is None:
+        cluster_id = parameters.get("cluster_id")
+    if cluster_id is None:
+        from ts_admin.config import load_config
 
-    config = load_config()
-    cluster_id = config.active_cluster.id
+        cluster_id = load_config().active_cluster.id
 
     job_id = str(uuid.uuid4())
     job = Job(
@@ -66,12 +75,42 @@ def mark_complete(job_id: str, result: dict) -> None:
             session.commit()
 
 
-def mark_failed(job_id: str, error: str) -> None:
+def mark_failed(
+    job_id: str,
+    error: "str | Exception",
+    *,
+    traceback_str: str | None = None,
+) -> None:
+    """Mark a job FAILED.
+
+    `error` accepts either a plain string (legacy callers) or an Exception
+    instance. When an Exception is passed we capture its class name and a
+    full traceback so the failure can be debugged after the process exits.
+    """
+    if isinstance(error, BaseException):
+        from ts_admin.services.error_formatter import format_error
+
+        exc = error
+        formatted = format_error(exc)
+        raw_detail = str(exc) or type(exc).__name__
+        # Friendly line for the grid; raw detail prepended to traceback so it's
+        # never lost.
+        error_str = formatted.display
+        error_type = formatted.error_type
+        if traceback_str is None:
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            traceback_str = f"{raw_detail}\n\n{tb}"
+    else:
+        error_str = error
+        error_type = None
+
     with get_session() as session:
         job = session.get(Job, job_id)
         if job:
             job.status = "FAILED"
-            job.error = error
+            job.error = error_str
+            job.error_type = error_type
+            job.error_traceback = traceback_str
             job.completed_at = datetime.now(timezone.utc)
             session.add(job)
             session.commit()

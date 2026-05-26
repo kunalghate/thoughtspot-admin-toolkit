@@ -32,7 +32,7 @@ export interface SyncLog {
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
 
-export type JobStatus = "PENDING" | "RUNNING" | "COMPLETE" | "PARTIAL" | "FAILED";
+export type JobStatus = "QUEUED" | "PENDING" | "RUNNING" | "COMPLETE" | "PARTIAL" | "FAILED";
 
 export interface Job {
   id: string;
@@ -45,6 +45,8 @@ export interface Job {
   created_at: string;
   completed_at: string | null;
   error: string | null;
+  error_type: string | null;
+  error_traceback: string | null;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -207,4 +209,41 @@ export interface ArchiveSessionSummary {
   succeeded: number;
   failed_tml_export: number;
   failed_delete: number;
+}
+
+// ── Bulk Deleter ──────────────────────────────────────────────────────────────
+
+export type DeleterMode = "downstream" | "tag" | "list";
+
+// DeleterItem mirrors ArchiverItem but with a wider object_type union — Bulk
+// Deleter operates on Worksheets, Tables, Models, etc., not just Liveboard/Answer.
+export interface DeleterItem {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_guid: string;
+  owner_name: string;
+  org_id: number;
+  last_accessed_at: string | null;
+  modified_at: string | null;
+  created_at: string | null;
+  view_count: number;
+  days_unused: number;
+  tags: string[];
+}
+
+export interface DeleterResolveResponse {
+  items: DeleterItem[];
+  total: number;
+  by_type: Record<string, number>;
+  root_guid?: string | null;
+  tag_name?: string | null;
+  unrecognized?: string[];
+}
+
+export interface RootSearchItem {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_name: string;
 }

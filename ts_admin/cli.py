@@ -17,11 +17,9 @@ from pathlib import Path
 import click
 import uvicorn
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
+from ts_admin.logging_config import setup_logging
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"

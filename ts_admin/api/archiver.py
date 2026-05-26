@@ -23,7 +23,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from ts_admin.services import archiver_service
+from ts_admin.services import archiver_service, deletion_service
 from ts_admin.services.archiver_service import ArchiverService
 
 logger = logging.getLogger(__name__)
@@ -395,7 +395,7 @@ async def archiver_dryrun(
     )
 
     background_tasks.add_task(
-        archiver_service.dryrun,
+        deletion_service.dryrun,
         job_id=job_id,
         cluster_id=cluster_id,
         org_id=body.org_id,
@@ -424,7 +424,7 @@ def dryrun_objects(
 
         cluster_id = load_config().active_cluster.id
 
-    items, total = archiver_service.dryrun_objects(
+    items, total = deletion_service.dryrun_objects(
         job_id=job_id,
         cluster_id=cluster_id,
         record_offset=record_offset,

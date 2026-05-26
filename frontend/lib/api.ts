@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -154,14 +154,51 @@ export const metadataApi = {
 // ── Jobs ──────────────────────────────────────────────────────────────────────
 
 export const jobsApi = {
-  list: () =>
-    request<Job[]>(`/jobs`),
+  list: (params?: {
+    cluster_id?: string;
+    job_types?: string[];
+    statuses?: string[];
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params?.cluster_id)         q.set("cluster_id", params.cluster_id);
+    if (params?.job_types)          params.job_types.forEach((t) => q.append("job_types", t));
+    if (params?.statuses)           params.statuses.forEach((s) => q.append("statuses", s));
+    if (params?.sort_field)         q.set("sort_field", params.sort_field);
+    if (params?.sort_order)         q.set("sort_order", params.sort_order);
+    if (params?.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params?.page_size)          q.set("page_size", String(params.page_size));
+    const qs = q.toString();
+    return request<{ items: Job[]; total: number; record_offset: number; page_size: number }>(
+      qs ? `/jobs?${qs}` : `/jobs`,
+    );
+  },
 
   get: (jobId: string) =>
     request<Job>(`/jobs/${jobId}`),
 
   cancel: (jobId: string) =>
     request<void>(`/jobs/${jobId}/cancel`, { method: "DELETE" }),
+};
+
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+export const diagnosticsApi = {
+  /** Return the last N lines of the application log as plain text. */
+  tailLogs: async (lines: number = 500): Promise<string> => {
+    const res = await fetch(`${BASE}/diagnostics/logs?lines=${lines}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    return res.text();
+  },
+
+  /** Absolute URL to download the support bundle as a zip. */
+  bundleUrl: (jobId?: string): string => {
+    const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
+    return `${BASE}/diagnostics/bundle${q}`;
+  },
 };
 
 // ── Archiver ──────────────────────────────────────────────────────────────────
@@ -357,4 +394,75 @@ export const archiverApi = {
     if (params.page_size)             q.set("page_size", String(params.page_size));
     return request<{ items: ArchiveRecordFlatItem[]; total: number; record_offset: number; page_size: number }>(`/archiver/records?${q}`);
   },
+};
+
+// ── Bulk Deleter ──────────────────────────────────────────────────────────────
+
+export const deleterApi = {
+  resolveDownstream: (body: { cluster_id: string; org_id: number; root_guid: string; root_type: string }) =>
+    request<DeleterResolveResponse>("/deleter/resolve/downstream", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  resolveTag: (body: { cluster_id: string; org_id: number; tag_name: string }) =>
+    request<DeleterResolveResponse>("/deleter/resolve/tag", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  deleteTagOnly: (body: { cluster_id: string; org_id: number; tag_name: string }) =>
+    request<{ tag_id: string; tag_name: string; removed_from: number }>("/deleter/delete-tag-only", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  resolveList: (body: { cluster_id: string; org_id: number; guids: string[] }) =>
+    request<DeleterResolveResponse>("/deleter/resolve/list", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  tags: (params: { cluster_id: string; org_id: number }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    return request<string[]>(`/deleter/tags?${q}`);
+  },
+
+  rootSearch: (params: {
+    cluster_id: string;
+    org_id: number;
+    query: string;
+    types?: string[];
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    q.set("query", params.query);
+    if (params.types) params.types.forEach((t) => q.append("types", t));
+    if (params.limit) q.set("limit", String(params.limit));
+    return request<RootSearchItem[]>(`/deleter/roots/search?${q}`);
+  },
+
+  dryrun: (body: { cluster_id: string; org_id: number; object_ids: string[] }) =>
+    request<{ job_id: string; total: number }>("/deleter/dryrun", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  dryrunObjects: (job_id: string, params: { cluster_id: string; record_offset?: number; page_size?: number }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)             q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<DeleterItem>>(`/deleter/dryrun/${job_id}/objects?${q}`);
+  },
+
+  execute: (body: { cluster_id: string; org_id: number; object_ids: string[] }) =>
+    request<{ job_id: string; total: number }>("/deleter/execute", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
