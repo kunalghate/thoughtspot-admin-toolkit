@@ -10,15 +10,23 @@ from ts_admin.database import get_session
 from ts_admin.models.job import Job
 
 
-def create_job(*, job_type: str, parameters: dict) -> str:
+def create_job(*, job_type: str, parameters: dict, cluster_id: str | None = None) -> str:
     """
     Create a new job record in QUEUED state.
+
+    `cluster_id` should be passed by the caller (they've already resolved it from
+    the request body or the active cluster). It also accepts `parameters["cluster_id"]`
+    when present, so existing callers that pass it inside `parameters` keep working.
+    Falls back to load_config() only if neither source supplies it.
+
     Returns the job ID.
     """
-    from ts_admin.config import load_config
+    if cluster_id is None:
+        cluster_id = parameters.get("cluster_id")
+    if cluster_id is None:
+        from ts_admin.config import load_config
 
-    config = load_config()
-    cluster_id = config.active_cluster.id
+        cluster_id = load_config().active_cluster.id
 
     job_id = str(uuid.uuid4())
     job = Job(
