@@ -130,8 +130,7 @@ def _app_info() -> dict:
         cfg = load_config()
         info["active_cluster_id"] = cfg.active_cluster_id
         info["clusters"] = [
-            {"id": c.id, "name": c.name, "url": c.url, "auth_type": str(c.auth_type)}
-            for c in cfg.clusters.values()
+            {"id": c.id, "name": c.name, "url": c.url, "auth_type": str(c.auth_type)} for c in cfg.clusters.values()
         ]
     except Exception as exc:  # noqa: BLE001 — diagnostics must never crash on env state
         info["clusters_error"] = f"{type(exc).__name__}: {exc}"
@@ -147,10 +146,7 @@ def _recent_failed_jobs(*, limit: int) -> list[dict]:
 
     with get_session() as session:
         rows = session.exec(
-            select(Job)
-            .where(Job.status == "FAILED")
-            .order_by(Job.created_at.desc())
-            .limit(limit)
+            select(Job).where(Job.status == "FAILED").order_by(Job.created_at.desc()).limit(limit)
         ).all()
 
     return [_job_to_dict(j) for j in rows]
@@ -167,9 +163,7 @@ def _job_detail(job_id: str) -> dict:
         job = session.get(Job, job_id)
         if not job:
             raise KeyError(job_id)
-        archive_records = session.exec(
-            select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)
-        ).all()
+        archive_records = session.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()
 
     return {
         "job": _job_to_dict(job),

@@ -203,9 +203,7 @@ class TestAuditLogActionTypeIsCallerSpecific:
         job_id = _create_job({"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
 
         asyncio.run(
-            _execute_delete(
-                job_id=job_id, cluster_id="c1", org_id=0, object_ids=["lb-1"], action_type=action_type
-            )
+            _execute_delete(job_id=job_id, cluster_id="c1", org_id=0, object_ids=["lb-1"], action_type=action_type)
         )
 
         rows = _audit_rows(in_memory_db)
@@ -282,9 +280,7 @@ class TestNoDuplicateAuditRows:
         _FakeClient.tml_results = [{"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"}]
         job_a = _create_job({"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
         asyncio.run(
-            _execute_delete(
-                job_id=job_a, cluster_id="c1", org_id=0, object_ids=["lb-1"], action_type="bulk_delete"
-            )
+            _execute_delete(job_id=job_a, cluster_id="c1", org_id=0, object_ids=["lb-1"], action_type="bulk_delete")
         )
 
         # Re-seed lb-1 (the previous run deleted it from CachedMetadata) so the
@@ -307,9 +303,7 @@ class TestNoDuplicateAuditRows:
 
         job_b = _create_job({"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
         asyncio.run(
-            _execute_delete(
-                job_id=job_b, cluster_id="c1", org_id=0, object_ids=["lb-1"], action_type="bulk_delete"
-            )
+            _execute_delete(job_id=job_b, cluster_id="c1", org_id=0, object_ids=["lb-1"], action_type="bulk_delete")
         )
 
         rows = _audit_rows(in_memory_db)

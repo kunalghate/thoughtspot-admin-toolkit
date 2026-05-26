@@ -40,7 +40,7 @@ class FakeTSClient:
     async def search_tags(self) -> list[TSTag]:
         return [
             TSTag(id="tag-todo", name="TODO_DELETE", color=""),
-            TSTag(id="tag-fin",  name="Finance",     color=""),
+            TSTag(id="tag-fin", name="Finance", color=""),
         ]
 
     async def delete_tag(self, *, tag_id: str) -> None:
@@ -106,33 +106,53 @@ def seeded(in_memory_db):
     with Session(in_memory_db) as session:
         session.add(
             Cluster(
-                id="c1", name="Prod",
+                id="c1",
+                name="Prod",
                 url="https://prod.thoughtspot.cloud",
-                username="admin", auth_type="basic",
+                username="admin",
+                auth_type="basic",
             )
         )
         now = datetime.now(tz=timezone.utc)
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0,
-            ts_guid="lb-1", name="Sales", object_type="LIVEBOARD",
-            owner_guid="u1", owner_name="Alice",
-            tag_names=json.dumps(["TODO_DELETE", "Finance"]),
-            synced_at=now,
-        ))
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0,
-            ts_guid="ans-1", name="Revenue", object_type="ANSWER",
-            owner_guid="u2", owner_name="Bob",
-            tag_names=json.dumps(["TODO_DELETE"]),
-            synced_at=now,
-        ))
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0,
-            ts_guid="lb-2", name="Untouched", object_type="LIVEBOARD",
-            owner_guid="u1", owner_name="Alice",
-            tag_names=json.dumps(["Finance"]),
-            synced_at=now,
-        ))
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-1",
+                name="Sales",
+                object_type="LIVEBOARD",
+                owner_guid="u1",
+                owner_name="Alice",
+                tag_names=json.dumps(["TODO_DELETE", "Finance"]),
+                synced_at=now,
+            )
+        )
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="ans-1",
+                name="Revenue",
+                object_type="ANSWER",
+                owner_guid="u2",
+                owner_name="Bob",
+                tag_names=json.dumps(["TODO_DELETE"]),
+                synced_at=now,
+            )
+        )
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-2",
+                name="Untouched",
+                object_type="LIVEBOARD",
+                owner_guid="u1",
+                owner_name="Alice",
+                tag_names=json.dumps(["Finance"]),
+                synced_at=now,
+            )
+        )
         session.commit()
 
 

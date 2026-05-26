@@ -104,26 +104,42 @@ def patched_env(monkeypatch, tmp_path):
 @pytest.fixture
 def seeded(in_memory_db):
     with Session(in_memory_db) as session:
-        session.add(Cluster(
-            id="c1", name="Prod",
-            url="https://prod.thoughtspot.cloud",
-            username="admin", auth_type="basic",
-        ))
+        session.add(
+            Cluster(
+                id="c1",
+                name="Prod",
+                url="https://prod.thoughtspot.cloud",
+                username="admin",
+                auth_type="basic",
+            )
+        )
         now = datetime.now(tz=timezone.utc)
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0,
-            ts_guid="lb-1", name="Sales", object_type="LIVEBOARD",
-            owner_guid="u1", owner_name="Alice",
-            tag_names=json.dumps([]),
-            synced_at=now,
-        ))
-        session.add(CachedMetadata(
-            cluster_id="c1", org_id=0,
-            ts_guid="ans-1", name="Revenue", object_type="ANSWER",
-            owner_guid="u2", owner_name="Bob",
-            tag_names=json.dumps([]),
-            synced_at=now,
-        ))
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-1",
+                name="Sales",
+                object_type="LIVEBOARD",
+                owner_guid="u1",
+                owner_name="Alice",
+                tag_names=json.dumps([]),
+                synced_at=now,
+            )
+        )
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="ans-1",
+                name="Revenue",
+                object_type="ANSWER",
+                owner_guid="u2",
+                owner_name="Bob",
+                tag_names=json.dumps([]),
+                synced_at=now,
+            )
+        )
         session.commit()
 
 
@@ -160,11 +176,15 @@ class TestExecuteDeleteHappyPath:
             {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]},
         )
 
-        asyncio.run(_execute_delete(
-            job_id=job_id, cluster_id="c1", org_id=0,
-            object_ids=["lb-1", "ans-1"],
-            action_type="bulk_delete",
-        ))
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
 
         # ── Job is COMPLETE
         with Session(in_memory_db) as s:
@@ -200,7 +220,10 @@ class TestExecuteDeleteHappyPath:
 
 class TestExecuteDeletePartial:
     def test_tml_export_failure_excludes_object_from_delete(
-        self, in_memory_db, patched_env, seeded,
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
     ):
         from ts_admin.services.deletion_service import _execute_delete
 
@@ -215,19 +238,22 @@ class TestExecuteDeletePartial:
             {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]},
         )
 
-        asyncio.run(_execute_delete(
-            job_id=job_id, cluster_id="c1", org_id=0,
-            object_ids=["lb-1", "ans-1"],
-            action_type="bulk_delete",
-        ))
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
 
         # delete_metadata was called only for the type with successful TML
         called_ids = sorted(i for _, ids in _FakeClient.delete_calls for i in ids)
         assert called_ids == ["lb-1"]
 
         with Session(in_memory_db) as s:
-            recs = {r.ts_guid: r for r in
-                    s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
             job = s.get(Job, job_id)
 
         assert recs["lb-1"].tml_export_status == "SUCCESS"

@@ -70,14 +70,14 @@ class TestRejectedPrivateIPv4:
     @pytest.mark.parametrize(
         "ip",
         [
-            "10.0.0.1",          # RFC 1918 — Class A private
+            "10.0.0.1",  # RFC 1918 — Class A private
             "10.255.255.255",
-            "172.16.0.1",        # RFC 1918 — Class B private
+            "172.16.0.1",  # RFC 1918 — Class B private
             "172.31.255.255",
-            "192.168.1.1",       # RFC 1918 — Class C private
+            "192.168.1.1",  # RFC 1918 — Class C private
             "192.168.0.100",
-            "169.254.169.254",   # AWS / GCP / Azure metadata endpoint (link-local)
-            "127.0.0.2",         # other loopback addresses (127.0.0.0/8)
+            "169.254.169.254",  # AWS / GCP / Azure metadata endpoint (link-local)
+            "127.0.0.2",  # other loopback addresses (127.0.0.0/8)
         ],
     )
     def test_private_ipv4_rejected(self, ip):
@@ -89,9 +89,9 @@ class TestRejectedPrivateIPv6:
     @pytest.mark.parametrize(
         "ip",
         [
-            "fc00::1",       # unique local address (RFC 4193)
+            "fc00::1",  # unique local address (RFC 4193)
             "fd12:3456::1",
-            "fe80::1",       # link-local
+            "fe80::1",  # link-local
         ],
     )
     def test_private_ipv6_rejected(self, ip):

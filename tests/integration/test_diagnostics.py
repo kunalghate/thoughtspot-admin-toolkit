@@ -48,9 +48,11 @@ def client(in_memory_db, monkeypatch):
     from ts_admin.ts_client.models import AuthType
 
     cluster_cfg = ClusterConfig(
-        id="c1", name="Prod",
+        id="c1",
+        name="Prod",
         url="https://prod.thoughtspot.cloud",
-        username="admin", auth_type=AuthType.BASIC,
+        username="admin",
+        auth_type=AuthType.BASIC,
     )
     config = AppConfig(clusters={"c1": cluster_cfg}, active_cluster_id="c1")
     monkeypatch.setattr("ts_admin.config.load_config", lambda: config)
@@ -62,18 +64,24 @@ def client(in_memory_db, monkeypatch):
 
 def _seed_cluster(engine):
     with Session(engine) as session:
-        session.add(Cluster(
-            id="c1", name="Prod",
-            url="https://prod.thoughtspot.cloud",
-            username="admin", auth_type="basic",
-        ))
+        session.add(
+            Cluster(
+                id="c1",
+                name="Prod",
+                url="https://prod.thoughtspot.cloud",
+                username="admin",
+                auth_type="basic",
+            )
+        )
         session.commit()
 
 
 def _seed_failed_job(engine, *, job_id: str = "failed-1") -> None:
     with Session(engine) as session:
         job = Job(
-            id=job_id, cluster_id="c1", job_type="bulk_delete",
+            id=job_id,
+            cluster_id="c1",
+            job_type="bulk_delete",
             status="FAILED",
             error="ThoughtSpot login expired — Reconnect this cluster from Settings → Clusters.",
             error_type="TSAuthenticationError",
@@ -165,6 +173,4 @@ def test_bundle_does_not_leak_secret_field_names(client, in_memory_db):
             continue
         content = zf.read(name).decode("utf-8", errors="replace").lower()
         for forbidden in ("password", "secret_key", '"token"', "bearer "):
-            assert forbidden not in content, (
-                f"forbidden token {forbidden!r} found in bundle file {name}"
-            )
+            assert forbidden not in content, f"forbidden token {forbidden!r} found in bundle file {name}"

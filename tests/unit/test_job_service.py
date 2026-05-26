@@ -32,11 +32,16 @@ def _seed_job(engine) -> str:
         # Use a minimal cluster row so the FK doesn't bite — enable_fk is off in
         # the in-memory test setup, but write an id consistent with archiver tests.
         from ts_admin.models.cluster import Cluster
-        session.add(Cluster(
-            id="c1", name="Prod",
-            url="https://prod.thoughtspot.cloud",
-            username="admin", auth_type="basic",
-        ))
+
+        session.add(
+            Cluster(
+                id="c1",
+                name="Prod",
+                url="https://prod.thoughtspot.cloud",
+                username="admin",
+                auth_type="basic",
+            )
+        )
         session.add(Job(id=job_id, cluster_id="c1", job_type="bulk_delete"))
         session.commit()
     return job_id

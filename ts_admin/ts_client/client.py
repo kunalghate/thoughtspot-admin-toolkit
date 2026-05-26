@@ -51,18 +51,18 @@ PAGE_SIZE = 500
 # Cached `object_type` values → the `type` enum metadata/search accepts.
 # All tabular subtypes collapse to LOGICAL_TABLE; leaves keep their own type.
 _SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
-    "LIVEBOARD":          "LIVEBOARD",
-    "ANSWER":             "ANSWER",
-    "WORKSHEET":          "LOGICAL_TABLE",
+    "LIVEBOARD": "LIVEBOARD",
+    "ANSWER": "ANSWER",
+    "WORKSHEET": "LOGICAL_TABLE",
     "ONE_TO_ONE_LOGICAL": "LOGICAL_TABLE",
-    "AGGR_WORKSHEET":     "LOGICAL_TABLE",
-    "SQL_VIEW":           "LOGICAL_TABLE",
-    "USER_DEFINED":       "LOGICAL_TABLE",
-    "TABLE":              "LOGICAL_TABLE",
-    "MODEL":              "LOGICAL_TABLE",
-    "VIEW":               "LOGICAL_TABLE",
-    "LOGICAL_TABLE":      "LOGICAL_TABLE",
-    "CONNECTION":         "CONNECTION",
+    "AGGR_WORKSHEET": "LOGICAL_TABLE",
+    "SQL_VIEW": "LOGICAL_TABLE",
+    "USER_DEFINED": "LOGICAL_TABLE",
+    "TABLE": "LOGICAL_TABLE",
+    "MODEL": "LOGICAL_TABLE",
+    "VIEW": "LOGICAL_TABLE",
+    "LOGICAL_TABLE": "LOGICAL_TABLE",
+    "CONNECTION": "CONNECTION",
 }
 
 
@@ -639,7 +639,8 @@ class ThoughtSpotClient:
             if not guid:
                 continue
             api_type = _SEARCH_TYPE_FOR_DEPENDENTS.get(
-                obj.get("type", "").upper(), "LOGICAL_TABLE",
+                obj.get("type", "").upper(),
+                "LOGICAL_TABLE",
             )
             data = await self._request(
                 "POST",

@@ -90,11 +90,7 @@ async def list_jobs(
     with get_session() as session:
         total = session.exec(select(func.count()).select_from(Job).where(*conditions)).one()
         rows = session.exec(
-            select(Job)
-            .where(*conditions)
-            .order_by(order_expr)
-            .offset(record_offset)
-            .limit(page_size)
+            select(Job).where(*conditions).order_by(order_expr).offset(record_offset).limit(page_size)
         ).all()
 
     return JobListResponse(
