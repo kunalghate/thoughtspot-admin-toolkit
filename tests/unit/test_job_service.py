@@ -43,8 +43,8 @@ def _seed_job(engine) -> str:
 
 
 def test_mark_failed_with_string_keeps_legacy_behavior(in_memory_db):
-    from ts_admin.services.job_service import mark_failed
     from ts_admin.database import get_session
+    from ts_admin.services.job_service import mark_failed
 
     job_id = _seed_job(in_memory_db)
     mark_failed(job_id, "0 objects deleted — 5 TML exports failed")
@@ -59,8 +59,8 @@ def test_mark_failed_with_string_keeps_legacy_behavior(in_memory_db):
 
 
 def test_mark_failed_with_exception_captures_friendly_message_and_traceback(in_memory_db):
-    from ts_admin.services.job_service import mark_failed
     from ts_admin.database import get_session
+    from ts_admin.services.job_service import mark_failed
     from ts_admin.ts_client.exceptions import TSTimeoutError
 
     job_id = _seed_job(in_memory_db)
@@ -87,8 +87,8 @@ def test_mark_failed_with_exception_captures_friendly_message_and_traceback(in_m
 
 
 def test_mark_failed_unknown_exception_falls_back_to_generic(in_memory_db):
-    from ts_admin.services.job_service import mark_failed
     from ts_admin.database import get_session
+    from ts_admin.services.job_service import mark_failed
 
     job_id = _seed_job(in_memory_db)
     try:
@@ -105,8 +105,8 @@ def test_mark_failed_unknown_exception_falls_back_to_generic(in_memory_db):
 
 
 def test_mark_failed_with_explicit_traceback_string(in_memory_db):
-    from ts_admin.services.job_service import mark_failed
     from ts_admin.database import get_session
+    from ts_admin.services.job_service import mark_failed
 
     job_id = _seed_job(in_memory_db)
     custom_tb = "Traceback (most recent call last):\n  ...custom...\n"
