@@ -213,7 +213,7 @@ async def _sweep_dependents(client, table_guids: list[str], job_id: str) -> dict
     for task in asyncio.as_completed(tasks):
         result = await task
         merged.update(result)
-        done += 1
+        done += len(result)  # count objects swept, not chunks (consistent with the column pass)
         update_progress(job_id, done)
     return merged
 

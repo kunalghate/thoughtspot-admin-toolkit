@@ -386,7 +386,7 @@ function BuildLineagePrompt({ building, progress, onBuild }: { building: boolean
         {building ? (
           <>
             <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
-            Building{progress != null ? ` — ${progress}` : "…"}
+            {progress != null && progress > 0 ? `Building… ${progress.toLocaleString()} objects processed` : "Building…"}
           </>
         ) : (
           <>
