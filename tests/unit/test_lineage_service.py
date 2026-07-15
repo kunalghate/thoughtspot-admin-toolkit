@@ -152,6 +152,39 @@ async def test_build_object_graph_creates_uses_edges(monkeypatch, in_memory_db, 
     assert not any(e.source_type == "LIVEBOARD" for e in edges)
 
 
+def test_edges_from_dependents_types_by_group_key_and_drops_noncontent():
+    """
+    A dependent that isn't in the metadata cache is typed from the API's group
+    key (stamped onto the item by the client). Answers are stored, Liveboards are
+    deferred to Phase 2, and non-content deps (FEEDBACK alerts, untyped) are
+    dropped — never mislabeled as LOGICAL_TABLE. Regression for the drawer that
+    showed Liveboards/Answers under a "13 Logical Tables" count node.
+    """
+    from ts_admin.services import lineage_service
+
+    meta_by_guid = {
+        "model-1": ("Sales Model", "WORKSHEET"),
+        "ans-known": ("Known Answer", "ANSWER"),  # in cache → typed from metadata
+    }
+    dependents = {
+        "model-1": [
+            {"id": "ans-x", "name": "Forecast", "type": "QUESTION_ANSWER_BOOK"},
+            {"id": "lb-x", "name": "Sales Liveboard", "type": "PINBOARD_ANSWER_BOOK"},
+            {"id": "fb-x", "name": "quota", "type": "FEEDBACK"},
+            {"id": "unk-x", "name": "mystery", "type": None},
+            {"id": "ans-known", "name": "Known Answer", "type": None},
+        ]
+    }
+    edges = lineage_service._edges_from_dependents(dependents, meta_by_guid, CLUSTER_ID, 0)
+    by_src = {e.source_guid: e.source_type for e in edges}
+
+    assert by_src == {"ans-x": "ANSWER", "ans-known": "ANSWER"}
+    assert "lb-x" not in by_src   # Liveboard deferred to Phase 2's TML pass
+    assert "fb-x" not in by_src   # FEEDBACK alert is not lineage content
+    assert "unk-x" not in by_src  # unknown/untyped dependent dropped, not defaulted
+    assert all(e.target_type == "MODEL" for e in edges)
+
+
 async def test_build_object_graph_writes_sync_log_and_deletes_stale(monkeypatch, in_memory_db, patched_config):
     from ts_admin.models.cache.ts_dependency import CachedDependency
     from ts_admin.models.sync_log import SyncLog
@@ -210,9 +243,11 @@ async def test_topology_groups_and_reads(monkeypatch, in_memory_db, patched_conf
     assert {i["ts_guid"] for i in topo["logical_tables"]} == {"table-1", "model-1"}
     assert [i["ts_guid"] for i in topo["answers"]] == ["answer-1"]
     assert [i["ts_guid"] for i in topo["liveboards"]] == ["lb-1"]
-    # subtype labels feed the left-list filter.
+    # subtype labels feed the left-list filter and the detail header's type chip.
     subtypes = {i["ts_guid"]: i["subtype"] for i in topo["logical_tables"]}
     assert subtypes == {"table-1": "Table", "model-1": "Model"}
+    assert topo["answers"][0]["subtype"] == "Answer"
+    assert topo["liveboards"][0]["subtype"] == "Liveboard"
 
 
 async def test_lineage_graph_neighborhood_and_impact(monkeypatch, in_memory_db, patched_config):

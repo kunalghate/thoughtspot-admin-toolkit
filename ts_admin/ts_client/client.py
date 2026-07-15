@@ -71,9 +71,15 @@ def _flatten_dependent_objects(items: list[dict], *, root_guid: str) -> list[dic
     Walk a metadata/search response and pull dependents for `root_guid`.
 
     `dependent_objects` is documented as `object` only — observed shapes are
-    `{<root_guid>: {<TYPE>: [{id,name,type}, ...]}}` and the un-keyed
+    `{<root_guid>: {<TYPE>: [{id,name,...}, ...]}}` and the un-keyed
     `{<TYPE>: [...]}` variant. Both are accepted; anything that quacks like
     a dependent dict (has id/identifier/guid) is collected.
+
+    The grouping key (`<TYPE>`, e.g. `PINBOARD_ANSWER_BOOK`, `QUESTION_ANSWER_BOOK`)
+    is the authoritative type: against a live cluster the individual items carry
+    `type: null`, so the group key is the *only* type signal. We stamp it onto
+    each item (when the item has no usable `type` of its own) so callers can
+    classify the dependent instead of guessing.
     """
     out: list[dict] = []
     for item in items:
@@ -85,11 +91,13 @@ def _flatten_dependent_objects(items: list[dict], *, root_guid: str) -> list[dic
         # Strip the optional outer GUID layer.
         if root_guid in blob and isinstance(blob[root_guid], dict):
             blob = blob[root_guid]
-        for value in blob.values():
+        for type_key, value in blob.items():
             if not isinstance(value, list):
                 continue
             for dep in value:
                 if isinstance(dep, dict) and (dep.get("id") or dep.get("identifier") or dep.get("guid")):
+                    if not dep.get("type") and isinstance(type_key, str):
+                        dep = {**dep, "type": type_key}
                     out.append(dep)
     return out
 

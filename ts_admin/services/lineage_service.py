@@ -73,6 +73,8 @@ _SUBTYPE_LABEL: dict[str, str] = {
     "SQL_VIEW": "View",
     "VIEW": "View",
     "LOGICAL_TABLE": "Table",
+    "ANSWER": "Answer",
+    "LIVEBOARD": "Liveboard",
 }
 
 # L→R pipeline layer per node type (frontend lays out x by layer, y by index).
@@ -100,8 +102,20 @@ IMPACT_BFS_CAP = 5000
 CRAWL_CONCURRENCY = 5
 
 
+def _node_type_strict(object_type: str | None) -> str | None:
+    """
+    Coarse node type for a *known* TS object type, or None if unrecognized.
+
+    Unlike `_node_type`, does NOT fall back to LOGICAL_TABLE — use this when the
+    input is an untrusted type string from the API (e.g. a `dependent_objects`
+    group key) so non-content dependents such as FEEDBACK alerts are dropped
+    rather than silently mislabeled as logical tables.
+    """
+    return _NODE_TYPE_BY_OBJECT_TYPE.get((object_type or "").upper())
+
+
 def _node_type(object_type: str | None) -> str:
-    return _NODE_TYPE_BY_OBJECT_TYPE.get((object_type or "").upper(), "LOGICAL_TABLE")
+    return _node_type_strict(object_type) or "LOGICAL_TABLE"
 
 
 def _subtype_label(object_type: str | None) -> str:
@@ -248,10 +262,15 @@ def _edges_from_dependents(
             d_meta = meta_by_guid.get(dep_guid)
             if d_meta:
                 d_name, d_type = d_meta
-                d_node_type = _node_type(d_type)
+                d_node_type: str | None = _node_type(d_type)
             else:
+                # The dependent isn't in our metadata cache, so its type comes
+                # only from the API. Resolve strictly: drop non-content deps
+                # (e.g. FEEDBACK alerts) instead of mislabeling them as tables.
                 d_name = dep.get("name", "")
-                d_node_type = _node_type(dep.get("type"))
+                d_node_type = _node_type_strict(dep.get("type"))
+                if d_node_type is None:
+                    continue
 
             # Liveboard object edges are deferred to Phase 2 (TML) for fidelity.
             if d_node_type == "LIVEBOARD":
