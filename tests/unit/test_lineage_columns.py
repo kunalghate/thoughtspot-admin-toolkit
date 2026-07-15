@@ -192,7 +192,11 @@ def _seed(engine, *, lb_modified: datetime | None = None):
 def _make_job() -> str:
     from ts_admin.services.job_service import create_job
 
-    return create_job(job_type="sync:dependencies", parameters={"entity_type": "dependencies", "org_id": 0}, cluster_id=CLUSTER_ID)
+    return create_job(
+        job_type="sync:dependencies",
+        parameters={"entity_type": "dependencies", "org_id": 0},
+        cluster_id=CLUSTER_ID,
+    )
 
 
 # ── End-to-end build ─────────────────────────────────────────────────────────────
