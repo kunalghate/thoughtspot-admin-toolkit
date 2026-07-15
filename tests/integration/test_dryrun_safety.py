@@ -42,6 +42,24 @@ DRYRUN_ENDPOINTS = [
         "_dryrun",
         id="archiver-dryrun",
     ),
+    pytest.param(
+        "/api/v1/users/delete/dryrun",
+        {"cluster_id": "c1", "org_id": 0, "user_guids": ["u1"]},
+        "_dryrun",
+        id="users-delete-dryrun",
+    ),
+    pytest.param(
+        "/api/v1/sharing/dryrun",
+        {
+            "cluster_id": "c1",
+            "org_id": 0,
+            "object_guids": ["lb-1"],
+            "principal_guids": ["u1"],
+            "mode": "NO_ACCESS",
+        },
+        "_dryrun",
+        id="sharing-dryrun",
+    ),
 ]
 
 
@@ -110,11 +128,18 @@ def trip_wires(monkeypatch):
     async def _fail_if_called(*args, **kwargs):  # noqa: ARG001
         pytest.fail("Destructive write path invoked from a dry-run endpoint")
 
-    from ts_admin.services import archiver_service, deletion_service
+    from ts_admin.services import (
+        archiver_service,
+        bulk_sharing_service,
+        deletion_service,
+        user_management_service,
+    )
 
     monkeypatch.setattr(deletion_service, "_execute_delete", _fail_if_called)
     monkeypatch.setattr(archiver_service, "execute", _fail_if_called)
     monkeypatch.setattr(archiver_service, "restore", _fail_if_called)
+    monkeypatch.setattr(user_management_service, "execute_delete", _fail_if_called)
+    monkeypatch.setattr(bulk_sharing_service, "execute_share", _fail_if_called)
 
 
 @pytest.fixture
@@ -128,9 +153,15 @@ def neutered_dryrun(monkeypatch):
     async def _noop(*args, **kwargs):  # noqa: ARG001
         return None
 
-    from ts_admin.services import deletion_service
+    from ts_admin.services import (
+        bulk_sharing_service,
+        deletion_service,
+        user_management_service,
+    )
 
     monkeypatch.setattr(deletion_service, "dryrun", _noop)
+    monkeypatch.setattr(user_management_service, "dryrun_delete", _noop)
+    monkeypatch.setattr(bulk_sharing_service, "dryrun_share", _noop)
 
 
 def _snapshot_writeable_tables(engine) -> dict[str, int]:

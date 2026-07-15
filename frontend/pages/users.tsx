@@ -1,56 +1,357 @@
-import AppShell from "@/components/Shell";
-import { Users } from "lucide-react";
+/**
+ * User Management page.
+ *
+ * Left: user grid (filtered by search + status).
+ * Action bar (when rows selected): three offboarding actions:
+ *   - Transfer ownership   (single user only)
+ *   - Transfer sharing     (single user only)
+ *   - Delete user(s)       (one or many)
+ * "History" tab shows past UserActionRecords.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgGridReact } from "ag-grid-react";
+import type { ColDef, IDatasource, IGetRowsParams } from "ag-grid-community";
+import { Users, History, ShieldCheck, Trash2, ArrowRightLeft } from "lucide-react";
+import "ag-grid-community/styles/ag-grid.css";
+import "ag-grid-community/styles/ag-theme-alpine.css";
+
+import AppShell, { useShell } from "@/components/Shell";
+import { TransferOwnershipModal } from "@/components/Users/TransferOwnershipModal";
+import { TransferSharingModal } from "@/components/Users/TransferSharingModal";
+import { DeleteUsersModal } from "@/components/Users/DeleteUsersModal";
+import { UsersHistoryTab } from "@/components/Users/HistoryTab";
+import { usersApi } from "@/lib/api";
+import type { UserListItem } from "@/lib/types";
+
+const PAGE_SIZE = 200;
+
+type Tab = "users" | "history";
+type ActionKind = "transfer" | "transfer_sharing" | "delete" | null;
 
 export default function UsersPage() {
+  // Bumped when a sync finishes so the grid reloads without a manual refresh.
+  const [syncVersion, setSyncVersion] = useState(0);
   return (
-    <AppShell pageTitle="Users">
-      <ComingSoon
-        icon={<Users size={32} style={{ color: "#8B5CF6" }} />}
-        title="User Management"
-        description="Browse, search, and manage ThoughtSpot users. Sync user details, org memberships, and group assignments from your cluster."
-      />
+    <AppShell pageTitle="Users" entityType="users" onSyncComplete={() => setSyncVersion((v) => v + 1)}>
+      <UsersContent syncVersion={syncVersion} />
     </AppShell>
   );
 }
 
-function ComingSoon({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+function UsersContent({ syncVersion }: { syncVersion: number }) {
+  const { activeCluster, activeOrg } = useShell();
+  const [tab, setTab] = useState<Tab>("users");
+
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState<"" | "ACTIVE" | "INACTIVE">("");
+  const [error, setError] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [sortField, setSortField] = useState("username");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+
+  const gridRef = useRef<AgGridReact<UserListItem>>(null);
+  const [selected, setSelected] = useState<UserListItem[]>([]);
+  const [action, setAction] = useState<ActionKind>(null);
+
+  // Debounce typing → search so we don't refetch on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Server-side pagination: AG Grid's infinite model fetches one page per scroll
+  // block, so the grid is never truncated to a fixed cap. Filters/sort live in
+  // toolbar state; changing them rebuilds the datasource (refetch from row 0).
+  const reloadGrid = useCallback(() => {
+    if (!activeCluster?.id) return;
+    const clusterId = activeCluster.id;
+    const orgId = activeOrg?.org_id ?? undefined;
+    const toolbarSearch = search.trim() || undefined;
+    const toolbarStatus = status || undefined;
+    const sf = sortField;
+    const so = sortOrder;
+
+    const datasource: IDatasource = {
+      getRows: async (params: IGetRowsParams) => {
+        try {
+          const res = await usersApi.list({
+            cluster_id: clusterId,
+            org_id: orgId,
+            search: toolbarSearch,
+            status: toolbarStatus,
+            sort_field: sf,
+            sort_order: so,
+            record_offset: params.startRow,
+            page_size: PAGE_SIZE,
+          });
+          setTotal(res.total);
+          setError(null);
+          params.successCallback(res.items, res.total);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+          params.failCallback();
+        }
+      },
+    };
+    // New result set → drop any stale selection so an action can't target a row
+    // that has scrolled out of the filtered view.
+    gridRef.current?.api?.deselectAll();
+    gridRef.current?.api?.setGridOption("datasource", datasource);
+  }, [activeCluster?.id, activeOrg?.org_id, search, status, sortField, sortOrder]);
+
+  // Rebuild on mount, filter/cluster/org/sort change, and after a sync finishes.
+  useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
+
+  const handleGridReady = useCallback(() => { reloadGrid(); }, [reloadGrid]);
+
+  // Re-fetch the current view after a write (transfer/delete) lands.
+  const refresh = useCallback(() => {
+    gridRef.current?.api?.deselectAll();
+    gridRef.current?.api?.purgeInfiniteCache();
+  }, []);
+
+  const handleSortChanged = useCallback(() => {
+    const cols = gridRef.current?.api.getColumnState() ?? [];
+    const sorted = cols.find((c) => c.sort);
+    if (sorted?.colId) {
+      setSortField(sorted.colId);
+      setSortOrder(sorted.sort as "asc" | "desc");
+    }
+  }, []);
+
+  const columns = useMemo<ColDef<UserListItem>[]>(() => [
+    { field: "username", headerName: "Username", flex: 1, minWidth: 160 },
+    { field: "display_name", headerName: "Display name", flex: 1, minWidth: 160 },
+    { field: "email", headerName: "Email", flex: 2, minWidth: 220 },
+    {
+      field: "status",
+      headerName: "Status",
+      width: 110,
+      cellRenderer: (p: { value: string }) => (
+        <span style={{
+          padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600,
+          background: p.value === "ACTIVE" ? "#D1FAE5" : "#FEE2E2",
+          color: p.value === "ACTIVE" ? "#065F46" : "#991B1B",
+        }}>{p.value}</span>
+      ),
+    },
+    {
+      field: "created_at", headerName: "Created", width: 140,
+      valueFormatter: (p) => p.value ? new Date(p.value as string).toLocaleDateString() : "",
+    },
+  ], []);
+
+  function handleSelectionChanged() {
+    setSelected(gridRef.current?.api?.getSelectedRows() ?? []);
+  }
+
+  if (!activeCluster) {
+    return <EmptyState message="Select a cluster from the topbar to start." />;
+  }
+
   return (
-    <div style={{
-      display: "flex", alignItems: "center", justifyContent: "center",
-      height: "100%", padding: 48,
-    }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <div style={{
-        display: "flex", flexDirection: "column", alignItems: "center", gap: 16,
-        maxWidth: 440, textAlign: "center",
+        display: "flex", borderBottom: "1px solid #E8E1D5",
+        background: "#FAF8F4", paddingLeft: 24, flexShrink: 0,
       }}>
+        {[
+          { id: "users" as Tab, label: "Users", icon: Users },
+          { id: "history" as Tab, label: "History", icon: History },
+        ].map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "10px 18px", fontSize: 13, fontWeight: tab === id ? 600 : 400,
+              fontFamily: "Geist, sans-serif", cursor: "pointer", border: "none",
+              background: "transparent", color: tab === id ? "#6D28D9" : "#7A7068",
+              borderBottom: tab === id ? "2px solid #8B5CF6" : "2px solid transparent",
+              marginBottom: -1,
+            }}
+          >
+            <Icon size={14} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "history" ? (
+        <UsersHistoryTab clusterId={activeCluster.id} orgId={activeOrg?.org_id} />
+      ) : (
         <div style={{
-          width: 64, height: 64, borderRadius: 16,
-          background: "#FAF8F4", border: "1px solid #E8E1D5",
-          display: "flex", alignItems: "center", justifyContent: "center",
+          display: "flex", flexDirection: "column", flex: 1,
+          padding: 24, gap: 12, overflow: "hidden", minHeight: 0,
         }}>
-          {icon}
-        </div>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 8 }}>
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
-              {title}
-            </h2>
-            <span style={{
-              padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600,
-              background: "#EDE9FE", color: "#6D28D9", fontFamily: "Geist, sans-serif",
-              letterSpacing: "0.04em",
-            }}>
-              Coming soon
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+            <input
+              type="text"
+              placeholder="Search by username, display name, or email…"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              style={{
+                flex: 1, padding: "7px 12px", fontSize: 13, fontFamily: "Geist, sans-serif",
+                border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+                outline: "none",
+              }}
+            />
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as "" | "ACTIVE" | "INACTIVE")}
+              style={{
+                padding: "7px 10px", fontSize: 13, fontFamily: "Geist, sans-serif",
+                border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+                cursor: "pointer",
+              }}
+            >
+              <option value="">All statuses</option>
+              <option value="ACTIVE">Active only</option>
+              <option value="INACTIVE">Inactive only</option>
+            </select>
+            <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+              {total == null ? "Loading…" : `${total.toLocaleString()} user${total === 1 ? "" : "s"}`}
             </span>
           </div>
-          <p style={{
-            margin: 0, fontSize: 14, color: "#7A7068",
-            fontFamily: "Geist, sans-serif", lineHeight: 1.6,
-          }}>
-            {description}
-          </p>
+
+          {error && (
+            <div style={{
+              padding: "10px 14px", fontSize: 12, fontFamily: "Geist, sans-serif",
+              background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 6,
+              color: "#991B1B",
+            }}><strong>Error:</strong> {error}</div>
+          )}
+
+          {selected.length > 0 && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+              background: "#EDE9FE", border: "1px solid #C4B5FD", borderRadius: 6,
+              flexShrink: 0, flexWrap: "wrap",
+            }}>
+              <span style={{
+                fontSize: 13, color: "#6D28D9", fontWeight: 500,
+                fontFamily: "Geist, sans-serif", whiteSpace: "nowrap",
+              }}>{selected.length} selected</span>
+
+              <div style={{ flex: 1 }} />
+
+              <ActionButton
+                disabled={selected.length !== 1}
+                title={selected.length === 1 ? "" : "Transfer ownership works on one user at a time"}
+                onClick={() => setAction("transfer")}
+                icon={<ArrowRightLeft size={12} />}
+                label="Transfer ownership…"
+              />
+              <ActionButton
+                disabled={selected.length !== 1}
+                title={selected.length === 1 ? "" : "Transfer sharing works on one user at a time"}
+                onClick={() => setAction("transfer_sharing")}
+                icon={<ShieldCheck size={12} />}
+                label="Transfer sharing…"
+              />
+              <ActionButton
+                onClick={() => setAction("delete")}
+                variant="danger"
+                icon={<Trash2 size={12} />}
+                label={`Delete ${selected.length} user${selected.length === 1 ? "" : "s"}…`}
+              />
+            </div>
+          )}
+
+          <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, width: "100%" }}>
+            <AgGridReact<UserListItem>
+              ref={gridRef}
+              columnDefs={columns}
+              rowModelType="infinite"
+              cacheBlockSize={PAGE_SIZE}
+              maxBlocksInCache={10}
+              infiniteInitialRowCount={PAGE_SIZE}
+              defaultColDef={{ resizable: true, sortable: true, sortingOrder: ["asc", "desc"] }}
+              rowSelection="multiple"
+              suppressRowClickSelection
+              onGridReady={handleGridReady}
+              onSortChanged={handleSortChanged}
+              onSelectionChanged={handleSelectionChanged}
+              overlayNoRowsTemplate="No users. Sync users first."
+            />
+          </div>
+
+          {action === "transfer" && selected.length === 1 && activeOrg != null && (
+            <TransferOwnershipModal
+              clusterId={activeCluster.id}
+              orgId={activeOrg.org_id}
+              fromUser={selected[0]}
+              onClose={(reloadNeeded) => {
+                setAction(null);
+                if (reloadNeeded) refresh();
+              }}
+            />
+          )}
+          {action === "transfer_sharing" && selected.length === 1 && activeOrg != null && (
+            <TransferSharingModal
+              clusterId={activeCluster.id}
+              orgId={activeOrg.org_id}
+              fromUser={selected[0]}
+              onClose={() => setAction(null)}
+            />
+          )}
+          {action === "delete" && activeOrg != null && (
+            <DeleteUsersModal
+              clusterId={activeCluster.id}
+              orgId={activeOrg.org_id}
+              users={selected}
+              onClose={(reloadNeeded) => {
+                setAction(null);
+                if (reloadNeeded) {
+                  setSelected([]);
+                  refresh();
+                }
+              }}
+            />
+          )}
         </div>
-      </div>
+      )}
     </div>
+  );
+}
+
+function ActionButton({
+  onClick, disabled, title, icon, label, variant,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  icon: React.ReactNode;
+  label: string;
+  variant?: "danger";
+}) {
+  const isDanger = variant === "danger";
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        display: "flex", alignItems: "center", gap: 6,
+        padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.5 : 1,
+        border: `1px solid ${isDanger ? "#FECACA" : "#C4B5FD"}`,
+        background: isDanger ? "#FEF2F2" : "white",
+        color: isDanger ? "#991B1B" : "#6D28D9",
+        fontFamily: "Geist, sans-serif",
+      }}
+    >
+      {icon} {label}
+    </button>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div style={{
+      height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: 14, color: "#7A7068", fontFamily: "Geist, sans-serif",
+    }}>{message}</div>
   );
 }

@@ -13,9 +13,25 @@ from datetime import datetime, timezone
 
 from ts_admin.database import get_session
 from ts_admin.models.sync_log import SyncLog
-from ts_admin.services.job_service import mark_complete, mark_failed, mark_running
+from ts_admin.services import connection_status
+from ts_admin.services.job_service import mark_complete, mark_failed, mark_running, update_progress
+from ts_admin.ts_client.exceptions import (
+    TSAuthenticationError,
+    TSInsufficientPrivilegesError,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _active_cluster_id() -> str | None:
+    """Best-effort active cluster id for reporting live session health."""
+    from ts_admin.config import load_config
+    from ts_admin.ts_client.exceptions import ConfigNotFoundError
+
+    try:
+        return load_config().active_cluster_id
+    except ConfigNotFoundError:
+        return None
 
 
 async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
@@ -38,10 +54,33 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
 
     try:
         await handler(org_id=org_id, job_id=job_id)
+    except TSAuthenticationError as exc:
+        # A live sync just proved the session is dead — flip the cluster's
+        # health so the "Connected" badge reflects reality instead of waiting
+        # for the user to notice a buried FAILED job.
+        cluster_id = _active_cluster_id()
+        if cluster_id:
+            connection_status.mark_expired(cluster_id, detail=str(exc))
+        logger.warning("Sync auth-failed for %s org=%s: %s", entity_type, org_id, exc)
+        mark_failed(job_id, exc)
+        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
+    except TSInsufficientPrivilegesError as exc:
+        # A privilege/org-access denial is NOT a dead session — the credentials
+        # are valid, the account just can't reach this org (or lacks a privilege).
+        # Do NOT flip the whole cluster to "expired": that sends the user into a
+        # pointless reconnect loop. Fail just this job with an actionable message.
+        logger.warning("Sync denied for %s org=%s: %s", entity_type, org_id, exc)
+        mark_failed(job_id, exc)
+        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
     except Exception as exc:
         logger.exception("Sync failed for %s org=%s: %s", entity_type, org_id, exc)
         mark_failed(job_id, exc)
         _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
+    else:
+        # A successful sync confirms the session is live.
+        cluster_id = _active_cluster_id()
+        if cluster_id:
+            connection_status.mark_connected(cluster_id)
 
 
 # ── Per-entity sync handlers ───────────────────────────────────────────────────
@@ -116,6 +155,10 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
 
                     session.commit()
                     count += 1
+            # Report progress after each page so the UI counter climbs live.
+            # The TS search API doesn't return a grand total, so `total` stays 0
+            # (indeterminate) — the frontend shows a running count instead.
+            update_progress(job_id, count)
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("users", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)
@@ -177,6 +220,7 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
 
                     session.commit()
                     count += 1
+            update_progress(job_id, count)
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("groups", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)
@@ -236,6 +280,7 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
                     )
                     count += 1
                 session.commit()
+            update_progress(job_id, count)
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("metadata", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)

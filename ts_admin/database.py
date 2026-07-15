@@ -48,7 +48,9 @@ def init_db() -> None:
     import ts_admin.models.cache.ts_user  # noqa: F401  (registers CachedUser + UserOrgMembership)
     import ts_admin.models.cluster  # noqa: F401
     import ts_admin.models.job  # noqa: F401
+    import ts_admin.models.share_record  # noqa: F401
     import ts_admin.models.sync_log  # noqa: F401
+    import ts_admin.models.user_action_record  # noqa: F401
 
     SQLModel.metadata.create_all(get_engine())
 
