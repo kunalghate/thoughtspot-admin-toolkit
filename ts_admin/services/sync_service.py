@@ -45,6 +45,7 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
         "metadata": _sync_metadata,
         "tags": _sync_tags,
         "orgs": _sync_orgs,
+        "dependencies": _sync_dependencies,
     }
 
     handler = handlers.get(entity_type)
@@ -386,6 +387,48 @@ async def _sync_orgs(*, org_id: int, job_id: str) -> None:
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("orgs", org_id=0, status="SUCCESS", record_count=count, duration_ms=duration_ms)
     mark_complete(job_id, {"entity_type": "orgs", "record_count": count})
+
+
+async def _sync_dependencies(*, org_id: int, job_id: str) -> None:
+    """
+    Build the Relationship Visualizer's lineage graph. Delegates to
+    lineage_service; reuses run_sync's auth/privilege error handling verbatim.
+
+    Runs the cheap object tier first and commits it (graph becomes queryable),
+    then enriches with the column map + connection/liveboard edges from TML.
+    Never part of trigger_sync_all — explicitly gated per ADR-005.
+    """
+    from ts_admin.config import load_config
+    from ts_admin.services import lineage_service
+    from ts_admin.services.job_service import mark_complete
+
+    cluster_id = load_config().active_cluster.id
+    has_column_pass = hasattr(lineage_service, "build_column_map")
+
+    # Phase 1: object tier — commits edges + writes the "dependencies" SyncLog so
+    # the graph is queryable while the (longer) TML column pass runs. Defer job
+    # completion to the end when a column pass follows.
+    edge_count = await lineage_service.build_object_graph(
+        cluster_id=cluster_id, org_id=org_id, job_id=job_id, finalize=not has_column_pass
+    )
+
+    if not has_column_pass:
+        return
+
+    # Phase 2: column map + connection/liveboard edges (best-effort enrichment;
+    # a failure here must not undo the object tier already committed above).
+    column_count = 0
+    try:
+        column_count = await lineage_service.build_column_map(cluster_id=cluster_id, org_id=org_id, job_id=job_id)
+    except (TSAuthenticationError, TSInsufficientPrivilegesError):
+        raise
+    except Exception as exc:
+        logger.warning("Column-map pass failed (object tier kept): %s", exc)
+
+    mark_complete(
+        job_id,
+        {"entity_type": "dependencies", "record_count": edge_count, "column_count": column_count},
+    )
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────

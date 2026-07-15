@@ -15,7 +15,9 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sync", tags=["sync"])
 
-VALID_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "permissions"}
+# "dependencies" (lineage graph) is a valid explicit sync target but is
+# deliberately excluded from trigger_sync_all — it is heavy and gated per ADR-005.
+VALID_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "permissions", "dependencies"}
 
 
 # ── Response models ────────────────────────────────────────────────────────────

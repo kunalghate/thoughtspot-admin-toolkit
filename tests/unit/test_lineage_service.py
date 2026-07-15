@@ -1,0 +1,282 @@
+"""
+Phase 1 unit tests for lineage_service.
+
+Covers the object-tier build (batched dependency sweep → USES edges), the
+cluster/org scoping invariant, and the SQLite-only read functions (topology,
+neighborhood graph, paginated consumers). No real ThoughtSpot — a canned
+_FakeClient stands in for search_dependents.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine, select
+
+CLUSTER_ID = "c1"
+
+
+# ── Fixtures ────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def in_memory_db(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    import ts_admin.database as db_module
+
+    monkeypatch.setattr(db_module, "get_engine", lambda: engine)
+    db_module.init_db()
+    return engine
+
+
+@pytest.fixture
+def patched_config(monkeypatch):
+    from ts_admin.config import AppConfig, ClusterConfig
+    from ts_admin.ts_client.models import AuthType
+
+    cluster_cfg = ClusterConfig(
+        id=CLUSTER_ID,
+        name="Prod",
+        url="https://prod.thoughtspot.cloud",
+        username="admin",
+        auth_type=AuthType.TRUSTED,
+    )
+    config = AppConfig(clusters={CLUSTER_ID: cluster_cfg}, active_cluster_id=CLUSTER_ID)
+    monkeypatch.setattr("ts_admin.config.load_config", lambda: config)
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    return config
+
+
+class _FakeClient:
+    """Canned search_dependents: table-1 → model-1 → {answer-1, lb-1}."""
+
+    def __init__(self, *args, **kwargs):
+        self.calls: list[list[str]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def search_dependents(self, *, object_ids, object_type, batch_size=100):
+        self.calls.append(list(object_ids))
+        canned = {
+            "table-1": [{"id": "model-1", "name": "Sales Model", "type": "LOGICAL_TABLE"}],
+            "model-1": [
+                {"id": "answer-1", "name": "Sales Answer", "type": "ANSWER"},
+                {"id": "lb-1", "name": "Sales Liveboard", "type": "LIVEBOARD"},
+            ],
+        }
+        return {guid: canned.get(guid, []) for guid in object_ids}
+
+
+def _seed_metadata(engine, cluster_id: str, org_id: int = 0, *, name_suffix: str = "") -> None:
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.models.cluster import Cluster
+
+    now = datetime.now(tz=timezone.utc)
+    with Session(engine) as session:
+        if not session.get(Cluster, cluster_id):
+            session.add(
+                Cluster(
+                    id=cluster_id,
+                    name=cluster_id,
+                    url=f"https://{cluster_id}.thoughtspot.cloud",
+                    username="admin",
+                    auth_type="trusted",
+                )
+            )
+        rows = [
+            ("table-1", "DB Table 1" + name_suffix, "ONE_TO_ONE_LOGICAL"),
+            ("model-1", "Sales Model" + name_suffix, "WORKSHEET"),
+            ("answer-1", "Sales Answer" + name_suffix, "ANSWER"),
+            ("lb-1", "Sales Liveboard" + name_suffix, "LIVEBOARD"),
+        ]
+        for guid, name, otype in rows:
+            session.add(
+                CachedMetadata(
+                    cluster_id=cluster_id,
+                    org_id=org_id,
+                    ts_guid=guid,
+                    name=name,
+                    object_type=otype,
+                    owner_name="Alice",
+                    synced_at=now,
+                )
+            )
+        session.commit()
+
+
+def _make_job() -> str:
+    from ts_admin.services.job_service import create_job
+
+    return create_job(
+        job_type="sync:dependencies",
+        parameters={"entity_type": "dependencies", "org_id": 0},
+        cluster_id=CLUSTER_ID,
+    )
+
+
+# ── build_object_graph ──────────────────────────────────────────────────────────
+
+
+async def test_build_object_graph_creates_uses_edges(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    count = await lineage_service.build_object_graph(
+        cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job()
+    )
+    assert count == 2  # model→table, answer→model. lb→model is deferred to Phase 2.
+
+    with Session(in_memory_db) as session:
+        edges = session.exec(select(CachedDependency).where(CachedDependency.cluster_id == CLUSTER_ID)).all()
+    pairs = {(e.source_guid, e.target_guid, e.relation, e.source_type, e.target_type) for e in edges}
+    assert ("model-1", "table-1", "USES", "MODEL", "DB_TABLE") in pairs
+    assert ("answer-1", "model-1", "USES", "ANSWER", "MODEL") in pairs
+    # Liveboard object edges are NOT produced by the dependency sweep.
+    assert not any(e.source_type == "LIVEBOARD" for e in edges)
+
+
+async def test_build_object_graph_writes_sync_log_and_deletes_stale(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.sync_log import SyncLog
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    # A stale edge that a rebuild must delete-before-insert away.
+    with Session(in_memory_db) as session:
+        session.add(
+            CachedDependency(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                source_guid="ghost",
+                source_type="ANSWER",
+                target_guid="model-1",
+                target_type="MODEL",
+                relation="USES",
+            )
+        )
+        session.commit()
+
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        edges = session.exec(select(CachedDependency)).all()
+        log = session.exec(select(SyncLog).where(SyncLog.entity_type == "dependencies")).one()
+    assert not any(e.source_guid == "ghost" for e in edges)  # stale edge gone
+    assert log.status == "SUCCESS"
+    assert log.record_count == 2
+
+
+async def test_build_object_graph_empty_metadata_raises(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.models.cluster import Cluster
+    from ts_admin.services import lineage_service
+
+    with Session(in_memory_db) as session:
+        session.add(Cluster(id=CLUSTER_ID, name="Prod", url="https://p", username="a", auth_type="trusted"))
+        session.commit()
+
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    with pytest.raises(ValueError, match="sync metadata first"):
+        await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+
+# ── Read functions ──────────────────────────────────────────────────────────────
+
+
+async def test_topology_groups_and_reads(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    topo = lineage_service.get_topology(cluster_id=CLUSTER_ID, org_id=0)
+    assert {i["ts_guid"] for i in topo["logical_tables"]} == {"table-1", "model-1"}
+    assert [i["ts_guid"] for i in topo["answers"]] == ["answer-1"]
+    assert [i["ts_guid"] for i in topo["liveboards"]] == ["lb-1"]
+    # subtype labels feed the left-list filter.
+    subtypes = {i["ts_guid"]: i["subtype"] for i in topo["logical_tables"]}
+    assert subtypes == {"table-1": "Table", "model-1": "Model"}
+
+
+async def test_lineage_graph_neighborhood_and_impact(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="model-1", root_kind="model")
+    node_guids = {n["guid"] for n in graph["nodes"]}
+    assert node_guids == {"model-1", "table-1", "answer-1"}  # upstream table + downstream answer
+    assert graph["consumer_totals"] == {"ANSWER": 1}
+    assert graph["impact"]["downstream_count"] == 1
+    assert graph["columns"] == []
+    # root node carries a layer for the frontend's manual layout.
+    assert graph["root"]["node_type"] == "MODEL"
+    assert graph["root"]["layer"] == 3
+
+
+async def test_lineage_graph_missing_object_returns_none(in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    assert lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="nope", root_kind="model") is None
+
+
+async def test_consumers_pagination(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    items, total = lineage_service.get_consumers(cluster_id=CLUSTER_ID, org_id=0, guid="model-1", limit=10)
+    assert total == 1
+    assert items[0]["guid"] == "answer-1"
+    assert items[0]["node_type"] == "ANSWER"
+    # type filter that matches nothing returns empty.
+    items2, total2 = lineage_service.get_consumers(
+        cluster_id=CLUSTER_ID, org_id=0, guid="model-1", consumer_type="LIVEBOARD"
+    )
+    assert total2 == 0
+
+
+async def test_build_is_cluster_scoped(monkeypatch, in_memory_db, patched_config):
+    """A c1 build must never read c2 metadata or write c2 edges."""
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    _seed_metadata(in_memory_db, "c2", name_suffix=" (c2)")
+
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        edges = session.exec(select(CachedDependency)).all()
+    # Only c1 edges exist; none tagged c2.
+    assert edges and all(e.cluster_id == CLUSTER_ID for e in edges)
+    # c2 topology stays empty of lineage until its own build runs.
+    graph_c2 = lineage_service.get_lineage_graph(cluster_id="c2", org_id=0, guid="model-1", root_kind="model")
+    assert graph_c2 is not None
+    assert graph_c2["nodes"] == [graph_c2["root"]]  # no edges → just the root node
