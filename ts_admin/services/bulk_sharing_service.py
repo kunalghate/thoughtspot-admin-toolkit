@@ -65,20 +65,21 @@ def list_principals(
     items: list[dict] = []
     with Session(_db.get_engine()) as session:
         if include_users:
-            uq = select(CachedUser).join(
-                UserOrgMembership,
-                (UserOrgMembership.ts_guid == CachedUser.ts_guid)
-                & (UserOrgMembership.cluster_id == CachedUser.cluster_id),
-            ).where(
-                CachedUser.cluster_id == cluster_id,
-                UserOrgMembership.org_id == org_id,
+            uq = (
+                select(CachedUser)
+                .join(
+                    UserOrgMembership,
+                    (UserOrgMembership.ts_guid == CachedUser.ts_guid)
+                    & (UserOrgMembership.cluster_id == CachedUser.cluster_id),
+                )
+                .where(
+                    CachedUser.cluster_id == cluster_id,
+                    UserOrgMembership.org_id == org_id,
+                )
             )
             if search:
                 pattern = f"%{search}%"
-                uq = uq.where(
-                    col(CachedUser.username).ilike(pattern)
-                    | col(CachedUser.display_name).ilike(pattern)
-                )
+                uq = uq.where(col(CachedUser.username).ilike(pattern) | col(CachedUser.display_name).ilike(pattern))
             uq = uq.limit(limit)
             for u in session.exec(uq).all():
                 items.append(
@@ -97,9 +98,7 @@ def list_principals(
             )
             if search:
                 pattern = f"%{search}%"
-                gq = gq.where(
-                    col(CachedGroup.name).ilike(pattern) | col(CachedGroup.display_name).ilike(pattern)
-                )
+                gq = gq.where(col(CachedGroup.name).ilike(pattern) | col(CachedGroup.display_name).ilike(pattern))
             gq = gq.limit(limit)
             for g in session.exec(gq).all():
                 items.append(
@@ -198,9 +197,7 @@ async def preview_share(
                     logger.warning("fetch_permissions failed for %s: %s", guid, exc)
                     return guid, [], exc
 
-        tasks = [
-            _fetch(g, obj_map[g].object_type) for g in object_guids if g in obj_map
-        ]
+        tasks = [_fetch(g, obj_map[g].object_type) for g in object_guids if g in obj_map]
         results = await asyncio.gather(*tasks)
 
     # Build a (guid, principal) → current mode map
@@ -425,9 +422,7 @@ async def execute_share(
                             session.commit()
                     except Exception as exc:
                         logger.warning("share_objects chunk failed (%s): %s", obj_type, exc)
-                        failed_records.append(
-                            {"object_type": obj_type, "guids": chunk, "error": str(exc)[:300]}
-                        )
+                        failed_records.append({"object_type": obj_type, "guids": chunk, "error": str(exc)[:300]})
                         with Session(_db.get_engine()) as session:
                             for guid in chunk:
                                 for pid in principal_guids:
@@ -521,9 +516,7 @@ def list_history(
             func.sum(
                 func.iif(ShareRecord.status == "SUCCESS", 1, 0)  # SQLite-friendly
             ).label("succeeded"),
-            func.sum(
-                func.iif(ShareRecord.status == "FAILED", 1, 0)
-            ).label("failed"),
+            func.sum(func.iif(ShareRecord.status == "FAILED", 1, 0)).label("failed"),
         ).where(ShareRecord.cluster_id == cluster_id)
         if org_id is not None:
             base = base.where(ShareRecord.org_id == org_id)

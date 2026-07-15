@@ -284,18 +284,14 @@ class TestPreviewTransfer:
     def test_type_filter(self, in_memory_db, seeded):
         from ts_admin.services import user_management_service as svc
 
-        result = svc.preview_transfer(
-            cluster_id="c1", org_id=0, from_user_guid="u-alice", object_types=["LIVEBOARD"]
-        )
+        result = svc.preview_transfer(cluster_id="c1", org_id=0, from_user_guid="u-alice", object_types=["LIVEBOARD"])
         assert result["total"] == 1
         assert result["items"][0]["object_type"] == "LIVEBOARD"
 
     def test_tag_filter(self, in_memory_db, seeded):
         from ts_admin.services import user_management_service as svc
 
-        result = svc.preview_transfer(
-            cluster_id="c1", org_id=0, from_user_guid="u-alice", tag_names=["finance"]
-        )
+        result = svc.preview_transfer(cluster_id="c1", org_id=0, from_user_guid="u-alice", tag_names=["finance"])
         assert result["total"] == 1
         assert result["items"][0]["ts_guid"] == "lb-1"
 

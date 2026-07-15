@@ -50,41 +50,62 @@ def seeded(in_memory_db):
     with Session(in_memory_db) as session:
         session.add(
             Cluster(
-                id="c1", name="Prod", url="https://prod.thoughtspot.cloud",
-                username="admin", auth_type="basic",
+                id="c1",
+                name="Prod",
+                url="https://prod.thoughtspot.cloud",
+                username="admin",
+                auth_type="basic",
             )
         )
         for guid, name in [("u-alice", "alice"), ("u-bob", "bob")]:
             session.add(
                 CachedUser(
-                    cluster_id="c1", ts_guid=guid, username=name,
-                    display_name=name.title(), email=f"{name}@co.com",
-                    status="ACTIVE", synced_at=now,
+                    cluster_id="c1",
+                    ts_guid=guid,
+                    username=name,
+                    display_name=name.title(),
+                    email=f"{name}@co.com",
+                    status="ACTIVE",
+                    synced_at=now,
                 )
             )
             session.add(UserOrgMembership(cluster_id="c1", ts_guid=guid, org_id=0, synced_at=now))
 
         session.add(
             CachedGroup(
-                cluster_id="c1", org_id=0, ts_guid="g-finance",
-                name="Finance", display_name="Finance", synced_at=now,
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="g-finance",
+                name="Finance",
+                display_name="Finance",
+                synced_at=now,
             )
         )
 
         session.add(
             CachedMetadata(
-                cluster_id="c1", org_id=0, ts_guid="lb-1",
-                name="Sales Liveboard", object_type="LIVEBOARD",
-                owner_guid="u-alice", owner_name="Alice",
-                tag_names=json.dumps(["finance"]), synced_at=now,
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-1",
+                name="Sales Liveboard",
+                object_type="LIVEBOARD",
+                owner_guid="u-alice",
+                owner_name="Alice",
+                tag_names=json.dumps(["finance"]),
+                synced_at=now,
             )
         )
         session.add(
             CachedMetadata(
-                cluster_id="c1", org_id=0, ts_guid="ans-1",
-                name="Revenue Answer", object_type="ANSWER",
-                owner_guid="u-alice", owner_name="Alice",
-                tag_names=json.dumps([]), synced_at=now,
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="ans-1",
+                name="Revenue Answer",
+                object_type="ANSWER",
+                owner_guid="u-alice",
+                owner_name="Alice",
+                tag_names=json.dumps([]),
+                synced_at=now,
             )
         )
         session.commit()
@@ -118,23 +139,30 @@ class TestPreview:
             return {
                 "items": [
                     {
-                        "object_guid": "lb-1", "object_name": "Sales Liveboard",
+                        "object_guid": "lb-1",
+                        "object_name": "Sales Liveboard",
                         "object_type": "LIVEBOARD",
-                        "principal_guid": "g-finance", "principal_name": "Finance",
+                        "principal_guid": "g-finance",
+                        "principal_name": "Finance",
                         "principal_type": "USER_GROUP",
-                        "previous_mode": "", "new_mode": "READ_ONLY", "will_change": True,
+                        "previous_mode": "",
+                        "new_mode": "READ_ONLY",
+                        "will_change": True,
                     }
                 ],
-                "total": 1, "will_change_count": 1,
+                "total": 1,
+                "will_change_count": 1,
             }
 
         from ts_admin.services import bulk_sharing_service as svc
+
         monkeypatch.setattr(svc, "preview_share", _fake)
 
         r = client.post(
             "/api/v1/sharing/preview",
             json={
-                "cluster_id": "c1", "org_id": 0,
+                "cluster_id": "c1",
+                "org_id": 0,
                 "object_guids": ["lb-1"],
                 "principal_guids": ["g-finance"],
                 "mode": "READ_ONLY",
@@ -151,12 +179,14 @@ class TestPreview:
             return {"items": [], "total": 0, "will_change_count": 0}
 
         from ts_admin.services import bulk_sharing_service as svc
+
         monkeypatch.setattr(svc, "preview_share", _fake)
 
         r = client.post(
             "/api/v1/sharing/preview",
             json={
-                "cluster_id": "c1", "org_id": 0,
+                "cluster_id": "c1",
+                "org_id": 0,
                 "tag_name": "finance",
                 "principal_guids": ["g-finance"],
                 "mode": "READ_ONLY",
@@ -171,12 +201,14 @@ class TestExecute:
             return None
 
         from ts_admin.services import bulk_sharing_service as svc
+
         monkeypatch.setattr(svc, "execute_share", _noop)
 
         r = client.post(
             "/api/v1/sharing/execute",
             json={
-                "cluster_id": "c1", "org_id": 0,
+                "cluster_id": "c1",
+                "org_id": 0,
                 "object_guids": ["lb-1", "ans-1"],
                 "principal_guids": ["g-finance"],
                 "mode": "READ_ONLY",
@@ -195,12 +227,14 @@ class TestDryRun:
             return None
 
         from ts_admin.services import bulk_sharing_service as svc
+
         monkeypatch.setattr(svc, "dryrun_share", _noop)
 
         r = client.post(
             "/api/v1/sharing/dryrun",
             json={
-                "cluster_id": "c1", "org_id": 0,
+                "cluster_id": "c1",
+                "org_id": 0,
                 "object_guids": ["lb-1", "ans-1"],
                 "principal_guids": ["g-finance"],
                 "mode": "NO_ACCESS",
@@ -235,8 +269,12 @@ class TestDryRun:
 
         asyncio.run(
             svc.dryrun_share(
-                job_id=job_id, cluster_id="c1", org_id=0,
-                object_guids=["lb-1"], principal_guids=["g-finance"], mode="NO_ACCESS",
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_guids=["lb-1"],
+                principal_guids=["g-finance"],
+                mode="NO_ACCESS",
             )
         )
 
@@ -255,12 +293,17 @@ class TestHistory:
             for status in ("SUCCESS", "SUCCESS", "FAILED"):
                 s.add(
                     ShareRecord(
-                        cluster_id="c1", job_id="job-1", org_id=0,
-                        object_guid="lb-1", object_name="Sales",
+                        cluster_id="c1",
+                        job_id="job-1",
+                        org_id=0,
+                        object_guid="lb-1",
+                        object_name="Sales",
                         object_type="LIVEBOARD",
-                        principal_guid="g-finance", principal_name="Finance",
+                        principal_guid="g-finance",
+                        principal_name="Finance",
                         principal_type="USER_GROUP",
-                        new_mode="READ_ONLY", status=status,
+                        new_mode="READ_ONLY",
+                        status=status,
                         executed_at=now,
                     )
                 )
