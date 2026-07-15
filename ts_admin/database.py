@@ -41,6 +41,9 @@ def init_db() -> None:
     import ts_admin.models.archive_record  # noqa: F401
     import ts_admin.models.audit_log  # noqa: F401
     import ts_admin.models.cache.content_permissions  # noqa: F401
+    import ts_admin.models.cache.ts_column_lineage  # noqa: F401
+    import ts_admin.models.cache.ts_column_usage  # noqa: F401
+    import ts_admin.models.cache.ts_dependency  # noqa: F401
     import ts_admin.models.cache.ts_group  # noqa: F401
     import ts_admin.models.cache.ts_metadata  # noqa: F401
     import ts_admin.models.cache.ts_org  # noqa: F401
