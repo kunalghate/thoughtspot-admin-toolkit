@@ -33,7 +33,7 @@ Browser → http://localhost:8080
 | Graph viz | React Flow | Best library for interactive node/edge relationship graphs |
 | UI components | shadcn/ui | Accessible, unstyled-by-default components |
 | Local DB | SQLite (via SQLModel) | Zero-config, ships with Python, no server required |
-| DB migrations | Alembic | Schema versioning from day one |
+| DB migrations | Alembic (scaffolded, **not** runtime-wired) | `init_db()` uses `create_all` (additive); rebuildable caches drop-and-rebuild via re-sync |
 | HTTP client | httpx | Async-native, clean API |
 | Credentials | OS keychain via `keyring` | Secure credential storage, never plaintext |
 | Packaging | pyproject.toml + pip | Standard Python packaging |

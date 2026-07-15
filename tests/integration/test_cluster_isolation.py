@@ -70,6 +70,12 @@ READ_ENDPOINTS = [
         lambda body: body["items"],
         id="sharing-history",
     ),
+    pytest.param(
+        "/api/v1/relationships/topology?cluster_id={cluster}&org_id=0",
+        # Topology returns three grouped lists; flatten them for the leak check.
+        lambda body: body["logical_tables"] + body["answers"] + body["liveboards"],
+        id="relationships-topology",
+    ),
 ]
 
 

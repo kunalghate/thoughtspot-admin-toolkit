@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -701,4 +701,46 @@ export const sharingApi = {
     if (params.page_size)              q.set("page_size", String(params.page_size));
     return request<PaginatedResponse<SharingHistoryItem>>(`/sharing/history?${q}`);
   },
+};
+
+// ── Relationships / Data Lineage ──────────────────────────────────────────────
+
+export const relationshipsApi = {
+  topology: (clusterId: string, orgId: number) =>
+    request<TopologyResponse>(`/relationships/topology?cluster_id=${clusterId}&org_id=${orgId}`),
+
+  graph: (rootKind: RootKind, guid: string, clusterId: string, orgId: number) =>
+    request<LineageGraphResponse>(
+      `/relationships/${rootKind}/${encodeURIComponent(guid)}?cluster_id=${clusterId}&org_id=${orgId}`,
+    ),
+
+  consumers: (rootKind: RootKind, guid: string, params: {
+    cluster_id: string;
+    org_id: number;
+    type?: string;
+    offset?: number;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.type)            q.set("type", params.type);
+    if (params.offset != null)  q.set("offset", String(params.offset));
+    if (params.limit)           q.set("limit", String(params.limit));
+    return request<ConsumersResponse>(`/relationships/${rootKind}/${encodeURIComponent(guid)}/consumers?${q}`);
+  },
+
+  // Lazily index one saved answer's column usage (1 TML export, memoized server-side).
+  indexAnswer: (guid: string, clusterId: string, orgId: number) =>
+    request<{ guid: string; rows_written: number }>(
+      `/relationships/answer/${encodeURIComponent(guid)}/index?cluster_id=${clusterId}&org_id=${orgId}`,
+      { method: "POST" },
+    ),
+
+  // Opt-in: crawl ALL saved answers' column usage as a background job.
+  deepIndex: (clusterId: string, orgId: number) =>
+    request<{ job_id: string }>(
+      `/relationships/deep-index?cluster_id=${clusterId}&org_id=${orgId}`,
+      { method: "POST" },
+    ),
 };

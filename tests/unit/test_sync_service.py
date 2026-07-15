@@ -185,6 +185,38 @@ async def test_user_sync_reports_progress(monkeypatch, in_memory_db, patched_con
 
 
 @pytest.mark.anyio
+async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_db, patched_config):
+    """run_sync('dependencies') must route to lineage_service.build_object_graph."""
+    seen: dict = {}
+
+    async def _fake_build(*, cluster_id, org_id, job_id, finalize=True):
+        seen["cluster_id"] = cluster_id
+        seen["org_id"] = org_id
+        seen["finalize"] = finalize
+        # Mirror the real build: finalize marks the job COMPLETE.
+        if finalize:
+            from ts_admin.services.job_service import mark_complete
+
+            mark_complete(job_id, {"entity_type": "dependencies", "record_count": 7})
+        return 7
+
+    import ts_admin.services.lineage_service as lineage_module
+
+    monkeypatch.setattr(lineage_module, "build_object_graph", _fake_build)
+    # No Phase 2 column pass wired in this test → object tier finalizes the job.
+    monkeypatch.delattr(lineage_module, "build_column_map", raising=False)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("dependencies")
+    await run_sync(entity_type="dependencies", org_id=0, job_id=job_id)
+
+    assert seen == {"cluster_id": CLUSTER_ID, "org_id": 0, "finalize": True}
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+
+@pytest.mark.anyio
 async def test_genuine_auth_failure_still_expires_cluster(monkeypatch, in_memory_db, patched_config):
     """TSAuthenticationError → job FAILED AND cluster flipped to EXPIRED (guards the distinction)."""
 

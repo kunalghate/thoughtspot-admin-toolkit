@@ -71,9 +71,15 @@ def _flatten_dependent_objects(items: list[dict], *, root_guid: str) -> list[dic
     Walk a metadata/search response and pull dependents for `root_guid`.
 
     `dependent_objects` is documented as `object` only — observed shapes are
-    `{<root_guid>: {<TYPE>: [{id,name,type}, ...]}}` and the un-keyed
+    `{<root_guid>: {<TYPE>: [{id,name,...}, ...]}}` and the un-keyed
     `{<TYPE>: [...]}` variant. Both are accepted; anything that quacks like
     a dependent dict (has id/identifier/guid) is collected.
+
+    The grouping key (`<TYPE>`, e.g. `PINBOARD_ANSWER_BOOK`, `QUESTION_ANSWER_BOOK`)
+    is the authoritative type: against a live cluster the individual items carry
+    `type: null`, so the group key is the *only* type signal. We stamp it onto
+    each item (when the item has no usable `type` of its own) so callers can
+    classify the dependent instead of guessing.
     """
     out: list[dict] = []
     for item in items:
@@ -85,11 +91,13 @@ def _flatten_dependent_objects(items: list[dict], *, root_guid: str) -> list[dic
         # Strip the optional outer GUID layer.
         if root_guid in blob and isinstance(blob[root_guid], dict):
             blob = blob[root_guid]
-        for value in blob.values():
+        for type_key, value in blob.items():
             if not isinstance(value, list):
                 continue
             for dep in value:
                 if isinstance(dep, dict) and (dep.get("id") or dep.get("identifier") or dep.get("guid")):
+                    if not dep.get("type") and isinstance(type_key, str):
+                        dep = {**dep, "type": type_key}
                     out.append(dep)
     return out
 
@@ -547,25 +555,40 @@ class ThoughtSpotClient:
 
     # ── TML export / import ────────────────────────────────────────────────────
 
-    async def tml_export(self, *, object_ids: list[str]) -> list[dict]:
+    async def tml_export(
+        self,
+        *,
+        object_ids: list[str],
+        edoc_format: str | None = None,
+    ) -> list[dict]:
         """
         Export TML for a batch of objects.
 
         POST /api/rest/2.0/metadata/tml/export
 
         Returns a list of dicts. A successful item has a non-empty "edoc" key
-        containing the YAML TML string. A failed item has no "edoc" key (or an
+        containing the TML string. A failed item has no "edoc" key (or an
         empty string). Check `"edoc" in result and result["edoc"]` — do NOT
         check status_code; the v2 export API omits it on success.
+
+        edoc_format (`"JSON"` | `"YAML"`, default server-side `JSON`) is injected
+        into the request body ONLY when provided. The delete-backup path
+        (deletion_service._execute_delete) calls this with no `edoc_format`, so
+        its request body — and the `.tml` string it writes verbatim — stays
+        byte-identical. The lineage path passes `edoc_format="JSON"` so the
+        service can `json.loads` the edoc without a YAML parser.
         """
+        body: dict = {
+            "metadata": [{"identifier": oid} for oid in object_ids],
+            "export_associated_objects": "NONE",
+            "export_fqn": True,
+        }
+        if edoc_format is not None:
+            body["edoc_format"] = edoc_format
         data = await self._request(
             "POST",
             "/api/rest/2.0/metadata/tml/export",
-            json={
-                "metadata": [{"identifier": oid} for oid in object_ids],
-                "export_associated_objects": "NONE",
-                "export_fqn": True,
-            },
+            json=body,
             context="tml_export",
         )
         return data if isinstance(data, list) else data.get("object", [])
@@ -765,3 +788,78 @@ class ThoughtSpotClient:
                     detail=f"Unexpected dependent_objects shape: {exc}",
                 ) from exc
         return result
+
+    async def search_dependents(
+        self,
+        *,
+        object_ids: list[str],
+        object_type: str,
+        batch_size: int = 100,
+    ) -> dict[str, list[dict]]:
+        """
+        Batched variant of fetch_dependents: one metadata/search call per
+        `batch_size` GUIDs instead of one call per object.
+
+        `object_type` is the metadata/search `type` enum shared by every GUID in
+        the batch — callers pass a single homogeneous type (e.g. `LOGICAL_TABLE`
+        for the lineage crawl's table→model→answer sweep). Returns the same
+        `{ guid → [dependent objects] }` shape as fetch_dependents.
+
+        The one-GUID-per-call fetch_dependents (used by the Deleter's live
+        single-hop lookup) is left untouched — a different contract.
+        """
+        result: dict[str, list[dict]] = {}
+        if not object_ids:
+            return result
+
+        api_type = _SEARCH_TYPE_FOR_DEPENDENTS.get(object_type.upper(), "LOGICAL_TABLE")
+
+        for start in range(0, len(object_ids), batch_size):
+            batch = object_ids[start : start + batch_size]
+            data = await self._request(
+                "POST",
+                "/api/rest/2.0/metadata/search",
+                json={
+                    "metadata": [{"identifier": guid, "type": api_type} for guid in batch],
+                    "include_dependent_objects": True,
+                    "dependent_objects_record_size": 1000,
+                    "include_headers": False,
+                    "record_size": -1,
+                    "record_offset": 0,
+                },
+                context="search_dependents",
+            )
+            items = data if isinstance(data, list) else data.get("metadata_details", [])
+            for guid in batch:
+                try:
+                    result[guid] = _flatten_dependent_objects(items, root_guid=guid)
+                except (KeyError, TypeError, AttributeError) as exc:
+                    raise TSResponseParseError(
+                        url="/api/rest/2.0/metadata/search",
+                        detail=f"Unexpected dependent_objects shape: {exc}",
+                    ) from exc
+        return result
+
+    # ── Connections ──────────────────────────────────────────────────────────────
+
+    async def list_connections(self) -> list[dict]:
+        """
+        Return every data connection as `[{"id": ..., "name": ...}, ...]`.
+
+        POST /api/rest/2.0/connection/search — an empty body lists all
+        connections. Used to resolve a TML `connection.name` back to a GUID for
+        the lineage graph's Connection nodes. Requires DATAMANAGEMENT or
+        ADMINISTRATION privilege (admins have this).
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/connection/search",
+            json={"record_offset": 0, "record_size": -1},
+            context="list_connections",
+        )
+        items = data if isinstance(data, list) else data.get("connections", [])
+        return [
+            {"id": item.get("id", ""), "name": item.get("name", "")}
+            for item in items
+            if isinstance(item, dict) and item.get("id")
+        ]

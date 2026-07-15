@@ -11,7 +11,9 @@ the CS Tools CLI with a web UI. Admins install it with `pip install`, run
 - **Backend:** Python + FastAPI
 - **Frontend:** Next.js (TypeScript), static export, bundled into pip package
 - **UI:** AG Grid (data tables), React Flow (graph viz), shadcn/ui (components)
-- **DB:** SQLite via SQLModel + Alembic migrations
+- **DB:** SQLite via SQLModel. (Note: `alembic/` exists but is **not** wired into
+  the runtime path — `database.init_db()` uses `create_all` (additive-only). Rebuildable
+  cache tables like the lineage tables use drop-and-rebuild-via-re-sync, not migrations.)
 - **HTTP client:** httpx (async)
 - **Credentials:** OS keychain via `keyring`
 
