@@ -1,0 +1,217 @@
+"""
+Integration tests for the User Management API.
+
+Covers the list grid, the three preview endpoints, and execute endpoints
+(which kick background jobs we don't run end-to-end here — only verify the
+202 + job_id contract).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, create_engine
+
+from ts_admin.models.cache.ts_group import CachedGroup
+from ts_admin.models.cache.ts_metadata import CachedMetadata
+from ts_admin.models.cache.ts_user import (
+    CachedUser,
+    UserGroupMembership,
+    UserOrgMembership,
+)
+from ts_admin.models.cluster import Cluster
+
+
+@pytest.fixture(autouse=True)
+def in_memory_db(monkeypatch):
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    import ts_admin.database as db_module
+
+    monkeypatch.setattr(db_module, "get_engine", lambda: engine)
+    db_module.init_db()
+    return engine
+
+
+@pytest.fixture
+def client(in_memory_db):
+    from ts_admin.main import create_app
+
+    return TestClient(create_app())
+
+
+@pytest.fixture
+def seeded(in_memory_db):
+    now = datetime.now(tz=timezone.utc)
+    with Session(in_memory_db) as session:
+        session.add(
+            Cluster(
+                id="c1",
+                name="Prod",
+                url="https://prod.thoughtspot.cloud",
+                username="admin",
+                auth_type="basic",
+            )
+        )
+        for guid, name in [("u-alice", "alice"), ("u-bob", "bob")]:
+            session.add(
+                CachedUser(
+                    cluster_id="c1",
+                    ts_guid=guid,
+                    username=name,
+                    display_name=name.title(),
+                    email=f"{name}@co.com",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            session.add(UserOrgMembership(cluster_id="c1", ts_guid=guid, org_id=0, synced_at=now))
+
+        session.add(
+            CachedMetadata(
+                cluster_id="c1",
+                org_id=0,
+                ts_guid="lb-1",
+                name="Sales",
+                object_type="LIVEBOARD",
+                owner_guid="u-alice",
+                owner_name="Alice",
+                tag_names=json.dumps([]),
+                synced_at=now,
+            )
+        )
+        session.commit()
+
+
+# ── List + detail ──────────────────────────────────────────────────────────────
+
+
+class TestListUsers:
+    def test_returns_seeded_users(self, client, seeded):
+        r = client.get("/api/v1/users?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == 2
+        usernames = {u["username"] for u in body["items"]}
+        assert usernames == {"alice", "bob"}
+
+    def test_search_narrows_results(self, client, seeded):
+        r = client.get("/api/v1/users?cluster_id=c1&search=alice")
+        assert r.status_code == 200
+        assert r.json()["total"] == 1
+
+
+class TestUserDetail:
+    def test_returns_owned_count(self, client, seeded):
+        r = client.get("/api/v1/users/u-alice?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        assert r.json()["owned_object_count"] == 1
+
+    def test_404_for_unknown_guid(self, client, seeded):
+        r = client.get("/api/v1/users/u-ghost?cluster_id=c1")
+        assert r.status_code == 404
+
+
+# ── Transfer ownership ─────────────────────────────────────────────────────────
+
+
+class TestTransferPreview:
+    def test_returns_alice_owned(self, client, seeded):
+        r = client.post(
+            "/api/v1/users/transfer/preview",
+            json={"cluster_id": "c1", "org_id": 0, "from_user_guid": "u-alice"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["total"] == 1
+
+
+class TestTransferExecute:
+    def test_returns_202_with_job_id(self, client, seeded, monkeypatch):
+        # Replace the BG task entry so we don't reach out to ThoughtSpot
+        async def _noop(*args, **kwargs):
+            return None
+
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "execute_transfer", _noop)
+
+        r = client.post(
+            "/api/v1/users/transfer/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "from_user_guid": "u-alice",
+                "to_user_identifier": "bob",
+                "object_ids": ["lb-1"],
+            },
+        )
+        assert r.status_code == 202, r.text
+        assert r.json()["job_id"]
+        assert r.json()["total"] == 1
+
+
+class TestDeletePreview:
+    def test_marks_unrecognized(self, client, seeded):
+        r = client.post(
+            "/api/v1/users/delete/preview",
+            json={"cluster_id": "c1", "user_guids": ["u-alice", "u-ghost"]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == 1
+        assert body["unrecognized"] == ["u-ghost"]
+
+    def test_admin_flag_present(self, client, seeded, in_memory_db):
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedGroup(
+                    cluster_id="c1",
+                    org_id=0,
+                    ts_guid="g-admin",
+                    name="Administrator",
+                    display_name="Administrator",
+                    synced_at=now,
+                )
+            )
+            s.add(
+                UserGroupMembership(
+                    cluster_id="c1",
+                    org_id=0,
+                    user_guid="u-alice",
+                    group_guid="g-admin",
+                    synced_at=now,
+                )
+            )
+            s.commit()
+        r = client.post(
+            "/api/v1/users/delete/preview",
+            json={"cluster_id": "c1", "user_guids": ["u-alice"]},
+        )
+        assert r.status_code == 200
+        assert r.json()["items"][0]["is_admin"] is True
+
+
+class TestDeleteExecute:
+    def test_returns_202(self, client, seeded, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "execute_delete", _noop)
+
+        r = client.post(
+            "/api/v1/users/delete/execute",
+            json={"cluster_id": "c1", "org_id": 0, "user_guids": ["u-bob"], "user_identifiers": ["bob"]},
+        )
+        assert r.status_code == 202, r.text
+        assert r.json()["total"] == 1

@@ -174,11 +174,18 @@ def create_app(port: int = 8080) -> FastAPI:
             # Next.js dev server (only active in --dev mode)
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
         ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Translate uncaught domain errors into consistent JSON responses
+    from ts_admin.api.error_handlers import register_exception_handlers
+
+    register_exception_handlers(app)
 
     # Register API routers
     _register_routers(app)
@@ -237,7 +244,18 @@ def create_app(port: int = 8080) -> FastAPI:
 
 
 def _register_routers(app: FastAPI) -> None:
-    from ts_admin.api import archiver, clusters, deleter, diagnostics, health, jobs, metadata, sync
+    from ts_admin.api import (
+        archiver,
+        clusters,
+        deleter,
+        diagnostics,
+        health,
+        jobs,
+        metadata,
+        sharing,
+        sync,
+        users,
+    )
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(clusters.router, prefix="/api/v1")
@@ -247,6 +265,8 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(archiver.router, prefix="/api/v1")
     app.include_router(deleter.router, prefix="/api/v1")
     app.include_router(diagnostics.router, prefix="/api/v1")
+    app.include_router(users.router, prefix="/api/v1")
+    app.include_router(sharing.router, prefix="/api/v1")
 
 
 # Module-level app instance for uvicorn: uvicorn ts_admin.main:app

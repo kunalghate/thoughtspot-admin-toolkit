@@ -227,7 +227,10 @@ class ThoughtSpotClient:
                 json={**body, "record_offset": offset, "record_size": PAGE_SIZE},
                 context=context,
             )
-            page: list = data.get(result_key, [])
+            # TS REST v2 search endpoints (users/search, groups/search) return a
+            # bare JSON array; older/other endpoints wrap results under `result_key`.
+            # Accept both so a list response doesn't blow up on `.get()`.
+            page: list = data if isinstance(data, list) else data.get(result_key, [])
             if not page:
                 break
             yield page
@@ -612,6 +615,104 @@ class ThoughtSpotClient:
             raise TSResponseParseError(url="/api/rest/2.0/tags", detail=str(exc)) from exc
 
     # ── Dependencies ───────────────────────────────────────────────────────────
+
+    # ── User management ────────────────────────────────────────────────────────
+
+    async def assign_metadata_owner(
+        self,
+        *,
+        object_ids: list[str],
+        new_owner_identifier: str,
+    ) -> None:
+        """
+        Reassign ownership of one or more metadata objects to a new user.
+
+        POST /api/rest/2.0/security/metadata/assign
+
+        The objects themselves don't move — only the `author` field is rewritten.
+        `new_owner_identifier` may be a username or a user GUID.
+        """
+        await self._request(
+            "POST",
+            "/api/rest/2.0/security/metadata/assign",
+            json={
+                "metadata": [{"identifier": oid} for oid in object_ids],
+                "user_identifier": new_owner_identifier,
+            },
+            context="assign_metadata_owner",
+        )
+
+    async def principal_permissions(
+        self,
+        *,
+        principal_identifier: str,
+        metadata_types: list[str] | None = None,
+    ) -> list[dict]:
+        """
+        Return everything a principal (user or group) has access to.
+
+        POST /api/rest/2.0/security/principal/fetch-permissions
+
+        Used by the User Management transfer-sharing flow: discover everything
+        the leaving user could see, so we can re-share each item with the
+        replacement at the same access level.
+
+        Returns a flat list of:
+          {metadata_id, metadata_name, metadata_type, share_mode}
+        """
+        body: dict = {
+            "principal": [{"identifier": principal_identifier}],
+            "record_size": -1,
+            "permission_type": "DEFINED",
+        }
+        if metadata_types:
+            body["metadata_type"] = metadata_types
+
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/security/principal/fetch-permissions",
+            json=body,
+            context="principal_permissions",
+        )
+
+        out: list[dict] = []
+        # Response shape: {"principal_permissions": [{
+        #   "principal_id", "principal_name",
+        #   "metadata_permission_details": [{
+        #     "metadata_id", "metadata_name", "metadata_type",
+        #     "share_mode": "READ_ONLY" | "MODIFY"
+        #   }]
+        # }]}
+        principals = data.get("principal_permissions") or [] if isinstance(data, dict) else []
+        for p in principals:
+            for item in p.get("metadata_permission_details") or []:
+                out.append(
+                    {
+                        "metadata_id": item.get("metadata_id", ""),
+                        "metadata_name": item.get("metadata_name", ""),
+                        "metadata_type": item.get("metadata_type", ""),
+                        "share_mode": item.get("share_mode", "READ_ONLY"),
+                    }
+                )
+        return out
+
+    async def delete_users(self, *, user_identifiers: list[str]) -> None:
+        """
+        Permanently delete one or more users from the cluster.
+
+        POST /api/rest/2.0/users/delete
+
+        Each identifier may be a username or a user GUID. Irreversible — the
+        user is removed from every org and every group. Owned content stays
+        but becomes orphan-owned; transfer ownership first if you need to
+        preserve attribution.
+        """
+        await self._request(
+            "POST",
+            "/api/rest/2.0/users/delete",
+            json={"users": [{"identifier": uid} for uid in user_identifiers]},
+            context="delete_users",
+        )
 
     async def fetch_dependents(
         self,

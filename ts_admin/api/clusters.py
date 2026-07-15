@@ -46,6 +46,11 @@ class ClusterOut(BaseModel):
     username: str
     auth_type: AuthType
     is_active: bool = False
+    # Live session health, from the process-scoped connection_status registry.
+    # "unknown" until something actually talks to this cluster this process.
+    connection_status: str = "unknown"
+    connection_detail: str | None = None
+    connection_checked_at: str | None = None
 
 
 class TestResult(BaseModel):
@@ -61,6 +66,7 @@ class TestResult(BaseModel):
 async def list_clusters() -> list[ClusterOut]:
     """Return all configured clusters with active cluster flagged."""
     from ts_admin.config import load_config
+    from ts_admin.services import connection_status
     from ts_admin.ts_client.exceptions import ConfigNotFoundError
 
     try:
@@ -68,17 +74,23 @@ async def list_clusters() -> list[ClusterOut]:
     except ConfigNotFoundError:
         return []
 
-    return [
-        ClusterOut(
-            id=c.id,
-            name=c.name,
-            url=c.url,
-            username=c.username,
-            auth_type=c.auth_type,
-            is_active=(c.id == config.active_cluster_id),
+    result = []
+    for c in config.clusters.values():
+        health = connection_status.get(c.id)
+        result.append(
+            ClusterOut(
+                id=c.id,
+                name=c.name,
+                url=c.url,
+                username=c.username,
+                auth_type=c.auth_type,
+                is_active=(c.id == config.active_cluster_id),
+                connection_status=health.state.value,
+                connection_detail=health.detail,
+                connection_checked_at=health.checked_at,
+            )
         )
-        for c in config.clusters.values()
-    ]
+    return result
 
 
 @router.post("", response_model=ClusterOut, status_code=status.HTTP_201_CREATED)
@@ -130,6 +142,7 @@ async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
     """Update a cluster's config and optionally rotate its credential."""
     from ts_admin.config import load_config
     from ts_admin.config import update_cluster as cfg_update
+    from ts_admin.services import connection_status
     from ts_admin.ts_client.exceptions import ConfigInvalidError, TSAdminError
 
     try:
@@ -141,6 +154,9 @@ async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
             auth_type=body.auth_type,
             new_secret=body.credential,  # None = keep existing
         )
+        # Config (possibly the credential) changed — drop stale "expired" health
+        # so the badge resets to "unknown" until the next call re-establishes it.
+        connection_status.clear(cluster_id)
         config = load_config()
         return ClusterOut(
             id=cluster.id,
@@ -160,8 +176,10 @@ async def update_cluster(cluster_id: str, body: ClusterUpdate) -> ClusterOut:
 async def remove_cluster(cluster_id: str) -> None:
     """Remove a cluster and delete its keychain entry."""
     from ts_admin.config import delete_cluster
+    from ts_admin.services import connection_status
 
     delete_cluster(cluster_id)
+    connection_status.clear(cluster_id)
 
 
 @router.post("/{cluster_id}/test", response_model=TestResult)
@@ -170,8 +188,9 @@ async def test_cluster(cluster_id: str) -> TestResult:
     import httpx
 
     from ts_admin.config import load_config
+    from ts_admin.services import connection_status
     from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.ts_client.exceptions import ConfigNotFoundError, TSAdminError
+    from ts_admin.ts_client.exceptions import ConfigNotFoundError, TSAdminError, TSAuthenticationError
 
     try:
         config = load_config()
@@ -183,17 +202,26 @@ async def test_cluster(cluster_id: str) -> TestResult:
         async with ThoughtSpotClient(url=cluster.url, auth=auth) as client:
             info = await client.test_connection()
 
-        return TestResult(success=True, ts_version=info.get("release_version"))
+        version = info.get("release_version")
+        connection_status.mark_connected(cluster_id, ts_version=version)
+        return TestResult(success=True, ts_version=version)
 
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except TSAuthenticationError as exc:
+        connection_status.mark_expired(cluster_id, detail=str(exc))
+        return TestResult(success=False, error=str(exc))
     except TSAdminError as exc:
+        connection_status.mark_unreachable(cluster_id, detail=str(exc))
         return TestResult(success=False, error=str(exc))
     except httpx.HTTPStatusError as exc:
+        connection_status.mark_unreachable(cluster_id, detail=f"HTTP {exc.response.status_code}")
         return TestResult(success=False, error=f"HTTP {exc.response.status_code}: {exc.response.text[:200]}")
     except httpx.ConnectError:
+        connection_status.mark_unreachable(cluster_id, detail="Cannot reach ThoughtSpot")
         return TestResult(success=False, error="Cannot reach ThoughtSpot — check the URL and your network connection")
     except httpx.TimeoutException:
+        connection_status.mark_unreachable(cluster_id, detail="Connection timed out")
         return TestResult(success=False, error="Connection timed out — ThoughtSpot is not responding")
 
 

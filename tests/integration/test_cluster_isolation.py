@@ -50,6 +50,26 @@ READ_ENDPOINTS = [
         lambda body: body["items"],
         id="archiver-history",
     ),
+    pytest.param(
+        "/api/v1/users?cluster_id={cluster}",
+        lambda body: body["items"],
+        id="users-list",
+    ),
+    pytest.param(
+        "/api/v1/users/history?cluster_id={cluster}",
+        lambda body: body["items"],
+        id="users-history",
+    ),
+    pytest.param(
+        "/api/v1/sharing/principals?cluster_id={cluster}&org_id=0",
+        lambda body: body["items"],
+        id="sharing-principals",
+    ),
+    pytest.param(
+        "/api/v1/sharing/history?cluster_id={cluster}",
+        lambda body: body["items"],
+        id="sharing-history",
+    ),
 ]
 
 

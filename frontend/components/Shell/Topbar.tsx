@@ -66,11 +66,14 @@ export default function Topbar({
       </div>
 
       {/* Sync indicator */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
-          {syncLabel}
-        </span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 96 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
+          <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>
+            {syncLabel}
+          </span>
+        </div>
+        {isSyncing && <SyncProgressBar progress={syncProgress} />}
       </div>
 
       {/* Sync button */}
@@ -215,6 +218,8 @@ function buildSyncLabel(
 ): string {
   if (isSyncing) {
     if (progress && progress.total > 0) return `Syncing ${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
+    // No grand total from the TS API — show the live running count instead.
+    if (progress && progress.processed > 0) return `Syncing ${progress.processed.toLocaleString()}…`;
     return "Syncing…";
   }
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
@@ -239,4 +244,40 @@ function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): s
   if (hours < 1) return "#059669";
   if (hours < 6) return "#7A7068";
   return "#D97706";
+}
+
+/**
+ * Thin progress bar shown under the sync indicator while a sync runs.
+ * Determinate (filled to %) when the job reports a total; otherwise an
+ * indeterminate sliding segment, since the TS search API gives no grand total.
+ */
+function SyncProgressBar({ progress }: { progress: { processed: number; total: number } | null }) {
+  const determinate = !!progress && progress.total > 0;
+  const pct = determinate ? Math.min(100, Math.round((progress!.processed / progress!.total) * 100)) : 0;
+
+  return (
+    <div
+      style={{
+        width: "100%", height: 3, borderRadius: 2,
+        background: "#EBE3D5", overflow: "hidden", position: "relative",
+      }}
+    >
+      {determinate ? (
+        <div
+          style={{
+            width: `${pct}%`, height: "100%", background: "#8B5CF6",
+            borderRadius: 2, transition: "width 240ms ease",
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            position: "absolute", top: 0, left: 0, height: "100%", width: "40%",
+            background: "#8B5CF6", borderRadius: 2,
+            animation: "syncSlide 1.1s ease-in-out infinite",
+          }}
+        />
+      )}
+    </div>
+  );
 }

@@ -1,5 +1,7 @@
 // ── Cluster & Org ─────────────────────────────────────────────────────────────
 
+export type ConnectionStatus = "unknown" | "connected" | "expired" | "unreachable";
+
 export interface Cluster {
   id: string;
   name: string;
@@ -8,6 +10,10 @@ export interface Cluster {
   auth_type: "basic" | "trusted" | "bearer";
   is_active: boolean;
   created_at: string;
+  // Live session health from the backend (see connection_status registry).
+  connection_status: ConnectionStatus;
+  connection_detail?: string | null;
+  connection_checked_at?: string | null;
 }
 
 export interface Org {
@@ -246,4 +252,134 @@ export interface RootSearchItem {
   name: string;
   object_type: string;
   owner_name: string;
+}
+
+// ── User Management ───────────────────────────────────────────────────────────
+
+export interface UserListItem {
+  ts_guid: string;
+  username: string;
+  display_name: string;
+  email: string;
+  status: "ACTIVE" | "INACTIVE";
+  created_at: string | null;
+  modified_at: string | null;
+  synced_at: string | null;
+}
+
+export interface UserDetail extends UserListItem {
+  owned_object_count: number;
+  org_ids: number[];
+  groups: string[];
+  is_admin: boolean;
+}
+
+export interface TransferObjectItem {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  owner_guid: string;
+  owner_name: string;
+  modified_at: string | null;
+  tags: string[];
+}
+
+export interface TransferPreviewResponse {
+  items: TransferObjectItem[];
+  total: number;
+  by_type: Record<string, number>;
+}
+
+export interface SharingPermissionItem {
+  metadata_id: string;
+  metadata_name: string;
+  metadata_type: string;
+  share_mode: string;
+}
+
+export interface TransferSharingPreviewResponse {
+  items: SharingPermissionItem[];
+  total: number;
+  by_type: Record<string, number>;
+}
+
+export interface DeletePreviewItem extends UserListItem {
+  owned_object_count: number;
+  is_admin: boolean;
+}
+
+export interface DeletePreviewResponse {
+  items: DeletePreviewItem[];
+  total: number;
+  unrecognized: string[];
+}
+
+/** Item shape inside a user-delete dry-run job result (adds the live-existence flag). */
+export interface DeleteDryRunItem extends DeletePreviewItem {
+  exists_live: boolean;
+}
+
+/** Stored in Job.result for a `user_delete_dryrun` job. */
+export interface DeleteDryRunResult {
+  total: number;
+  items: DeleteDryRunItem[];
+  unrecognized: string[];
+  missing_live: string[];   // usernames/GUIDs no longer present on the cluster
+  admin_count: number;
+  owned_total: number;
+}
+
+export interface UserHistoryItem {
+  id: string;
+  job_id: string;
+  action_type: "transfer" | "transfer_sharing" | "delete";
+  from_username: string;
+  from_display_name: string;
+  to_username: string;
+  to_display_name: string;
+  items_total: number;
+  items_succeeded: number;
+  items_failed: number;
+  status: "PENDING" | "SUCCESS" | "PARTIAL" | "FAILED";
+  error: string | null;
+  executed_at: string;
+}
+
+// ── Bulk Sharing ──────────────────────────────────────────────────────────────
+
+export type SharePermissionMode = "READ_ONLY" | "MODIFY" | "NO_ACCESS";
+
+export interface PrincipalPickerItem {
+  ts_guid: string;
+  name: string;
+  display_name: string;
+  principal_type: "USER" | "USER_GROUP";
+}
+
+export interface SharingPreviewRow {
+  object_guid: string;
+  object_name: string;
+  object_type: string;
+  principal_guid: string;
+  principal_name: string;
+  principal_type: string;
+  previous_mode: string;
+  new_mode: string;
+  will_change: boolean;
+}
+
+export interface SharingPreviewResponse {
+  items: SharingPreviewRow[];
+  total: number;
+  will_change_count: number;
+}
+
+export interface SharingHistoryItem {
+  job_id: string;
+  executed_at: string;
+  object_count: number;
+  principal_count: number;
+  succeeded: number;
+  failed: number;
+  status: "SUCCESS" | "PARTIAL" | "FAILED";
 }

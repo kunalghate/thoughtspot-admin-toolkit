@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -15,15 +15,60 @@ const BASE =
 
 // ── Generic fetch wrapper ─────────────────────────────────────────────────────
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+/**
+ * A failed API call. Extends Error (so existing `e.message` reads keep working)
+ * but also carries the HTTP status, the backend's `error_type`, and an
+ * actionable `hint` — enough for the UI to react to specific failures
+ * (e.g. flip the cluster badge on an auth/session-expired error).
+ *
+ * `status === 0` means the request never reached the server (network down,
+ * server not running, CORS) — distinct from an HTTP error response.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly errorType?: string;
+  readonly hint?: string;
 
-  // Parse body safely — some endpoints return 204 No Content
+  constructor(message: string, opts: { status: number; errorType?: string; hint?: string } = { status: 0 }) {
+    super(message);
+    this.name = "ApiError";
+    this.status = opts.status;
+    this.errorType = opts.errorType;
+    this.hint = opts.hint;
+  }
+
+  /** True when the failure is an expired/invalid ThoughtSpot session. */
+  get isAuthExpired(): boolean {
+    return this.status === 401 || this.errorType === "TSAuthenticationError";
+  }
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (e) {
+    // fetch only rejects on network-level failures (server down, DNS, CORS).
+    throw new ApiError(
+      "Can't reach the toolkit server. Is it still running?",
+      { status: 0, errorType: "NetworkError" },
+    );
+  }
+
+  // Parse body safely — some endpoints return 204 No Content, and an error
+  // page (e.g. a proxy 502) may not be JSON at all.
   const text = await res.text();
-  const body = text ? JSON.parse(text) : null;
+  let body: any = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+  }
 
   if (!res.ok) {
     const detail = body?.detail;
@@ -32,7 +77,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       : Array.isArray(detail)
         ? detail.map((e: any) => `${e.loc?.slice(-1)[0] ?? "?"}: ${e.msg ?? JSON.stringify(e)}`).join(", ")
         : `HTTP ${res.status}: ${res.statusText}`;
-    throw new Error(message);
+    throw new ApiError(message, {
+      status: res.status,
+      errorType: body?.error_type,
+      hint: body?.hint,
+    });
   }
 
   return body as T;
@@ -465,4 +514,191 @@ export const deleterApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+};
+
+// ── User Management ───────────────────────────────────────────────────────────
+
+export const usersApi = {
+  list: (params: {
+    cluster_id: string;
+    org_id?: number;
+    status?: string;
+    search?: string;
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.org_id != null)         q.set("org_id", String(params.org_id));
+    if (params.status)                  q.set("status", params.status);
+    if (params.search)                  q.set("search", params.search);
+    if (params.sort_field)              q.set("sort_field", params.sort_field);
+    if (params.sort_order)              q.set("sort_order", params.sort_order);
+    if (params.record_offset != null)  q.set("record_offset", String(params.record_offset));
+    if (params.page_size)               q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<UserListItem>>(`/users?${q}`);
+  },
+
+  get: (ts_guid: string, cluster_id: string) =>
+    request<UserDetail>(`/users/${ts_guid}?cluster_id=${cluster_id}`),
+
+  transferPreview: (body: {
+    cluster_id: string;
+    org_id: number;
+    from_user_guid: string;
+    object_types?: string[];
+    tag_names?: string[];
+    explicit_guids?: string[];
+  }) =>
+    request<TransferPreviewResponse>("/users/transfer/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  transferExecute: (body: {
+    cluster_id: string;
+    org_id: number;
+    from_user_guid: string;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/users/transfer/execute", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  transferSharingPreview: (body: {
+    cluster_id: string;
+    org_id: number;
+    from_user_guid: string;
+    to_user_identifier: string;
+  }) =>
+    request<TransferSharingPreviewResponse>("/users/transfer-sharing/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  transferSharingExecute: (body: {
+    cluster_id: string;
+    org_id: number;
+    from_user_guid: string;
+    to_user_identifier: string;
+    notify?: boolean;
+  }) =>
+    request<{ job_id: string; total: number }>("/users/transfer-sharing/execute", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  deletePreview: (body: { cluster_id: string; user_guids: string[] }) =>
+    request<DeletePreviewResponse>("/users/delete/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  deleteDryrun: (body: {
+    cluster_id: string;
+    org_id: number;
+    user_guids: string[];
+    user_identifiers?: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/users/delete/dryrun", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  deleteExecute: (body: {
+    cluster_id: string;
+    org_id: number;
+    user_guids: string[];
+    user_identifiers?: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/users/delete/execute", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  history: (params: {
+    cluster_id: string;
+    org_id?: number;
+    action_type?: string;
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.org_id != null)        q.set("org_id", String(params.org_id));
+    if (params.action_type)            q.set("action_type", params.action_type);
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)              q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<UserHistoryItem>>(`/users/history?${q}`);
+  },
+};
+
+// ── Bulk Sharing ──────────────────────────────────────────────────────────────
+
+export const sharingApi = {
+  principals: (params: {
+    cluster_id: string;
+    org_id: number;
+    search?: string;
+    include_users?: boolean;
+    include_groups?: boolean;
+    limit?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.search)               q.set("search", params.search);
+    if (params.include_users != null) q.set("include_users", String(params.include_users));
+    if (params.include_groups != null) q.set("include_groups", String(params.include_groups));
+    if (params.limit)                 q.set("limit", String(params.limit));
+    return request<{ items: PrincipalPickerItem[]; total: number }>(`/sharing/principals?${q}`);
+  },
+
+  preview: (body: {
+    cluster_id: string;
+    org_id: number;
+    object_guids?: string[];
+    tag_name?: string;
+    principal_guids: string[];
+    mode: SharePermissionMode;
+  }) =>
+    request<SharingPreviewResponse>("/sharing/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  dryrun: (body: {
+    cluster_id: string;
+    org_id: number;
+    object_guids?: string[];
+    tag_name?: string;
+    principal_guids: string[];
+    mode: SharePermissionMode;
+  }) =>
+    request<{ job_id: string; total: number }>("/sharing/dryrun", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  execute: (body: {
+    cluster_id: string;
+    org_id: number;
+    object_guids?: string[];
+    tag_name?: string;
+    principal_guids: string[];
+    mode: SharePermissionMode;
+    notify?: boolean;
+  }) =>
+    request<{ job_id: string; total: number }>("/sharing/execute", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  history: (params: {
+    cluster_id: string;
+    org_id?: number;
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.org_id != null)        q.set("org_id", String(params.org_id));
+    if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
+    if (params.page_size)              q.set("page_size", String(params.page_size));
+    return request<PaginatedResponse<SharingHistoryItem>>(`/sharing/history?${q}`);
+  },
 };

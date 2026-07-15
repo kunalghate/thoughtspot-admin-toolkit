@@ -12,7 +12,13 @@ import { useRouter } from "next/router";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
 import { clustersApi, jobsApi, syncApi } from "@/lib/api";
+import { useToast } from "../Toast";
 import type { Cluster, Org, SyncLog, EntityType } from "@/lib/types";
+
+/** Heuristic: does a backend error string describe an expired/invalid session? */
+function looksLikeAuthError(message?: string | null): boolean {
+  return /expired|login|credential|session|unauthor|401/i.test(message ?? "");
+}
 
 // ── Shell context — lets any page read the active cluster + org ────────────────
 
@@ -90,8 +96,12 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   const [isSyncing, setIsSyncing]     = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
   const [clusterOnline, setClusterOnline] = useState<boolean | null>(null);
+  // The cluster's login is no longer valid even though it may still look
+  // "connected" — drives the reconnect banner.
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const toast = useToast();
 
   // Load clusters on mount
   useEffect(() => {
@@ -112,6 +122,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     if (!activeCluster) return;
 
     setClusterOnline(null);  // reset to "checking"
+    setSessionExpired(false);
 
     // Restore saved org immediately from cache so there is no flash of the
     // primary org while the async org-list fetch is in flight.
@@ -122,6 +133,9 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     clustersApi.testConnection(activeCluster.id).then((result) => {
       const online = result.success;
       setClusterOnline(online);
+      // A failed test that reads like an auth rejection means the session is
+      // dead even though the cluster is configured — surface the reconnect path.
+      setSessionExpired(!online && looksLikeAuthError(result.error));
 
       if (online) {
         // Cluster is reachable — fetch orgs live
@@ -173,34 +187,62 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     try {
       const { job_id } = await syncApi.trigger(activeCluster.id, activeOrg.org_id, entityType);
 
-      // Poll until the job finishes
+      // Poll until the job reaches a terminal state. The backend job lifecycle is
+      // QUEUED → RUNNING → COMPLETE | FAILED | PARTIAL, so only those three mean
+      // "done". Checking for terminal states (rather than "not running") avoids a
+      // race where the first tick catches a still-QUEUED job and wrongly concludes
+      // the sync already finished — which would reload stale data and stop the bar.
+      const TERMINAL = ["COMPLETE", "FAILED", "PARTIAL"];
+      let pollErrors = 0;
       pollRef.current = setInterval(async () => {
         try {
           const updated = await jobsApi.get(job_id);
+          pollErrors = 0;
           setSyncProgress({ processed: updated.progress, total: updated.total });
 
-          if (updated.status !== "PENDING" && updated.status !== "RUNNING") {
-            clearInterval(pollRef.current!);
-            pollRef.current = null;
-            setIsSyncing(false);
-            setSyncProgress(null);
-            // Refresh sync log then reload page data
-            const logs = await syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0);
-            setSyncLogs(logs);
-            onSyncComplete?.();
-          }
-        } catch {
+          if (!TERMINAL.includes(updated.status)) return;
+
           clearInterval(pollRef.current!);
           pollRef.current = null;
           setIsSyncing(false);
           setSyncProgress(null);
+
+          if (updated.status === "FAILED") {
+            // Don't let the failure hide in a /jobs row — say it out loud, and
+            // if the session is the cause, flip the banner + offer reconnect.
+            if (looksLikeAuthError(updated.error)) {
+              setSessionExpired(true);
+              toast.error("ThoughtSpot session expired", {
+                hint: "This cluster's login is no longer valid. Reconnect to continue.",
+                action: { label: "Reconnect", onClick: () => router.push("/settings/connections") },
+              });
+            } else {
+              toast.error("Sync failed", { hint: updated.error ?? "Open Jobs for details." });
+            }
+          }
+
+          // Refresh sync log then reload page data
+          const logs = await syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0);
+          setSyncLogs(logs);
+          onSyncComplete?.();
+        } catch {
+          // Tolerate transient poll failures (network blip, server busy) — only
+          // give up after several consecutive errors so a single hiccup doesn't
+          // strand the UI in a permanent "Syncing…" state.
+          if (++pollErrors < 5) return;
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          setIsSyncing(false);
+          setSyncProgress(null);
+          toast.error("Lost track of the sync", { hint: "Check the Jobs page for status." });
         }
       }, 2000);
-    } catch {
+    } catch (e) {
       setIsSyncing(false);
       setSyncProgress(null);
+      toast.error("Couldn't start sync", { hint: e instanceof Error ? e.message : String(e) });
     }
-  }, [activeCluster?.id, activeOrg?.org_id, entityType, onSyncComplete]);
+  }, [activeCluster?.id, activeOrg?.org_id, entityType, onSyncComplete, router, toast]);
 
   return (
     <ShellContext.Provider value={{ activeCluster, activeOrg, clusterOnline }}>
@@ -227,6 +269,44 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           clusterOnline={clusterOnline}
           now={now}
         />
+        {sessionExpired && (
+          <div
+            role="alert"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "10px 20px",
+              background: "#FDF2F2",
+              borderBottom: "1px solid #F3C6C6",
+              color: "#7A2018",
+              fontSize: 13,
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>ThoughtSpot session expired.</span>
+            <span style={{ color: "#9A4338" }}>
+              This cluster's login is no longer valid — reads from cache still work, but syncs and live actions will
+              fail until you reconnect.
+            </span>
+            <button
+              onClick={() => router.push("/settings/connections")}
+              style={{
+                marginLeft: "auto",
+                background: "#C0392B",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                padding: "6px 14px",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Reconnect
+            </button>
+          </div>
+        )}
         <main style={{ flex: 1, overflowY: "auto", background: "#F2EDE3" }}>
           {children}
         </main>

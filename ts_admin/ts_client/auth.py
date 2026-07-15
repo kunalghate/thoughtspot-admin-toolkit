@@ -17,6 +17,45 @@ from dataclasses import dataclass
 import httpx
 
 
+def _raise_login_error(
+    response: httpx.Response,
+    *,
+    org_id: int | None,
+    bad_credentials: str,
+    forbidden: str,
+) -> None:
+    """Map a failed /auth/token/full response to the most specific exception.
+
+    Three failure modes must be told apart because callers treat them differently:
+
+    - Bad credentials / expired session (401) → ``TSAuthenticationError``. A live
+      operation that hits this flips the cluster's badge to "expired" and asks the
+      user to reconnect.
+    - The account can't get a token for the requested org — ThoughtSpot returns
+      400 with code 13090, ``"...do not have access to org N"`` →
+      ``TSInsufficientPrivilegesError``. The credentials are perfectly valid, so
+      this must NOT look like an expired session: reconnecting only sends the user
+      into a pointless loop. The real fix is org access, which we name explicitly.
+    - Missing privilege / Trusted Auth disabled (403) → ``TSInsufficientPrivilegesError``.
+    """
+    from ts_admin.ts_client.exceptions import (
+        TSAuthenticationError,
+        TSInsufficientPrivilegesError,
+    )
+
+    body = response.text or ""
+    if org_id is not None and ("do not have access to org" in body or '"code":13090' in body):
+        raise TSInsufficientPrivilegesError(
+            f"The connected account can't access org {org_id}. Grant it access in "
+            "ThoughtSpot, or sync an org the account belongs to."
+        )
+    if response.status_code == 401:
+        raise TSAuthenticationError(bad_credentials)
+    if response.status_code == 403:
+        raise TSInsufficientPrivilegesError(forbidden)
+    raise TSAuthenticationError(f"Login failed ({response.status_code}): {body[:200]}")
+
+
 class AuthStrategy(ABC):
     """Base interface all auth strategies must implement."""
 
@@ -53,8 +92,6 @@ class BasicAuth(AuthStrategy):
         return {"Authorization": f"Bearer {self._session_token}"}
 
     async def _login(self, http_client: httpx.AsyncClient) -> None:
-        from ts_admin.ts_client.exceptions import TSAuthenticationError
-
         body: dict = {
             "username": self.username,
             "password": self.password,
@@ -67,12 +104,13 @@ class BasicAuth(AuthStrategy):
             "/api/rest/2.0/auth/token/full",
             json=body,
         )
-        if response.status_code == 401:
-            raise TSAuthenticationError("Invalid username or password")
-        if response.status_code == 403:
-            raise TSAuthenticationError("Access denied — check that this user has ADMINISTRATION privilege")
         if not response.is_success:
-            raise TSAuthenticationError(f"Login failed ({response.status_code}): {response.text[:200]}")
+            _raise_login_error(
+                response,
+                org_id=self.org_id,
+                bad_credentials="Invalid username or password",
+                forbidden="Access denied — check that this user has ADMINISTRATION privilege",
+            )
         self._session_token = response.json()["token"]
 
     def invalidate(self) -> None:
@@ -101,8 +139,6 @@ class TrustedAuth(AuthStrategy):
         return {"Authorization": f"Bearer {self._session_token}"}
 
     async def _login(self, http_client: httpx.AsyncClient) -> None:
-        from ts_admin.ts_client.exceptions import TSAuthenticationError
-
         body: dict = {
             "username": self.username,
             "secret_key": self.secret_key,
@@ -115,14 +151,15 @@ class TrustedAuth(AuthStrategy):
             "/api/rest/2.0/auth/token/full",
             json=body,
         )
-        if response.status_code == 401:
-            raise TSAuthenticationError("Invalid username or secret key")
-        if response.status_code == 403:
-            raise TSAuthenticationError(
-                "Access denied — check that Trusted Authentication is enabled in ThoughtSpot Developer settings"
-            )
         if not response.is_success:
-            raise TSAuthenticationError(f"Login failed ({response.status_code}): {response.text[:200]}")
+            _raise_login_error(
+                response,
+                org_id=self.org_id,
+                bad_credentials="Invalid username or secret key",
+                forbidden=(
+                    "Access denied — check that Trusted Authentication is enabled in ThoughtSpot Developer settings"
+                ),
+            )
         self._session_token = response.json()["token"]
 
     def invalidate(self) -> None:

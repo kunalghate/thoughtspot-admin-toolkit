@@ -1,5 +1,7 @@
 import type { AppProps } from "next/app";
 import Head from "next/head";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+import { ToastProvider } from "../components/Toast";
 
 export default function App({ Component, pageProps }: AppProps) {
   return (
@@ -31,6 +33,11 @@ export default function App({ Component, pageProps }: AppProps) {
         @keyframes popoverIn {
           from { opacity: 0; transform: translateY(-4px); }
           to   { opacity: 1; transform: translateY(0); }
+        }
+        /* Indeterminate sync bar — slides a segment when the total is unknown. */
+        @keyframes syncSlide {
+          from { transform: translateX(-100%); }
+          to   { transform: translateX(250%); }
         }
 
         /* Hide number-input spinner arrows in popovers (cleaner look) */
@@ -216,7 +223,11 @@ export default function App({ Component, pageProps }: AppProps) {
           box-shadow: inset 3px 0 0 #8B5CF6;
         }
       `}</style>
-      <Component {...pageProps} />
+      <ErrorBoundary>
+        <ToastProvider>
+          <Component {...pageProps} />
+        </ToastProvider>
+      </ErrorBoundary>
     </>
   );
 }

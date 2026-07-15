@@ -162,6 +162,91 @@ class TestTrustedAuth:
         assert parsed["org_id"] == 42
 
 
+# ── Login error classification ────────────────────────────────────────────────
+
+
+class TestLoginErrorClassification:
+    """A per-org/privilege denial must NOT be reported as an expired session.
+
+    Reconnecting fixes an expired session; it does nothing for an account that
+    simply can't reach a given org. Conflating the two sent users into a loop of
+    reconnecting a cluster whose credentials were always fine.
+    """
+
+    # The shape ThoughtSpot actually returns when the account can't get an
+    # org-scoped token (observed in a live support bundle).
+    _ORG_DENIED_BODY = (
+        '{"error":{"message":{"debug":{"code":13090,'
+        '"debug":"[\\"User 0000084a do not have access to org 349890686\\"]"}}}}'
+    )
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_trusted_org_access_denied_is_insufficient_privileges(self):
+        """400 + 'do not have access to org' → TSInsufficientPrivilegesError, naming the org."""
+        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(
+            return_value=httpx.Response(400, text=self._ORG_DENIED_BODY)
+        )
+        from ts_admin.ts_client.exceptions import TSInsufficientPrivilegesError
+
+        auth = TrustedAuth(username="admin", secret_key="key123", org_id=349890686)
+        async with httpx.AsyncClient(base_url="https://ts.example.com") as http:
+            with pytest.raises(TSInsufficientPrivilegesError) as excinfo:
+                await auth.get_headers(http)
+        assert "349890686" in str(excinfo.value)
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_basic_org_access_denied_is_insufficient_privileges(self):
+        """Same org-access denial via BasicAuth → TSInsufficientPrivilegesError."""
+        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(
+            return_value=httpx.Response(400, text=self._ORG_DENIED_BODY)
+        )
+        from ts_admin.ts_client.exceptions import TSInsufficientPrivilegesError
+
+        auth = BasicAuth(username="admin", password="secret", org_id=349890686)
+        async with httpx.AsyncClient(base_url="https://ts.example.com") as http:
+            with pytest.raises(TSInsufficientPrivilegesError):
+                await auth.get_headers(http)
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_trusted_403_is_insufficient_privileges_not_expired(self):
+        """403 (Trusted Auth disabled / no privilege) is a setup problem, not an expired session."""
+        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(return_value=httpx.Response(403))
+        from ts_admin.ts_client.exceptions import TSAuthenticationError, TSInsufficientPrivilegesError
+
+        auth = TrustedAuth(username="admin", secret_key="key123")
+        async with httpx.AsyncClient(base_url="https://ts.example.com") as http:
+            with pytest.raises(TSInsufficientPrivilegesError) as excinfo:
+                await auth.get_headers(http)
+        # Must not be the session-expiry type that triggers "reconnect this cluster".
+        assert not isinstance(excinfo.value, TSAuthenticationError)
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_basic_403_is_insufficient_privileges(self):
+        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(return_value=httpx.Response(403))
+        from ts_admin.ts_client.exceptions import TSInsufficientPrivilegesError
+
+        auth = BasicAuth(username="admin", password="secret")
+        async with httpx.AsyncClient(base_url="https://ts.example.com") as http:
+            with pytest.raises(TSInsufficientPrivilegesError):
+                await auth.get_headers(http)
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_401_still_expired_session(self):
+        """401 remains a genuine session/credential failure (TSAuthenticationError)."""
+        respx.post("https://ts.example.com/api/rest/2.0/auth/token/full").mock(return_value=httpx.Response(401))
+        from ts_admin.ts_client.exceptions import TSAuthenticationError
+
+        auth = TrustedAuth(username="admin", secret_key="key123", org_id=42)
+        async with httpx.AsyncClient(base_url="https://ts.example.com") as http:
+            with pytest.raises(TSAuthenticationError):
+                await auth.get_headers(http)
+
+
 # ── BearerTokenAuth ───────────────────────────────────────────────────────────
 
 
