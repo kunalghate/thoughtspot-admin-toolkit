@@ -383,3 +383,83 @@ export interface SharingHistoryItem {
   failed: number;
   status: "SUCCESS" | "PARTIAL" | "FAILED";
 }
+
+// ── Relationships / Data Lineage ──────────────────────────────────────────────
+
+export type LineageNodeType =
+  | "CONNECTION" | "DB_TABLE" | "LOGICAL_TABLE" | "MODEL" | "ANSWER" | "LIVEBOARD";
+
+/** The three explorer tabs' root_kind path segment. */
+export type RootKind = "model" | "answer" | "liveboard";
+
+export interface TopologyItem {
+  ts_guid: string;
+  name: string;
+  object_type: string;
+  node_type: LineageNodeType;
+  subtype: string;      // left-list filter label: Model | Table | Dataset | View
+  owner_name: string;
+}
+
+export interface TopologyResponse {
+  logical_tables: TopologyItem[];
+  answers: TopologyItem[];
+  liveboards: TopologyItem[];
+}
+
+export interface LineageNode {
+  guid: string;
+  name: string;
+  node_type: LineageNodeType;
+  layer: number;         // 0=Connection … 4=Answer/Liveboard (frontend x = layer)
+  owner_name: string;
+  accessible: boolean;
+}
+
+export interface LineageEdge {
+  source: string;        // consumer / downstream
+  target: string;        // producer / upstream
+  relation: "USES" | "CONNECTS" | string;
+}
+
+export interface ColumnUsedBy {
+  guid: string;
+  name: string;
+  node_type: string;
+}
+
+export interface ColumnLineageRow {
+  model_guid: string;
+  model_column_name: string;
+  table_guid: string;
+  table_column_name: string;
+  db_table: string;
+  db_column_name: string;
+  connection_name: string;
+  used_by: ColumnUsedBy[];
+}
+
+export interface LineageGraphResponse {
+  root: LineageNode;
+  root_kind: RootKind;
+  nodes: LineageNode[];
+  edges: LineageEdge[];
+  consumer_totals: Record<string, number>;
+  capped: boolean;
+  impact: { downstream_count: number };
+  columns: ColumnLineageRow[];
+}
+
+export interface ConsumerItem {
+  guid: string;
+  name: string;
+  node_type: string;
+  owner_name: string;
+}
+
+export interface ConsumersResponse {
+  items: ConsumerItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
