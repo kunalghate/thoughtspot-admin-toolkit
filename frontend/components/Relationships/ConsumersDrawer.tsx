@@ -55,7 +55,9 @@ export function ConsumersDrawer({
 
   useEffect(() => { load(0); }, [load]);
 
-  const label = styleFor(consumerType).label;
+  const consumerStyle = styleFor(consumerType);
+  const label = consumerStyle.label;
+  const HeaderIcon = consumerStyle.Icon;
   const shown = items.filter((i) => !search.trim() || i.name.toLowerCase().includes(search.trim().toLowerCase()));
 
   return (
@@ -78,12 +80,13 @@ export function ConsumersDrawer({
             borderBottom: `1px solid ${theme.color.border}`, flexShrink: 0,
           }}
         >
+          <HeaderIcon size={18} style={{ color: consumerStyle.color, flexShrink: 0 }} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
               {total ?? "…"} {label}{(total ?? 0) === 1 ? "" : "s"}
             </div>
             <div style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
-              Downstream consumers
+              Objects that depend on this one
             </div>
           </div>
           <button

@@ -9,6 +9,7 @@ import { AgGridReact } from "ag-grid-react";
 import type { ColDef } from "ag-grid-community";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
+import { Columns3 } from "lucide-react";
 import { theme } from "@/lib/theme";
 import type { ColumnLineageRow, ColumnUsedBy } from "@/lib/types";
 import { styleFor } from "./nodeStyles";
@@ -20,19 +21,20 @@ function UsedByChips(params: { value: ColumnUsedBy[]; context: { onJump: (guid: 
     <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
       {list.map((u) => {
         const s = styleFor(u.node_type);
+        const UIcon = s.Icon;
         return (
           <button
             key={u.guid}
             onClick={() => params.context.onJump(u.guid, u.node_type)}
-            title={`Jump to ${u.name}`}
+            title={`Open ${u.name}`}
             style={{
-              display: "inline-flex", alignItems: "center", gap: 4, maxWidth: 180,
+              display: "inline-flex", alignItems: "center", gap: 5, maxWidth: 180,
               padding: "1px 8px", borderRadius: theme.radius.pill, cursor: "pointer",
               border: `1px solid ${s.border}`, background: s.soft, color: s.color,
               fontSize: 11, fontFamily: theme.font.sans, lineHeight: 1.6,
             }}
           >
-            <span style={{ width: 6, height: 6, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+            <UIcon size={11} style={{ flexShrink: 0 }} />
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</span>
           </button>
         );
@@ -63,9 +65,15 @@ export function ColumnsGrid({
 
   if (columns.length === 0) {
     return (
-      <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", fontSize: 13, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
-        No column-level lineage for this object yet. Build lineage (the column map exports TML for
-        logical tables &amp; liveboards) to populate the 3-layer map.
+      <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 24, textAlign: "center", fontFamily: theme.font.sans, maxWidth: 420, margin: "0 auto" }}>
+        <div style={{ width: 48, height: 48, borderRadius: 12, background: theme.color.surface2, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Columns3 size={22} style={{ color: theme.color.textMuted }} />
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: theme.color.textPrimary }}>No column map yet</div>
+        <div style={{ fontSize: 12.5, color: theme.color.textMuted, lineHeight: 1.6 }}>
+          The column-level map (database column → table column → model column, and where each is used)
+          fills in when lineage is built for logical tables and liveboards.
+        </div>
       </div>
     );
   }

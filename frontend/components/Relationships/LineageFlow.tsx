@@ -10,9 +10,9 @@
  * Loaded via next/dynamic({ ssr: false }) — React Flow needs the DOM.
  */
 import { useMemo } from "react";
-import { ReactFlow, Background, Controls, Handle, Position, MarkerType, type Node, type Edge, type NodeProps } from "@xyflow/react";
+import { ReactFlow, Background, Controls, Panel, Handle, Position, MarkerType, type Node, type Edge, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { AlertTriangle } from "lucide-react";
+import { Crosshair, Users, MoveRight } from "lucide-react";
 import { theme } from "@/lib/theme";
 import type { LineageGraphResponse } from "@/lib/types";
 import { styleFor } from "./nodeStyles";
@@ -38,27 +38,51 @@ interface CountNodeData extends Record<string, unknown> {
 
 function LineageNodeCard({ data }: NodeProps<Node<LineageNodeData>>) {
   const s = styleFor(data.nodeType);
+  const Icon = s.Icon;
+  const clickable = !data.isRoot;
   return (
     <div
-      title={`${data.label}\n${s.label}${data.ownerName ? ` · ${data.ownerName}` : ""}\n${data.guid}`}
+      className={`rv-node${clickable ? " rv-node--clickable" : ""}`}
+      title={
+        `${data.label}\n${s.label}${data.ownerName ? ` · ${data.ownerName}` : ""}` +
+        (clickable ? "\n\nClick to make this the focus of the graph" : "\nYou are viewing this object")
+      }
       style={{
-        minWidth: 150, maxWidth: 190, padding: "8px 10px",
+        position: "relative",
+        minWidth: 150, maxWidth: 190, padding: "7px 10px",
         borderRadius: theme.radius.control, fontFamily: theme.font.sans,
         background: data.isRoot ? s.color : s.soft,
         color: data.isRoot ? theme.color.onAccent : theme.color.textPrimary,
-        border: `${data.isRoot ? 2 : 1}px ${data.accessible ? "solid" : "dashed"} ${s.border}`,
+        border: `${data.isRoot ? 2 : 1}px ${data.accessible ? "solid" : "dashed"} ${data.isRoot ? s.color : s.border}`,
         opacity: data.accessible ? 1 : 0.6,
-        boxShadow: data.isRoot ? theme.shadow.sm : "none",
+        boxShadow: data.isRoot ? theme.shadow.md : theme.shadow.xs,
       }}
     >
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ width: 8, height: 8, borderRadius: 2, background: data.isRoot ? theme.color.onAccent : s.color, flexShrink: 0 }} />
-        <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", opacity: 0.8 }}>{s.label}</span>
+        <Icon size={12} style={{ color: data.isRoot ? theme.color.onAccent : s.color, flexShrink: 0, opacity: data.isRoot ? 0.9 : 1 }} />
+        <span style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, opacity: 0.75, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
+        {data.isRoot && (
+          <span style={{ marginLeft: "auto", flexShrink: 0, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", padding: "1px 6px", borderRadius: theme.radius.pill, background: theme.color.onAccent, color: s.color }}>
+            Viewing
+          </span>
+        )}
       </div>
       <div style={{ fontSize: 12.5, fontWeight: 600, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {data.label}
       </div>
+      {clickable && (
+        <span
+          className="rv-focus"
+          style={{
+            position: "absolute", top: -9, right: 8, display: "inline-flex", alignItems: "center", gap: 3,
+            fontSize: 9.5, fontWeight: 700, color: theme.color.onAccent, background: s.color,
+            borderRadius: theme.radius.pill, padding: "2px 7px", boxShadow: theme.shadow.sm, whiteSpace: "nowrap",
+          }}
+        >
+          <Crosshair size={9} /> Explore
+        </span>
+      )}
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
     </div>
   );
@@ -66,19 +90,25 @@ function LineageNodeCard({ data }: NodeProps<Node<LineageNodeData>>) {
 
 function CountNodeCard({ data }: NodeProps<Node<CountNodeData>>) {
   const s = styleFor(data.nodeType);
+  const Icon = s.Icon;
   return (
     <div
-      title="Click to browse all"
+      className="rv-node rv-node--clickable"
+      title="Click to browse the full list of these consumers"
       style={{
-        minWidth: 150, padding: "10px 12px", borderRadius: theme.radius.control,
-        fontFamily: theme.font.sans, textAlign: "center", cursor: "pointer",
+        position: "relative", minWidth: 150, padding: "9px 12px", borderRadius: theme.radius.control,
+        fontFamily: theme.font.sans, textAlign: "center",
         background: s.soft, color: theme.color.textPrimary,
-        border: `1px dashed ${s.border}`,
+        border: `1px dashed ${s.border}`, boxShadow: theme.shadow.xs,
       }}
     >
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
-      <div style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{data.label}</div>
-      <div style={{ fontSize: 10, color: theme.color.textMuted, marginTop: 2 }}>Click to browse</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13, fontWeight: 700, color: s.color }}>
+        <Icon size={12} style={{ flexShrink: 0 }} /> {data.label}
+      </div>
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: theme.color.textMuted, marginTop: 2 }}>
+        <Users size={9} /> Click to browse all
+      </div>
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
     </div>
   );
@@ -206,35 +236,18 @@ export default function LineageFlow({
     if (!d.isRoot) onJump(d.guid, d.nodeType);
   };
 
+  const isolated = nodes.length <= 1;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div
-        style={{
-          display: "flex", alignItems: "center", gap: 10, padding: "8px 14px",
-          borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexShrink: 0,
-        }}
-      >
-        <span style={{ fontSize: 13, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
-          {data.root.name}
-        </span>
-        <span
-          style={{
-            fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: theme.radius.pill,
-            background: theme.color.accentSoft, color: theme.color.accent2, fontFamily: theme.font.sans,
-          }}
-        >
-          {data.impact.downstream_count} downstream object{data.impact.downstream_count === 1 ? "" : "s"} affected
-        </span>
-        {data.capped && (
-          <span
-            title="Some consumers are collapsed — open a count node to browse them all."
-            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: theme.color.warn, fontFamily: theme.font.sans }}
-          >
-            <AlertTriangle size={12} /> large fan-out collapsed
-          </span>
-        )}
-      </div>
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <style>{`
+        .rv-node { transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+        .rv-node--clickable { cursor: pointer; }
+        .rv-node--clickable:hover { transform: translateY(-2px); box-shadow: ${theme.shadow.md}; border-color: ${theme.color.accent2}; }
+        .rv-node .rv-focus { opacity: 0; transform: translateY(2px); transition: opacity .12s ease, transform .12s ease; pointer-events: none; }
+        .rv-node--clickable:hover .rv-focus { opacity: 1; transform: translateY(0); }
+      `}</style>
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -250,6 +263,37 @@ export default function LineageFlow({
         >
           <Background color={theme.color.border} gap={20} />
           <Controls showInteractive={false} />
+          {!isolated && (
+            <Panel position="top-left">
+              <div
+                title="The graph reads left to right: an object's data sources are on its left, and the objects that consume it (and are affected when it changes) are on its right."
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 8, padding: "5px 10px",
+                  borderRadius: theme.radius.pill, background: theme.color.surface,
+                  border: `1px solid ${theme.color.border}`, boxShadow: theme.shadow.sm,
+                  fontFamily: theme.font.sans, fontSize: 11, color: theme.color.textSecondary,
+                }}
+              >
+                <span style={{ fontWeight: 600 }}>Sources</span>
+                <MoveRight size={13} style={{ color: theme.color.textMuted }} />
+                <span style={{ fontWeight: 600 }}>Consumers</span>
+              </div>
+            </Panel>
+          )}
+          {isolated && (
+            <Panel position="top-center">
+              <div
+                style={{
+                  marginTop: 8, padding: "8px 14px", borderRadius: theme.radius.control,
+                  background: theme.color.surface, border: `1px solid ${theme.color.border}`,
+                  boxShadow: theme.shadow.sm, fontFamily: theme.font.sans, fontSize: 12,
+                  color: theme.color.textMuted, textAlign: "center", maxWidth: 320,
+                }}
+              >
+                No related objects found — nothing else in this cluster links to this one.
+              </div>
+            </Panel>
+          )}
         </ReactFlow>
       </div>
     </div>

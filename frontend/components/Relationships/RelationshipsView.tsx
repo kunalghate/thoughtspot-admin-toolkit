@@ -1,17 +1,22 @@
 /**
- * Relationship Visualizer — tabbed lineage explorer.
+ * Relationship Visualizer — lineage explorer.
  *
- * Left: searchable object list per tab (Logical Tables / Answers / Liveboards).
- * Right: the neighborhood-scoped React Flow graph for the selected object, with
- * cross-tab jump (click a consumer → re-root + switch tab, pinned), a breadcrumb
- * of navigation history, and a fan-out drawer for collapsed consumer counts.
+ * Left "Browse" panel: a labeled segmented control (Logical Tables / Answers /
+ * Liveboards) scoping a searchable object list with a "Recently viewed" section.
+ * Right detail panel: a persistent object header (name · type · owner · impact),
+ * a "Path" trail of graph navigation (list click = new path, node jump = append,
+ * crumb click = backtrack), and Lineage graph / Column map sub-tabs. Collapsed
+ * consumer counts open a fan-out drawer.
  *
  * Reads are SQLite-backed and cached per (guid, version) so re-selecting an
  * object is instant; the cache invalidates only after a rebuild.
  */
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GitFork, Loader2, ChevronRight, Hammer } from "lucide-react";
+import {
+  GitFork, Loader2, ChevronRight, Hammer, History, X, AlertTriangle,
+  Table2, BarChart3, LayoutDashboard,
+} from "lucide-react";
 import { relationshipsApi, syncApi, jobsApi } from "@/lib/api";
 import { useToast } from "../Toast";
 import { theme } from "@/lib/theme";
@@ -20,20 +25,23 @@ import { ObjectList } from "./ObjectList";
 import { ConsumersDrawer } from "./ConsumersDrawer";
 import { ColumnsGrid } from "./ColumnsGrid";
 import { Legend } from "./Legend";
-import { rootKindFor, tabForNodeType, type ExplorerTab } from "./nodeStyles";
+import { rootKindFor, styleFor, tabForNodeType, type ExplorerTab } from "./nodeStyles";
 
 const LineageFlow = dynamic(() => import("./LineageFlow"), {
   ssr: false,
   loading: () => <PanelSpinner label="Loading graph…" />,
 });
 
-const TABS: { id: ExplorerTab; label: string }[] = [
-  { id: "logical_tables", label: "Logical Tables" },
-  { id: "answers", label: "Answers" },
-  { id: "liveboards", label: "Liveboards" },
+const TABS: { id: ExplorerTab; label: string; icon: typeof Table2 }[] = [
+  { id: "logical_tables", label: "Logical Tables", icon: Table2 },
+  { id: "answers", label: "Answers", icon: BarChart3 },
+  { id: "liveboards", label: "Liveboards", icon: LayoutDashboard },
 ];
 
-interface Crumb { guid: string; name: string; tab: ExplorerTab; }
+const MAX_RECENT = 8;
+const MAX_TRAIL_SHOWN = 5;
+
+interface Crumb { guid: string; name: string; }
 
 export function RelationshipsView({
   clusterId,
@@ -59,8 +67,8 @@ export function RelationshipsView({
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState<string | null>(null);
 
-  const [pinned, setPinned] = useState<Set<string>>(new Set());
-  const [breadcrumb, setBreadcrumb] = useState<Crumb[]>([]);
+  const [recent, setRecent] = useState<string[]>([]);
+  const [trail, setTrail] = useState<Crumb[]>([]);
   const [detailTab, setDetailTab] = useState<"flow" | "columns">("flow");
   const [drawerType, setDrawerType] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
@@ -128,23 +136,35 @@ export function RelationshipsView({
     else setGraph(null);
   }, [selected, loadGraph]);
 
-  // ── Selection + cross-tab jump ──
-  const selectItem = useCallback((item: TopologyItem, pushCrumb = true) => {
+  // ── Selection: list click starts a new path; graph jump appends to it ──
+  const applySelection = useCallback((item: TopologyItem) => {
     setTab(tabForNodeType(item.node_type));
     setSelected(item);
-    setPinned((prev) => new Set(prev).add(item.ts_guid));
-    if (pushCrumb) {
-      setBreadcrumb((prev) => {
-        if (prev.length && prev[prev.length - 1].guid === item.ts_guid) return prev;
-        return [...prev, { guid: item.ts_guid, name: item.name, tab: tabForNodeType(item.node_type) }];
-      });
-    }
+    setRecent((prev) => [item.ts_guid, ...prev.filter((g) => g !== item.ts_guid)].slice(0, MAX_RECENT));
   }, []);
+
+  const selectFromList = useCallback((item: TopologyItem) => {
+    applySelection(item);
+    setTrail([{ guid: item.ts_guid, name: item.name }]);
+  }, [applySelection]);
 
   const onJump = useCallback((guid: string, _nodeType: string) => {
     const item = guidToItem.get(guid);
-    if (item) selectItem(item);
-  }, [guidToItem, selectItem]);
+    if (!item) return;
+    applySelection(item);
+    setTrail((prev) => {
+      if (prev.length && prev[prev.length - 1].guid === guid) return prev;
+      return [...prev, { guid, name: item.name }];
+    });
+  }, [guidToItem, applySelection]);
+
+  const goToCrumb = useCallback((index: number) => {
+    const crumb = trail[index];
+    const item = crumb && guidToItem.get(crumb.guid);
+    if (!item) return;
+    applySelection(item);
+    setTrail((prev) => prev.slice(0, index + 1));
+  }, [trail, guidToItem, applySelection]);
 
   // ── In-panel "Build lineage" (mirrors the topbar Sync, self-contained) ──
   const triggerBuild = useCallback(async () => {
@@ -177,11 +197,11 @@ export function RelationshipsView({
   const runDeepIndex = useCallback(async () => {
     try {
       await relationshipsApi.deepIndex(clusterId, orgId);
-      toast.success("Deep column index started", {
+      toast.success("Column index build started", {
         hint: "Crawling all saved answers in the background — track it on the Jobs page.",
       });
     } catch (e) {
-      toast.error("Couldn't start deep index", { hint: e instanceof Error ? e.message : String(e) });
+      toast.error("Couldn't start the column index build", { hint: e instanceof Error ? e.message : String(e) });
     }
   }, [clusterId, orgId, toast]);
 
@@ -205,124 +225,224 @@ export function RelationshipsView({
     );
   }
 
+  const graphReady = !!graph && (graph.nodes.length > 1 || lineageBuilt);
+  const showDetailTabs = !!selected && graphReady && !graphLoading && !graphError;
+  const shownTrail = trail.slice(-MAX_TRAIL_SHOWN);
+  const trailOffset = trail.length - shownTrail.length;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Tabs + breadcrumb */}
-      <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexShrink: 0 }}>
-        <div style={{ display: "flex", paddingLeft: 12 }}>
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 6, padding: "10px 16px",
-                fontSize: 13, fontWeight: tab === t.id ? 600 : 400, fontFamily: theme.font.sans,
-                cursor: "pointer", border: "none", background: "transparent",
-                color: tab === t.id ? theme.color.accent2 : theme.color.textMuted,
-                borderBottom: tab === t.id ? `2px solid ${theme.color.accent2}` : "2px solid transparent",
-                marginBottom: -1,
-              }}
-            >
-              {t.label}
-              <span style={{ fontSize: 11, color: theme.color.textMuted }}>{topology[t.id].length}</span>
-            </button>
-          ))}
-        </div>
-        {breadcrumb.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 2, marginLeft: "auto", padding: "0 14px", overflow: "hidden" }}>
-            {breadcrumb.slice(-4).map((c, i, arr) => (
-              <span key={`${c.guid}-${i}`} style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-                {i > 0 && <ChevronRight size={12} style={{ color: theme.color.textMuted }} />}
+    <div style={{ display: "flex", flex: 1, minHeight: 0, height: "100%" }}>
+      {/* ── Left: Browse panel ── */}
+      <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${theme.color.border}`, background: theme.color.surface, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "12px 12px 0", flexShrink: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: theme.color.textMuted, fontFamily: theme.font.sans, marginBottom: 8 }}>
+            Browse
+          </div>
+          <div style={{ display: "flex", gap: 3, padding: 3, background: theme.color.surface2, borderRadius: theme.radius.control }}>
+            {TABS.map((t) => {
+              const active = tab === t.id;
+              const Icon = t.icon;
+              return (
                 <button
-                  onClick={() => { const it = guidToItem.get(c.guid); if (it) selectItem(it, false); }}
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  title={`${t.label} (${topology[t.id].length.toLocaleString()})`}
                   style={{
-                    background: "transparent", border: "none", cursor: "pointer", padding: "2px 4px",
-                    fontSize: 12, fontFamily: theme.font.sans, maxWidth: 130, overflow: "hidden",
-                    textOverflow: "ellipsis", whiteSpace: "nowrap",
-                    color: i === arr.length - 1 ? theme.color.textPrimary : theme.color.textMuted,
-                    fontWeight: i === arr.length - 1 ? 600 : 400,
+                    flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                    padding: "7px 4px", border: "none", cursor: "pointer",
+                    borderRadius: theme.radius.control - 2,
+                    background: active ? theme.color.surface : "transparent",
+                    boxShadow: active ? theme.shadow.xs : "none",
+                    fontFamily: theme.font.sans,
                   }}
                 >
-                  {c.name}
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: active ? 600 : 500, color: active ? theme.color.textPrimary : theme.color.textMuted }}>
+                    <Icon size={12} style={{ color: active ? theme.color.accent2 : theme.color.textMuted, flexShrink: 0 }} />
+                    {t.label}
+                  </span>
+                  <span style={{ fontSize: 10.5, color: theme.color.textMuted }}>{topology[t.id].length.toLocaleString()}</span>
                 </button>
-              </span>
-            ))}
+              );
+            })}
           </div>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <ObjectList
+            items={items}
+            selectedGuid={selected?.ts_guid ?? null}
+            recentGuids={recent}
+            showSubtypeFilter={tab === "logical_tables"}
+            onSelect={selectFromList}
+          />
+        </div>
+
+        {tab === "answers" && (
+          <button
+            onClick={runDeepIndex}
+            title="Runs a background job that scans every saved answer once, so the Column map's “Used by” is complete without opening each answer."
+            style={{
+              display: "flex", alignItems: "center", gap: 9, textAlign: "left",
+              margin: 10, padding: "8px 11px", border: `1px solid ${theme.color.border}`,
+              borderRadius: theme.radius.control, background: theme.color.bg, cursor: "pointer",
+              fontFamily: theme.font.sans,
+            }}
+          >
+            <Hammer size={14} style={{ color: theme.color.accent2, flexShrink: 0 }} />
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: theme.color.textPrimary }}>Build column index</span>
+              <span style={{ display: "block", fontSize: 11, color: theme.color.textMuted }}>Scan all answers in the background</span>
+            </span>
+          </button>
         )}
       </div>
 
-      {/* Body: list + detail */}
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <div style={{ width: 280, flexShrink: 0, borderRight: `1px solid ${theme.color.border}`, background: theme.color.surface, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <div style={{ flex: 1, minHeight: 0 }}>
-            <ObjectList
-              items={items}
-              selectedGuid={selected?.ts_guid ?? null}
-              pinnedGuids={pinned}
-              showSubtypeFilter={tab === "logical_tables"}
-              onSelect={(it) => selectItem(it)}
-            />
-          </div>
-          {tab === "answers" && (
-            <button
-              onClick={runDeepIndex}
-              title="Precompute column usage for every saved answer (background job)."
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                margin: 10, padding: "8px 10px", border: `1px solid ${theme.color.border}`,
-                borderRadius: theme.radius.control, background: theme.color.bg, cursor: "pointer",
-                fontSize: 12, fontWeight: 500, fontFamily: theme.font.sans, color: theme.color.textSecondary,
-              }}
-            >
-              <Hammer size={13} /> Build deep column index
-            </button>
-          )}
-        </div>
-
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-          {selected && graph && (graph.nodes.length > 1 || lineageBuilt) && !graphLoading && !graphError && (
-            <div style={{ display: "flex", gap: 2, padding: "6px 12px 0", borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexShrink: 0 }}>
-              {(["flow", "columns"] as const).map((st) => (
-                <button
-                  key={st}
-                  onClick={() => setDetailTab(st)}
-                  style={{
-                    padding: "6px 14px", fontSize: 12.5, fontWeight: detailTab === st ? 600 : 400,
-                    fontFamily: theme.font.sans, cursor: "pointer", border: "none", background: "transparent",
-                    color: detailTab === st ? theme.color.accent2 : theme.color.textMuted,
-                    borderBottom: detailTab === st ? `2px solid ${theme.color.accent2}` : "2px solid transparent",
-                    marginBottom: -1, textTransform: "capitalize",
-                  }}
-                >
-                  {st === "flow" ? "Flow" : "Columns"}
-                  {st === "columns" && graph.columns.length > 0 && (
-                    <span style={{ marginLeft: 6, fontSize: 11, color: theme.color.textMuted }}>{graph.columns.length}</span>
-                  )}
-                </button>
+      {/* ── Right: detail panel ── */}
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {/* Path trail — appears once you navigate deeper than one object */}
+        {trail.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 14px", borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface2, flexShrink: 0, fontFamily: theme.font.sans }}>
+            <History size={12} style={{ color: theme.color.textMuted, flexShrink: 0 }} />
+            <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: theme.color.textMuted, flexShrink: 0 }}>
+              Path
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0, overflow: "hidden" }}>
+              {trailOffset > 0 && <span style={{ fontSize: 12, color: theme.color.textMuted }}>…</span>}
+              {shownTrail.map((c, i, arr) => (
+                <span key={`${c.guid}-${trailOffset + i}`} style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                  {(i > 0 || trailOffset > 0) && <ChevronRight size={12} style={{ color: theme.color.textMuted, flexShrink: 0 }} />}
+                  <button
+                    onClick={() => goToCrumb(trailOffset + i)}
+                    title={i === arr.length - 1 ? c.name : `Back to ${c.name}`}
+                    style={{
+                      background: "transparent", border: "none", cursor: "pointer", padding: "2px 4px",
+                      fontSize: 12, fontFamily: theme.font.sans, maxWidth: 150, overflow: "hidden",
+                      textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      color: i === arr.length - 1 ? theme.color.textPrimary : theme.color.textMuted,
+                      fontWeight: i === arr.length - 1 ? 600 : 400,
+                      textDecoration: i === arr.length - 1 ? "none" : "underline",
+                      textDecorationColor: theme.color.borderLight,
+                      textUnderlineOffset: 3,
+                    }}
+                  >
+                    {c.name}
+                  </button>
+                </span>
               ))}
             </div>
-          )}
-          <div style={{ flex: 1, minHeight: 0 }}>
-            {!selected ? (
-              <CenteredMessage>
-                <GitFork size={28} style={{ color: theme.color.accent }} />
-                <div style={{ marginTop: 10 }}>Select an object to see its lineage.</div>
-              </CenteredMessage>
-            ) : graphLoading ? (
-              <PanelSpinner label="Loading graph…" />
-            ) : graphError ? (
-              <CenteredMessage><strong>Couldn&apos;t load lineage.</strong> {graphError}</CenteredMessage>
-            ) : graph && (graph.nodes.length > 1 || lineageBuilt) ? (
-              detailTab === "flow" ? (
-                <LineageFlow data={graph} onJump={onJump} onOpenDrawer={setDrawerType} />
-              ) : (
-                <ColumnsGrid columns={graph.columns} onJump={onJump} />
-              )
-            ) : (
-              <BuildLineagePrompt building={building} progress={buildProgress} onBuild={triggerBuild} />
-            )}
+            <button
+              onClick={() => setTrail((prev) => prev.slice(-1))}
+              title="Clear the navigation path"
+              style={{
+                marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0,
+                background: "transparent", border: "none", cursor: "pointer", padding: "2px 4px",
+                fontSize: 11, fontFamily: theme.font.sans, color: theme.color.textMuted,
+              }}
+            >
+              <X size={11} /> Clear
+            </button>
           </div>
-          <Legend />
+        )}
+
+        {/* Object header — one row: identity · view switch · impact. */}
+        {selected && (() => {
+          const s = styleFor(selected.node_type);
+          const SIcon = s.Icon;
+          const downstream = graph?.impact.downstream_count ?? 0;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 16px", borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexShrink: 0, fontFamily: theme.font.sans, minWidth: 0 }}>
+              <SIcon size={16} style={{ color: s.color, flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: theme.color.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {selected.name}
+              </span>
+              <span
+                style={{
+                  fontSize: 10.5, fontWeight: 600, padding: "1px 8px", borderRadius: theme.radius.pill, flexShrink: 0,
+                  background: s.soft, color: s.color, border: `1px solid ${s.border}`,
+                }}
+              >
+                {selected.subtype}
+              </span>
+              {selected.owner_name && (
+                <span style={{ fontSize: 12, color: theme.color.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 40 }}>
+                  Owner: {selected.owner_name}
+                </span>
+              )}
+              <span style={{ flex: 1 }} />
+              {showDetailTabs && graph && (
+                <>
+                  {graph.capped && (
+                    <span
+                      title="Some consumers are grouped into count nodes — click one to browse the full list."
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: theme.color.warn, flexShrink: 0 }}
+                    >
+                      <AlertTriangle size={12} /> large fan-out grouped
+                    </span>
+                  )}
+                  <span
+                    title="Objects that consume this one, directly or indirectly. Anything here is affected if this object changes."
+                    style={{
+                      fontSize: 11, fontWeight: 600, padding: "2px 9px", borderRadius: theme.radius.pill, flexShrink: 0,
+                      background: downstream > 0 ? theme.color.accentSoft : theme.color.surface2,
+                      color: downstream > 0 ? theme.color.accent2 : theme.color.textMuted,
+                    }}
+                  >
+                    {downstream > 0
+                      ? `${downstream.toLocaleString()} downstream object${downstream === 1 ? "" : "s"}`
+                      : "No downstream objects"}
+                  </span>
+                  {/* View switch — segmented control matching the Browse panel. */}
+                  <div style={{ display: "flex", gap: 3, padding: 3, background: theme.color.surface2, borderRadius: theme.radius.control, flexShrink: 0 }}>
+                    {([["flow", "Lineage graph"], ["columns", "Column map"]] as const).map(([id, label]) => {
+                      const activeView = detailTab === id;
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => setDetailTab(id)}
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 12px",
+                            border: "none", cursor: "pointer", borderRadius: theme.radius.control - 2,
+                            background: activeView ? theme.color.surface : "transparent",
+                            boxShadow: activeView ? theme.shadow.xs : "none",
+                            fontSize: 12, fontWeight: activeView ? 600 : 500, fontFamily: theme.font.sans,
+                            color: activeView ? theme.color.textPrimary : theme.color.textMuted,
+                          }}
+                        >
+                          {label}
+                          {id === "columns" && graph.columns.length > 0 && (
+                            <span style={{ fontSize: 10.5, color: theme.color.textMuted }}>{graph.columns.length}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })()}
+
+        <div style={{ flex: 1, minHeight: 0 }}>
+          {!selected ? (
+            <GettingStarted />
+          ) : graphLoading ? (
+            <PanelSpinner label="Loading graph…" />
+          ) : graphError ? (
+            <CenteredMessage><strong>Couldn&apos;t load lineage.</strong> {graphError}</CenteredMessage>
+          ) : graph && graphReady ? (
+            detailTab === "flow" ? (
+              <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <LineageFlow data={graph} onJump={onJump} onOpenDrawer={setDrawerType} />
+                </div>
+                <Legend />
+              </div>
+            ) : (
+              <ColumnsGrid columns={graph.columns} onJump={onJump} />
+            )
+          ) : (
+            <BuildLineagePrompt building={building} progress={buildProgress} onBuild={triggerBuild} />
+          )}
         </div>
       </div>
 
@@ -357,6 +477,35 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 32, fontSize: 14, color: theme.color.textMuted, fontFamily: theme.font.sans, maxWidth: 480, margin: "0 auto" }}>
       {children}
+    </div>
+  );
+}
+
+const STEPS: [string, React.ReactNode][] = [
+  ["Pick a type", <>Choose <strong>Logical Tables</strong>, <strong>Answers</strong>, or <strong>Liveboards</strong> in the Browse panel.</>],
+  ["Select an object", <>See where its data comes from and every object that depends on it.</>],
+  ["Follow the graph", <>Click any node to explore it next — your <strong>Path</strong> shows at the top so you can backtrack.</>],
+];
+
+function GettingStarted() {
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, fontFamily: theme.font.sans, maxWidth: 440, margin: "0 auto", gap: 14 }}>
+      <div style={{ width: 52, height: 52, borderRadius: 14, background: theme.color.accentSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <GitFork size={24} style={{ color: theme.color.accent2 }} />
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary }}>Explore your data lineage</div>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
+        {STEPS.map(([title, body], i) => (
+          <li key={title} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <span style={{ width: 20, height: 20, borderRadius: theme.radius.pill, flexShrink: 0, background: theme.color.surface2, border: `1px solid ${theme.color.border}`, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600, color: theme.color.textSecondary }}>
+              {i + 1}
+            </span>
+            <span style={{ fontSize: 13, lineHeight: 1.5, color: theme.color.textMuted }}>
+              <strong style={{ color: theme.color.textPrimary, fontWeight: 600 }}>{title}.</strong> {body}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
