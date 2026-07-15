@@ -729,4 +729,18 @@ export const relationshipsApi = {
     if (params.limit)           q.set("limit", String(params.limit));
     return request<ConsumersResponse>(`/relationships/${rootKind}/${encodeURIComponent(guid)}/consumers?${q}`);
   },
+
+  // Lazily index one saved answer's column usage (1 TML export, memoized server-side).
+  indexAnswer: (guid: string, clusterId: string, orgId: number) =>
+    request<{ guid: string; rows_written: number }>(
+      `/relationships/answer/${encodeURIComponent(guid)}/index?cluster_id=${clusterId}&org_id=${orgId}`,
+      { method: "POST" },
+    ),
+
+  // Opt-in: crawl ALL saved answers' column usage as a background job.
+  deepIndex: (clusterId: string, orgId: number) =>
+    request<{ job_id: string }>(
+      `/relationships/deep-index?cluster_id=${clusterId}&org_id=${orgId}`,
+      { method: "POST" },
+    ),
 };

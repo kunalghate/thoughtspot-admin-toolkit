@@ -698,6 +698,225 @@ def _persist_column_map(
     return count
 
 
+# ── BUILD: Phase 3 saved-answer column usage (lazy / opt-in) + debug ────────────
+#
+# Saved-answer column usage is the largest TML set — never a mandatory crawl.
+# index_answer exports one answer on open (memoized); run_deep_index is the
+# opt-in "Build deep column index" that crawls all answers incrementally.
+
+
+def _usage_rows_from_answer(*, guid: str, name: str, body: dict, cluster_id: str, org_id: int) -> list:
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+
+    model_guids, used_cols = _extract_col_usage_from_answer(body)
+    rows = []
+    for model_guid in model_guids:
+        for col_name in used_cols:
+            rows.append(
+                CachedColumnUsage(
+                    cluster_id=cluster_id, org_id=org_id,
+                    model_guid=model_guid, model_column_name=col_name,
+                    consumer_guid=guid, consumer_type="ANSWER", consumer_name=name,
+                )
+            )
+    return rows
+
+
+async def index_answer(*, cluster_id: str, org_id: int, guid: str) -> int:
+    """
+    Lazily index one saved answer's column usage (1 TML export, memoized). Called
+    when an answer is opened. Returns rows written (0 if already indexed, not an
+    answer, or inaccessible).
+    """
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    with get_session() as session:
+        already = session.exec(
+            select(CachedColumnUsage.id).where(
+                CachedColumnUsage.cluster_id == cluster_id,
+                CachedColumnUsage.org_id == org_id,
+                CachedColumnUsage.consumer_guid == guid,
+                CachedColumnUsage.consumer_type == "ANSWER",
+            )
+        ).first()
+        if already is not None:
+            return 0
+        name_row = session.exec(
+            select(CachedMetadata.name).where(
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+                CachedMetadata.ts_guid == guid,
+            )
+        ).first()
+
+    cluster = _get_cluster(cluster_id)
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
+        items = await client.tml_export(object_ids=[guid], edoc_format="JSON")
+    edoc = _load_edoc(items[0]) if items else None
+    if edoc is None:
+        return 0
+    kind, body = _classify_edoc(edoc)
+    if kind != "answer":
+        return 0
+
+    rows = _usage_rows_from_answer(guid=guid, name=name_row or "", body=body, cluster_id=cluster_id, org_id=org_id)
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        for row in rows:
+            row.synced_at = now
+            session.add(row)
+        session.commit()
+    return len(rows)
+
+
+async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incremental: bool = True) -> int:
+    """
+    Opt-in deep index: crawl ALL saved answers' column usage incrementally (the
+    largest TML set). Same modified_at skip logic as the liveboard pass.
+    """
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    with get_session() as session:
+        answer_rows = session.exec(
+            select(CachedMetadata.ts_guid, CachedMetadata.name, CachedMetadata.modified_at).where(
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+                CachedMetadata.object_type == "ANSWER",
+            )
+        ).all()
+        last_built = session.exec(
+            select(func.max(CachedColumnUsage.synced_at)).where(
+                CachedColumnUsage.cluster_id == cluster_id,
+                CachedColumnUsage.org_id == org_id,
+                CachedColumnUsage.consumer_type == "ANSWER",
+            )
+        ).first()
+
+    def _changed(modified_at) -> bool:
+        return not incremental or last_built is None or modified_at is None or modified_at > last_built
+
+    names = {r[0]: r[1] for r in answer_rows}
+    answer_guids = [r[0] for r in answer_rows if _changed(r[2])]
+    if not answer_guids:
+        mark_complete(job_id, {"entity_type": "answer_index", "record_count": 0})
+        return 0
+
+    mark_running(job_id, total=len(answer_guids))
+    cluster = _get_cluster(cluster_id)
+    all_rows: list = []
+    progress = 0
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
+        for chunk in _chunks(answer_guids, 50):
+            items = await client.tml_export(object_ids=chunk, edoc_format="JSON")
+            for item in items:
+                edoc = _load_edoc(item)
+                if edoc is None:
+                    continue
+                guid = edoc.get("guid") or (item.get("info") or {}).get("id") or ""
+                kind, body = _classify_edoc(edoc)
+                if kind != "answer" or not guid:
+                    continue
+                all_rows.extend(
+                    _usage_rows_from_answer(
+                        guid=guid, name=names.get(guid, ""), body=body, cluster_id=cluster_id, org_id=org_id
+                    )
+                )
+            progress += len(chunk)
+            update_progress(job_id, progress)
+
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        session.exec(
+            sql_delete(CachedColumnUsage).where(
+                CachedColumnUsage.cluster_id == cluster_id,
+                CachedColumnUsage.org_id == org_id,
+                CachedColumnUsage.consumer_type == "ANSWER",
+                col(CachedColumnUsage.consumer_guid).in_(answer_guids),
+            )
+        )
+        session.commit()
+        for row in all_rows:
+            row.synced_at = now
+            session.add(row)
+        session.commit()
+    mark_complete(job_id, {"entity_type": "answer_index", "record_count": len(all_rows)})
+    logger.info("Deep answer index: %d usage rows for cluster=%s org=%s", len(all_rows), cluster_id, org_id)
+    return len(all_rows)
+
+
+async def run_deep_index(cluster_id: str, org_id: int, job_id: str) -> None:
+    """Background-task wrapper for build_answer_index with job/error accounting."""
+    from ts_admin.services.job_service import mark_failed
+
+    try:
+        await build_answer_index(cluster_id=cluster_id, org_id=org_id, job_id=job_id)
+    except Exception as exc:
+        logger.exception("Deep answer index failed: %s", exc)
+        mark_failed(job_id, exc)
+
+
+async def debug_tml(*, cluster_id: str, org_id: int, guid: str) -> dict:
+    """
+    Export one object's TML and return raw keys + the parsed result — the primary
+    tool for validating parser fidelity against a real cluster (Phase 3 risk #1).
+    """
+    from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    cluster = _get_cluster(cluster_id)
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
+        items = await client.tml_export(object_ids=[guid], edoc_format="JSON")
+
+    if not items:
+        return {"guid": guid, "accessible": False, "edoc_keys": [], "kind": "", "parsed": None}
+    item = items[0]
+    edoc = _load_edoc(item)
+    if edoc is None:
+        return {"guid": guid, "accessible": False, "edoc_keys": [], "kind": "", "parsed": None}
+
+    kind, body = _classify_edoc(edoc)
+    parsed: dict | list | None = None
+    if kind in _SOURCE_KINDS:
+        parsed = _parse_physical_source(body)
+    elif kind in _MODEL_KINDS:
+        rows = _resolve_model_columns(
+            guid=guid, body=body, physical_by_guid={}, physical_by_name={}, cluster_id=cluster_id, org_id=org_id
+        )
+        parsed = [
+            {
+                "model_column_name": r.model_column_name,
+                "table_column_name": r.table_column_name,
+                "table_guid": r.table_guid,
+            }
+            for r in rows
+        ]
+    elif kind == "answer":
+        model_guids, used = _extract_col_usage_from_answer(body)
+        parsed = {"model_guids": model_guids, "used_columns": sorted(used)}
+    elif kind == "liveboard":
+        embedded = []
+        for answer in _embedded_answers(body):
+            model_guids, used = _extract_col_usage_from_answer(answer)
+            embedded.append(
+                {"answer": answer.get("name", ""), "model_guids": model_guids, "used_columns": sorted(used)}
+            )
+        parsed = embedded
+
+    return {
+        "guid": guid,
+        "accessible": True,
+        "edoc_keys": sorted(edoc.keys()),
+        "kind": kind,
+        "parsed": parsed,
+    }
+
+
 # ── READ: topology (left-list universe) ─────────────────────────────────────────
 
 

@@ -417,10 +417,13 @@ async def _sync_dependencies(*, org_id: int, job_id: str) -> None:
 
     # Phase 2: column map + connection/liveboard edges (best-effort enrichment;
     # a failure here must not undo the object tier already committed above).
+    # Only a genuine session death (auth) propagates — so run_sync flips the
+    # cluster to expired. A missing DATADOWNLOADING privilege (or any other error)
+    # is swallowed: the object graph stands, columns just stay empty, job completes.
     column_count = 0
     try:
         column_count = await lineage_service.build_column_map(cluster_id=cluster_id, org_id=org_id, job_id=job_id)
-    except (TSAuthenticationError, TSInsufficientPrivilegesError):
+    except TSAuthenticationError:
         raise
     except Exception as exc:
         logger.warning("Column-map pass failed (object tier kept): %s", exc)

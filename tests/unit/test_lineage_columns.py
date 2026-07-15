@@ -46,6 +46,16 @@ MODEL_EDOC = {
         ],
     },
 }
+ANSWER_EDOC = {
+    "guid": "answer-1",
+    "answer": {
+        "name": "Rev answer",
+        "tables": [{"name": "Sales Model", "fqn": "model-1"}],
+        "search_query": "[Total Revenue]",
+        "answer_columns": [{"name": "Total Revenue"}],
+        "table": {"table_columns": [{"column_id": "Total Revenue"}]},
+    },
+}
 LIVEBOARD_EDOC = {
     "guid": "lb-1",
     "liveboard": {
@@ -158,7 +168,7 @@ class _FakeTMLClient:
 
     async def tml_export(self, *, object_ids, edoc_format=None):
         self.exported.extend(object_ids)
-        by_guid = {"table-1": TABLE_EDOC, "model-1": MODEL_EDOC, "lb-1": LIVEBOARD_EDOC}
+        by_guid = {"table-1": TABLE_EDOC, "model-1": MODEL_EDOC, "lb-1": LIVEBOARD_EDOC, "answer-1": ANSWER_EDOC}
         out = []
         for guid in object_ids:
             edoc = by_guid.get(guid)
@@ -178,6 +188,7 @@ def _seed(engine, *, lb_modified: datetime | None = None):
             ("table-1", "SALES", "ONE_TO_ONE_LOGICAL", now),
             ("model-1", "Sales Model", "WORKSHEET", now),
             ("lb-1", "Sales LB", "LIVEBOARD", lb_modified or now),
+            ("answer-1", "Rev answer", "ANSWER", now),
         ]
         for guid, name, otype, modified in rows:
             session.add(
@@ -276,3 +287,60 @@ async def test_graph_columns_populated_after_build(monkeypatch, in_memory_db, pa
     lb_cols = {c["model_column_name"]: c for c in lb_graph["columns"]}
     assert set(lb_cols) == {"Total Revenue", "Region"}
     assert lb_cols["Region"]["db_column_name"] == "REGION"
+
+
+# ── Phase 3: lazy answer indexing + debug ────────────────────────────────────────
+
+
+async def test_index_answer_is_lazy_and_memoized(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    n1 = await lineage_service.index_answer(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1")
+    assert n1 == 1  # one used column → one usage row
+    assert fake.exported == ["answer-1"]
+
+    with Session(in_memory_db) as session:
+        usage = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_guid == "answer-1")).all()
+    assert usage[0].consumer_type == "ANSWER"
+    assert usage[0].model_guid == "model-1"
+
+    # Second call is memoized: no re-export, no new rows.
+    fake.exported.clear()
+    n2 = await lineage_service.index_answer(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1")
+    assert n2 == 0
+    assert fake.exported == []
+
+
+async def test_answer_columns_show_after_lazy_index(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    # Column map first (builds model lineage), then lazily index the answer.
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    await lineage_service.index_answer(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1")
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1", root_kind="answer")
+    cols = {c["model_column_name"]: c for c in graph["columns"]}
+    assert "Total Revenue" in cols
+    assert cols["Total Revenue"]["db_column_name"] == "REVENUE"  # resolved through the model
+
+
+async def test_debug_tml_reports_kind_and_parsed(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    dbg = await lineage_service.debug_tml(cluster_id=CLUSTER_ID, org_id=0, guid="model-1")
+    assert dbg["accessible"] is True
+    assert dbg["kind"] == "worksheet"
+    assert "worksheet" in dbg["edoc_keys"]
+    assert any(row["model_column_name"] == "Total Revenue" for row in dbg["parsed"])

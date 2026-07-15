@@ -13,6 +13,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitFork, Loader2, ChevronRight, Hammer } from "lucide-react";
 import { relationshipsApi, syncApi, jobsApi } from "@/lib/api";
+import { useToast } from "../Toast";
 import { theme } from "@/lib/theme";
 import type { LineageGraphResponse, RootKind, TopologyItem, TopologyResponse } from "@/lib/types";
 import { ObjectList } from "./ObjectList";
@@ -65,7 +66,9 @@ export function RelationshipsView({
   const [building, setBuilding] = useState(false);
   const [buildProgress, setBuildProgress] = useState<number | null>(null);
 
+  const toast = useToast();
   const graphCache = useRef<Map<string, LineageGraphResponse>>(new Map());
+  const indexedAnswers = useRef<Set<string>>(new Set());
   const guidToItem = useMemo(() => {
     const m = new Map<string, TopologyItem>();
     if (topology) {
@@ -78,6 +81,7 @@ export function RelationshipsView({
   useEffect(() => {
     let cancelled = false;
     graphCache.current.clear();
+    indexedAnswers.current.clear();
     Promise.all([
       relationshipsApi.topology(clusterId, orgId),
       syncApi.status(clusterId, orgId).catch(() => []),
@@ -102,6 +106,12 @@ export function RelationshipsView({
     setGraphLoading(true);
     setGraphError(null);
     try {
+      // Lazily index a saved answer's column usage on first open (memoized
+      // server-side; 1 TML export). Best-effort — the graph still renders if it fails.
+      if (rootKind === "answer" && !indexedAnswers.current.has(`${version}:${item.ts_guid}`)) {
+        indexedAnswers.current.add(`${version}:${item.ts_guid}`);
+        try { await relationshipsApi.indexAnswer(item.ts_guid, clusterId, orgId); } catch { /* keep object-level view */ }
+      }
       const g = await relationshipsApi.graph(rootKind, item.ts_guid, clusterId, orgId);
       graphCache.current.set(key, g);
       setGraph(g);
@@ -163,6 +173,17 @@ export function RelationshipsView({
       setBuildProgress(null);
     }
   }, [clusterId, orgId]);
+
+  const runDeepIndex = useCallback(async () => {
+    try {
+      await relationshipsApi.deepIndex(clusterId, orgId);
+      toast.success("Deep column index started", {
+        hint: "Crawling all saved answers in the background — track it on the Jobs page.",
+      });
+    } catch (e) {
+      toast.error("Couldn't start deep index", { hint: e instanceof Error ? e.message : String(e) });
+    }
+  }, [clusterId, orgId, toast]);
 
   const items = topology ? topology[tab] : [];
   const lineageBuilt = depStatus === "SUCCESS";
@@ -232,14 +253,30 @@ export function RelationshipsView({
 
       {/* Body: list + detail */}
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <div style={{ width: 280, flexShrink: 0, borderRight: `1px solid ${theme.color.border}`, background: theme.color.surface, minHeight: 0 }}>
-          <ObjectList
-            items={items}
-            selectedGuid={selected?.ts_guid ?? null}
-            pinnedGuids={pinned}
-            showSubtypeFilter={tab === "logical_tables"}
-            onSelect={(it) => selectItem(it)}
-          />
+        <div style={{ width: 280, flexShrink: 0, borderRight: `1px solid ${theme.color.border}`, background: theme.color.surface, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ObjectList
+              items={items}
+              selectedGuid={selected?.ts_guid ?? null}
+              pinnedGuids={pinned}
+              showSubtypeFilter={tab === "logical_tables"}
+              onSelect={(it) => selectItem(it)}
+            />
+          </div>
+          {tab === "answers" && (
+            <button
+              onClick={runDeepIndex}
+              title="Precompute column usage for every saved answer (background job)."
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                margin: 10, padding: "8px 10px", border: `1px solid ${theme.color.border}`,
+                borderRadius: theme.radius.control, background: theme.color.bg, cursor: "pointer",
+                fontSize: 12, fontWeight: 500, fontFamily: theme.font.sans, color: theme.color.textSecondary,
+              }}
+            >
+              <Hammer size={13} /> Build deep column index
+            </button>
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>

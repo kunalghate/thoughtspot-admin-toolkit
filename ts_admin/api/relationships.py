@@ -17,10 +17,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
 from ts_admin.services import lineage_service
+from ts_admin.ts_client.exceptions import (
+    TSAuthenticationError,
+    TSConnectionError,
+    TSInsufficientPrivilegesError,
+    TSObjectNotFoundError,
+    TSResponseParseError,
+    TSServerError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/relationships", tags=["Relationships"])
@@ -109,6 +117,23 @@ class ConsumersResponse(BaseModel):
     limit: int
 
 
+class AnswerIndexResponse(BaseModel):
+    guid: str
+    rows_written: int  # 0 = already indexed / not an answer / inaccessible
+
+
+class DeepIndexResponse(BaseModel):
+    job_id: str
+
+
+class DebugTMLResponse(BaseModel):
+    guid: str
+    accessible: bool
+    edoc_keys: list[str]
+    kind: str
+    parsed: dict | list | None = None
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 
@@ -120,6 +145,67 @@ def get_topology(
     """The searchable left-list universe, grouped into the three explorer tabs."""
     result = lineage_service.get_topology(cluster_id=_resolve_cluster_id(cluster_id), org_id=org_id)
     return TopologyResponse(**result)
+
+
+# Registered before the generic /{root_kind}/{guid} routes so their literal
+# segments ("index", "deep-index", "debug") are never captured as a root_kind.
+
+
+@router.post("/answer/{guid}/index", response_model=AnswerIndexResponse)
+async def index_answer(
+    guid: str,
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
+) -> AnswerIndexResponse:
+    """Lazily index one saved answer's column usage (1 TML export, memoized)."""
+    try:
+        rows = await lineage_service.index_answer(cluster_id=_resolve_cluster_id(cluster_id), org_id=org_id, guid=guid)
+    except TSAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except TSInsufficientPrivilegesError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except TSObjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (TSConnectionError, TSServerError, TSResponseParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return AnswerIndexResponse(guid=guid, rows_written=rows)
+
+
+@router.post("/deep-index", response_model=DeepIndexResponse, status_code=202)
+def build_deep_index(
+    background_tasks: BackgroundTasks,
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
+) -> DeepIndexResponse:
+    """Opt-in: crawl ALL saved answers' column usage as a background job."""
+    from ts_admin.services.job_service import create_job
+
+    resolved = _resolve_cluster_id(cluster_id)
+    job_id = create_job(
+        job_type="lineage_deep_index",
+        parameters={"cluster_id": resolved, "org_id": org_id},
+        cluster_id=resolved,
+    )
+    background_tasks.add_task(lineage_service.run_deep_index, resolved, org_id, job_id)
+    return DeepIndexResponse(job_id=job_id)
+
+
+@router.get("/debug/tml/{guid}", response_model=DebugTMLResponse)
+async def debug_tml(
+    guid: str,
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
+) -> DebugTMLResponse:
+    """Raw TML keys + parsed result — validate parser fidelity against a real cluster."""
+    try:
+        result = await lineage_service.debug_tml(cluster_id=_resolve_cluster_id(cluster_id), org_id=org_id, guid=guid)
+    except TSAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except TSInsufficientPrivilegesError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (TSConnectionError, TSServerError, TSResponseParseError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return DebugTMLResponse(**result)
 
 
 @router.get("/{root_kind}/{guid}", response_model=LineageGraphResponse)

@@ -75,6 +75,13 @@ using httpx. Do not import `cs_tools` as a library.
 - Schema is versioned with Alembic from day one, making a future migration to
   Postgres (for multi-user deployment) a config change rather than a rewrite
 
+> **Correction (implementation reality):** `alembic/` exists but is **not** wired
+> into the runtime path. `database.init_db()` calls `SQLModel.metadata.create_all`
+> (additive-only — new tables auto-create, but column changes are not migrated).
+> Rebuildable cache tables (the lineage tables `ts_dependencies`,
+> `ts_column_lineage`, `ts_column_usage`) intentionally use **drop-and-rebuild via
+> re-sync** on schema bumps rather than a migration.
+
 **All tables:** clusters, ts_users, ts_groups, ts_metadata, ts_tags, ts_dependencies,
 sync_log, audit_log, jobs.
 
