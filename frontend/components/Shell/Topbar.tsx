@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, RefreshCw, WifiOff } from "lucide-react";
+import { theme } from "@/lib/theme";
 import type { EntityType, Org, SyncLog } from "@/lib/types";
 
 const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
@@ -42,22 +43,22 @@ export default function Topbar({
 
   return (
     <header style={{
-      height: 52, background: "#FAF8F4",
-      borderBottom: "1px solid #E8E1D5",
+      height: 52, background: theme.color.surface,
+      borderBottom: `1px solid ${theme.color.border}`,
       display: "flex", alignItems: "center",
       padding: "0 24px", gap: 12, flexShrink: 0,
     }}>
       {/* Page title + optional offline badge */}
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10 }}>
-        <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+        <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
           {pageTitle}
         </h1>
         {isOffline && (
           <div style={{
             display: "flex", alignItems: "center", gap: 5,
             padding: "3px 10px", borderRadius: 20,
-            background: "#FEF2F2", border: "1px solid #FECACA",
-            fontSize: 12, color: "#991B1B", fontFamily: "Geist, sans-serif",
+            background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
+            fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
           }}>
             <WifiOff size={11} />
             Cluster offline — showing cached data
@@ -69,7 +70,7 @@ export default function Topbar({
       <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 96 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
-          <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
             {syncLabel}
           </span>
         </div>
@@ -83,10 +84,11 @@ export default function Topbar({
         title={isOffline ? "Cannot sync — cluster is offline" : undefined}
         style={{
           display: "flex", alignItems: "center", gap: 5,
-          padding: "5px 11px", borderRadius: 5, border: "none",
-          background: "#8B5CF6", color: "white",
+          padding: "5px 11px", borderRadius: 6, border: "none",
+          background: theme.gradient.accent, color: theme.color.onAccent,
+          boxShadow: syncDisabled ? "none" : theme.shadow.glowAccent,
           cursor: syncDisabled ? "default" : "pointer",
-          fontSize: 12, fontWeight: 500, fontFamily: "Geist, sans-serif",
+          fontSize: 12, fontWeight: 600, fontFamily: theme.font.sans,
           opacity: syncDisabled ? 0.5 : 1,
         }}
       >
@@ -100,21 +102,21 @@ export default function Topbar({
           onClick={() => setOrgDropdownOpen((o) => !o)}
           style={{
             display: "flex", alignItems: "center", gap: 6,
-            padding: "5px 10px", borderRadius: 5, cursor: "pointer",
-            border: "1px solid #E8E1D5", background: "#FAF8F4",
-            fontFamily: "Geist, sans-serif",
+            padding: "5px 10px", borderRadius: 6, cursor: "pointer",
+            border: `1px solid ${theme.color.borderLight}`, background: theme.color.surface,
+            fontFamily: theme.font.sans,
           }}
         >
           {/* Cluster name — static, non-clickable */}
-          <span style={{ fontSize: 11, color: "#7A7068", fontWeight: 400 }}>
+          <span style={{ fontSize: 11, color: theme.color.textMuted, fontWeight: 400 }}>
             {clusterName}
           </span>
-          <span style={{ color: "#E8E1D5" }}>·</span>
+          <span style={{ color: theme.color.border }}>·</span>
           {/* Active org — clickable */}
-          <span style={{ fontSize: 12, color: "#1A1714", fontWeight: 500 }}>
+          <span style={{ fontSize: 12, color: theme.color.textPrimary, fontWeight: 500 }}>
             {activeOrg?.name ?? "All Orgs"}
           </span>
-          <ChevronDown size={12} style={{ color: "#7A7068" }} />
+          <ChevronDown size={12} style={{ color: theme.color.textMuted }} />
         </button>
 
         {orgDropdownOpen && (
@@ -148,19 +150,19 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
 
       <div style={{
         position: "absolute", right: 0, top: "calc(100% + 6px)",
-        background: "#FAF8F4", border: "1px solid #E8E1D5",
-        borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
+        background: theme.color.surface, border: `1px solid ${theme.color.border}`,
+        borderRadius: 8, boxShadow: theme.shadow.md,
         minWidth: 220, zIndex: 20, overflow: "hidden",
-        fontFamily: "Geist, sans-serif",
+        fontFamily: theme.font.sans,
       }}>
-        <div style={{ padding: "8px 12px 6px", borderBottom: "1px solid #F0EBE3" }}>
-          <span style={{ fontSize: 10, color: "#7A7068", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500 }}>
+        <div style={{ padding: "8px 12px 6px", borderBottom: `1px solid ${theme.color.border}` }}>
+          <span style={{ fontSize: 10, color: theme.color.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500 }}>
             Switch Org
           </span>
         </div>
 
         {orgs.length > 8 && (
-          <div style={{ padding: "6px 10px", borderBottom: "1px solid #F0EBE3" }}>
+          <div style={{ padding: "6px 10px", borderBottom: `1px solid ${theme.color.border}` }}>
             <input
               autoFocus
               placeholder="Search orgs…"
@@ -168,9 +170,9 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
               onChange={(e) => setOrgSearch(e.target.value)}
               style={{
                 width: "100%", padding: "5px 8px", fontSize: 12,
-                border: "1px solid #E8E1D5", borderRadius: 5,
-                background: "#FFFFFF", color: "#1A1714", outline: "none",
-                fontFamily: "Geist, sans-serif", boxSizing: "border-box",
+                border: `1px solid ${theme.color.borderLight}`, borderRadius: 5,
+                background: theme.color.bg, color: theme.color.textPrimary, outline: "none",
+                fontFamily: theme.font.sans, boxSizing: "border-box",
               }}
             />
           </div>
@@ -186,19 +188,19 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
                 style={{
                   width: "100%", display: "flex", alignItems: "center",
                   justifyContent: "space-between", padding: "8px 12px",
-                  background: active ? "#EDE9FE" : "transparent",
+                  background: active ? theme.color.accentSoft : "transparent",
                   border: "none", cursor: "pointer", textAlign: "left",
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: active ? "#6D28D9" : "#1A1714" }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: active ? theme.color.accent2 : theme.color.textPrimary }}>
                     {org.name}
                   </div>
                   {org.org_id === 0 && (
-                    <div style={{ fontSize: 10, color: "#7A7068" }}>Primary org</div>
+                    <div style={{ fontSize: 10, color: theme.color.textMuted }}>Primary org</div>
                   )}
                 </div>
-                {active && <span style={{ fontSize: 12, color: "#8B5CF6" }}>✓</span>}
+                {active && <span style={{ fontSize: 12, color: theme.color.accent }}>✓</span>}
               </button>
             );
           })}
@@ -235,15 +237,15 @@ function buildSyncLabel(
 }
 
 function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): string {
-  if (isSyncing) return "#8B5CF6";
-  if (!log || log.status === "NOT_SYNCED") return "#DC2626";
-  if (log.status === "FAILED") return "#DC2626";
-  if (!log.synced_at) return "#7A7068";
+  if (isSyncing) return theme.color.accent;
+  if (!log || log.status === "NOT_SYNCED") return theme.color.danger;
+  if (log.status === "FAILED") return theme.color.danger;
+  if (!log.synced_at) return theme.color.textMuted;
 
   const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;
-  if (hours < 1) return "#059669";
-  if (hours < 6) return "#7A7068";
-  return "#D97706";
+  if (hours < 1) return theme.color.success;
+  if (hours < 6) return theme.color.textMuted;
+  return theme.color.warn;
 }
 
 /**
@@ -259,13 +261,13 @@ function SyncProgressBar({ progress }: { progress: { processed: number; total: n
     <div
       style={{
         width: "100%", height: 3, borderRadius: 2,
-        background: "#EBE3D5", overflow: "hidden", position: "relative",
+        background: theme.color.surface3, overflow: "hidden", position: "relative",
       }}
     >
       {determinate ? (
         <div
           style={{
-            width: `${pct}%`, height: "100%", background: "#8B5CF6",
+            width: `${pct}%`, height: "100%", background: theme.gradient.accent,
             borderRadius: 2, transition: "width 240ms ease",
           }}
         />
@@ -273,7 +275,7 @@ function SyncProgressBar({ progress }: { progress: { processed: number; total: n
         <div
           style={{
             position: "absolute", top: 0, left: 0, height: "100%", width: "40%",
-            background: "#8B5CF6", borderRadius: 2,
+            background: theme.gradient.accent, borderRadius: 2,
             animation: "syncSlide 1.1s ease-in-out infinite",
           }}
         />

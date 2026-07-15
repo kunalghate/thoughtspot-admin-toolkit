@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Check } from "lucide-react";
 
 import { usersApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { UserListItem } from "@/lib/types";
 
 export function UserPicker({
@@ -67,15 +68,15 @@ export function UserPicker({
       {picked ? (
         <div style={{
           display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
-          border: "1px solid #C4B5FD", background: "#F5F0FF", borderRadius: 6,
-          fontFamily: "Geist, sans-serif", fontSize: 13,
+          border: `1px solid ${theme.color.violetBorder}`, background: theme.color.accentSoft, borderRadius: 6,
+          fontFamily: theme.font.sans, fontSize: 13,
         }}>
-          <Check size={14} style={{ color: "#6D28D9" }} />
+          <Check size={14} style={{ color: theme.color.accent }} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 500, color: "#1A1714" }}>
+            <div style={{ fontWeight: 500, color: theme.color.textPrimary }}>
               {picked.display_name || picked.username}
             </div>
-            <div style={{ fontSize: 11, color: "#7A7068" }}>
+            <div style={{ fontSize: 11, color: theme.color.textMuted }}>
               {picked.username}{picked.email ? ` · ${picked.email}` : ""}
             </div>
           </div>
@@ -83,18 +84,18 @@ export function UserPicker({
             onClick={() => { onPick(null); setQuery(""); }}
             style={{
               padding: "3px 10px", fontSize: 11, fontWeight: 500,
-              border: "1px solid #E8E1D5", background: "white", borderRadius: 4,
-              cursor: "pointer", color: "#7A7068", fontFamily: "Geist, sans-serif",
+              border: `1px solid ${theme.color.border}`, background: theme.color.surface, borderRadius: 4,
+              cursor: "pointer", color: theme.color.textMuted, fontFamily: theme.font.sans,
             }}
           >Change</button>
         </div>
       ) : (
         <div style={{
           display: "flex", alignItems: "center", gap: 6,
-          border: `1px solid ${open ? "#C4B5FD" : "#E8E1D5"}`, background: "white",
+          border: `1px solid ${open ? theme.color.violetBorder : theme.color.border}`, background: theme.color.surface,
           borderRadius: 6, padding: "6px 10px",
         }}>
-          <Search size={14} style={{ color: "#7A7068" }} />
+          <Search size={14} style={{ color: theme.color.textMuted }} />
           <input
             type="text"
             value={query}
@@ -103,7 +104,7 @@ export function UserPicker({
             onBlur={() => { blurTimer.current = setTimeout(() => setOpen(false), 150); }}
             onChange={(e) => setQuery(e.target.value)}
             style={{
-              flex: 1, fontSize: 13, fontFamily: "Geist, sans-serif",
+              flex: 1, fontSize: 13, fontFamily: theme.font.sans,
               border: "none", outline: "none", background: "transparent",
             }}
           />
@@ -114,12 +115,12 @@ export function UserPicker({
         <div style={{
           position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30,
           marginTop: 4, maxHeight: 240, overflowY: "auto",
-          background: "white", border: "1px solid #E8E1D5", borderRadius: 6,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
+          background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+          boxShadow: theme.shadow.md,
         }}>
-          {loading && <div style={{ padding: 10, fontSize: 12, color: "#7A7068" }}>Searching…</div>}
+          {loading && <div style={{ padding: 10, fontSize: 12, color: theme.color.textMuted }}>Searching…</div>}
           {!loading && visibleResults.length === 0 && (
-            <div style={{ padding: 10, fontSize: 12, color: "#7A7068" }}>No matches.</div>
+            <div style={{ padding: 10, fontSize: 12, color: theme.color.textMuted }}>No matches.</div>
           )}
           {visibleResults.map((u) => (
             <button
@@ -129,11 +130,11 @@ export function UserPicker({
                 display: "block", width: "100%", textAlign: "left",
                 padding: "8px 12px", fontSize: 12, border: "none",
                 background: "transparent", cursor: "pointer",
-                fontFamily: "Geist, sans-serif", borderBottom: "1px solid #F2EDE3",
+                fontFamily: theme.font.sans, borderBottom: `1px solid ${theme.color.bg}`,
               }}
             >
-              <div style={{ fontWeight: 500, color: "#1A1714" }}>{u.display_name || u.username}</div>
-              <div style={{ fontSize: 11, color: "#7A7068" }}>
+              <div style={{ fontWeight: 500, color: theme.color.textPrimary }}>{u.display_name || u.username}</div>
+              <div style={{ fontSize: 11, color: theme.color.textMuted }}>
                 {u.username}{u.email ? ` · ${u.email}` : ""}
               </div>
             </button>

@@ -6,6 +6,7 @@
  */
 import { useMemo, useState } from "react";
 
+import { theme } from "@/lib/theme";
 import type { SharingPreviewRow } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -14,10 +15,10 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 const MODE_COLORS: Record<string, { bg: string; fg: string }> = {
-  READ_ONLY: { bg: "#D1FAE5", fg: "#065F46" },
-  MODIFY:    { bg: "#FEF3C7", fg: "#92400E" },
-  NO_ACCESS: { bg: "#FEE2E2", fg: "#991B1B" },
-  "":        { bg: "#F3F4F6", fg: "#7A7068" },
+  READ_ONLY: { bg: theme.color.successSoft, fg: theme.color.success },
+  MODIFY:    { bg: theme.color.warnSoft, fg: theme.color.warn },
+  NO_ACCESS: { bg: theme.color.dangerSoft, fg: theme.color.danger },
+  "":        { bg: theme.color.surface3, fg: theme.color.textMuted },
 };
 
 export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
@@ -30,15 +31,15 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
   return (
     <div style={{
       flex: 1, display: "flex", flexDirection: "column",
-      border: "1px solid #E8E1D5", borderRadius: 6,
-      background: "white", overflow: "hidden", minHeight: 0,
+      border: `1px solid ${theme.color.border}`, borderRadius: 6,
+      background: theme.color.surface, overflow: "hidden", minHeight: 0,
     }}>
       <div style={{
         display: "flex", alignItems: "center", padding: "8px 12px",
-        borderBottom: "1px solid #E8E1D5", background: "#FAF8F4",
-        fontSize: 12, fontFamily: "Geist, sans-serif",
+        borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface,
+        fontSize: 12, fontFamily: theme.font.sans,
       }}>
-        <span style={{ flex: 1, color: "#7A7068" }}>
+        <span style={{ flex: 1, color: theme.color.textMuted }}>
           {rows.length} pair{rows.length === 1 ? "" : "s"} ·{" "}
           {rows.filter((r) => r.will_change).length} changing
         </span>
@@ -47,17 +48,17 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
             type="checkbox" checked={hideUnchanged}
             onChange={(e) => setHideUnchanged(e.target.checked)}
           />
-          <span style={{ color: "#1A1714" }}>Hide unchanged</span>
+          <span style={{ color: theme.color.textPrimary }}>Hide unchanged</span>
         </label>
       </div>
 
       <div style={{
         display: "grid",
         gridTemplateColumns: "2fr 80px 1.5fr 100px 30px 100px",
-        padding: "8px 12px", background: "#FAF8F4",
-        borderBottom: "1px solid #E8E1D5", fontSize: 10, fontWeight: 600,
-        color: "#7A7068", textTransform: "uppercase", letterSpacing: "0.04em",
-        fontFamily: "Geist, sans-serif",
+        padding: "8px 12px", background: theme.color.surface,
+        borderBottom: `1px solid ${theme.color.border}`, fontSize: 10, fontWeight: 600,
+        color: theme.color.textMuted, textTransform: "uppercase", letterSpacing: "0.04em",
+        fontFamily: theme.font.sans,
       }}>
         <div>Object</div>
         <div>Type</div>
@@ -70,8 +71,8 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
       <div style={{ flex: 1, overflowY: "auto" }}>
         {visible.length === 0 && (
           <div style={{
-            padding: 24, textAlign: "center", color: "#7A7068", fontSize: 12,
-            fontFamily: "Geist, sans-serif",
+            padding: 24, textAlign: "center", color: theme.color.textMuted, fontSize: 12,
+            fontFamily: theme.font.sans,
           }}>
             {hideUnchanged ? "Nothing will change." : "No pairs to display."}
           </div>
@@ -84,20 +85,20 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
               display: "grid",
               gridTemplateColumns: "2fr 80px 1.5fr 100px 30px 100px",
               alignItems: "center", padding: "6px 12px", fontSize: 12,
-              borderBottom: "1px solid #F2EDE3",
+              borderBottom: `1px solid ${theme.color.border}`,
               opacity: r.will_change ? 1 : 0.55,
-              fontFamily: "Geist, sans-serif",
+              fontFamily: theme.font.sans,
             }}>
-              <div style={{ color: "#1A1714" }}>{r.object_name}</div>
+              <div style={{ color: theme.color.textPrimary }}>{r.object_name}</div>
               <div>
                 <span style={{
                   padding: "1px 6px", fontSize: 10, fontWeight: 600,
-                  borderRadius: 8, background: "#F3F4F6", color: "#374151",
+                  borderRadius: 8, background: theme.color.surface3, color: theme.color.textSecondary,
                 }}>{TYPE_LABELS[r.object_type] ?? r.object_type}</span>
               </div>
-              <div style={{ color: "#1A1714" }}>
+              <div style={{ color: theme.color.textPrimary }}>
                 {r.principal_name}{" "}
-                <span style={{ fontSize: 10, color: "#7A7068" }}>
+                <span style={{ fontSize: 10, color: theme.color.textMuted }}>
                   ({r.principal_type === "USER_GROUP" ? "group" : "user"})
                 </span>
               </div>
@@ -107,7 +108,7 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
                   borderRadius: 8, background: prev.bg, color: prev.fg,
                 }}>{r.previous_mode || "—"}</span>
               </div>
-              <div style={{ textAlign: "center", color: r.will_change ? "#8B5CF6" : "#C4B5FD" }}>
+              <div style={{ textAlign: "center", color: r.will_change ? theme.color.accent : theme.color.violetBorder }}>
                 →
               </div>
               <div style={{ textAlign: "center" }}>

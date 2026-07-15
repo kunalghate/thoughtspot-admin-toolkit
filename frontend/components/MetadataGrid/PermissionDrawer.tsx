@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { X, Users, User, Shield, Pencil, WifiOff } from "lucide-react";
 import { metadataApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import { useShell } from "@/components/Shell";
 import type { MetadataObject, Permission } from "@/lib/types";
 
@@ -17,8 +18,8 @@ const SHARE_MODE_LABEL: Record<string, string> = {
 };
 
 const SHARE_MODE_COLORS: Record<string, { bg: string; color: string }> = {
-  READ_ONLY: { bg: "#EDE9FE", color: "#6D28D9" },
-  MODIFY:    { bg: "#D1FAE5", color: "#065F46" },
+  READ_ONLY: { bg: theme.color.accentSoft, color: theme.color.accent2 },
+  MODIFY:    { bg: theme.color.successSoft, color: theme.color.success },
 };
 
 export default function PermissionDrawer({ object, clusterId, orgId, onClose }: Props) {
@@ -58,37 +59,37 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
       <div
         onClick={onClose}
         style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.15)", zIndex: 200,
+          position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 200,
         }}
       />
 
       {/* Drawer */}
       <div style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: 400,
-        background: "#FFFFFF", boxShadow: "-4px 0 24px rgba(0,0,0,0.12)",
+        background: theme.color.surface, boxShadow: theme.shadow.lg,
         zIndex: 201, display: "flex", flexDirection: "column",
-        fontFamily: "Geist, sans-serif",
+        fontFamily: theme.font.sans,
       }}>
 
         {/* Header */}
         <div style={{
-          padding: "20px 24px", borderBottom: "1px solid #E8E1D5",
+          padding: "20px 24px", borderBottom: `1px solid ${theme.color.border}`,
           display: "flex", alignItems: "flex-start", gap: 12,
         }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, color: "#7A7068", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            <div style={{ fontSize: 11, color: theme.color.textMuted, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
               Permissions
             </div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", wordBreak: "break-word" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, wordBreak: "break-word" }}>
               {object.name}
             </div>
-            <div style={{ fontSize: 12, color: "#7A7068", marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: theme.color.textMuted, marginTop: 4 }}>
               {object.owner_name && `Owner: ${object.owner_name}`}
             </div>
           </div>
           <button onClick={onClose} style={{
             background: "none", border: "none", cursor: "pointer",
-            color: "#7A7068", padding: 4, flexShrink: 0,
+            color: theme.color.textMuted, padding: 4, flexShrink: 0,
           }}>
             <X size={18} />
           </button>
@@ -97,21 +98,21 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
         {/* Body */}
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {loading && (
-            <div style={{ color: "#7A7068", fontSize: 13, textAlign: "center", marginTop: 40 }}>
+            <div style={{ color: theme.color.textMuted, fontSize: 13, textAlign: "center", marginTop: 40 }}>
               Loading permissions…
             </div>
           )}
 
           {error && isOfflineError && (
             <div style={{
-              background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8,
+              background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 8,
               padding: "16px", display: "flex", flexDirection: "column", gap: 8,
             }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#991B1B" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.color.danger }}>
                 <WifiOff size={16} />
                 <span style={{ fontSize: 13, fontWeight: 600 }}>Cannot connect to ThoughtSpot</span>
               </div>
-              <p style={{ margin: 0, fontSize: 12, color: "#7F1D1D" }}>
+              <p style={{ margin: 0, fontSize: 12, color: theme.color.danger }}>
                 Permissions are fetched live and are unavailable while the cluster is offline.
                 Check your network connection and retry.
               </p>
@@ -120,15 +121,15 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
 
           {error && !isOfflineError && (
             <div style={{
-              background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8,
-              padding: "12px 16px", fontSize: 13, color: "#991B1B",
+              background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 8,
+              padding: "12px 16px", fontSize: 13, color: theme.color.danger,
             }}>
               {error}
             </div>
           )}
 
           {!loading && !error && permissions.length === 0 && (
-            <div style={{ color: "#7A7068", fontSize: 13, textAlign: "center", marginTop: 40 }}>
+            <div style={{ color: theme.color.textMuted, fontSize: 13, textAlign: "center", marginTop: 40 }}>
               No sharing permissions found.
             </div>
           )}
@@ -160,8 +161,8 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
         {/* Footer */}
         {!loading && !error && (
           <div style={{
-            padding: "12px 24px", borderTop: "1px solid #E8E1D5",
-            fontSize: 12, color: "#7A7068",
+            padding: "12px 24px", borderTop: `1px solid ${theme.color.border}`,
+            fontSize: 12, color: theme.color.textMuted,
           }}>
             {permissions.length} principal{permissions.length !== 1 ? "s" : ""} with access
           </div>
@@ -176,7 +177,7 @@ function Section({ title, icon, items }: { title: string; icon: React.ReactNode;
     <div>
       <div style={{
         display: "flex", alignItems: "center", gap: 6,
-        fontSize: 12, fontWeight: 600, color: "#7A7068",
+        fontSize: 12, fontWeight: 600, color: theme.color.textMuted,
         textTransform: "uppercase", letterSpacing: "0.05em",
         marginBottom: 10,
       }}>
@@ -184,15 +185,15 @@ function Section({ title, icon, items }: { title: string; icon: React.ReactNode;
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {items.map((p) => {
-          const badge = SHARE_MODE_COLORS[p.share_mode] ?? { bg: "#F3F4F6", color: "#374151" };
+          const badge = SHARE_MODE_COLORS[p.share_mode] ?? { bg: theme.color.surface3, color: theme.color.textSecondary };
           const BadgeIcon = p.share_mode === "MODIFY" ? Pencil : Shield;
           return (
             <div key={p.principal_id} style={{
               display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "8px 12px", borderRadius: 8, background: "#FAF8F4",
-              border: "1px solid #E8E1D5",
+              padding: "8px 12px", borderRadius: 8, background: theme.color.surface,
+              border: `1px solid ${theme.color.border}`,
             }}>
-              <span style={{ fontSize: 13, color: "#1A1714", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span style={{ fontSize: 13, color: theme.color.textPrimary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {p.principal_name}
               </span>
               <span style={{

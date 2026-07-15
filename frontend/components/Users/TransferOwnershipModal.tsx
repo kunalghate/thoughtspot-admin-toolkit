@@ -13,6 +13,7 @@ import { X, ArrowRight } from "lucide-react";
 
 import { UserPicker } from "@/components/Users/UserPicker";
 import { usersApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { UserListItem, TransferObjectItem } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -136,10 +137,10 @@ export function TransferOwnershipModal({
                       display: "flex", alignItems: "center", gap: 6,
                       padding: "4px 10px", fontSize: 11, fontWeight: 500,
                       borderRadius: 14, border: "1px solid",
-                      cursor: "pointer", fontFamily: "Geist, sans-serif",
-                      borderColor: typeFilter.includes(t) ? "#8B5CF6" : "#E8E1D5",
-                      background: typeFilter.includes(t) ? "#F5F0FF" : "white",
-                      color: typeFilter.includes(t) ? "#6D28D9" : "#7A7068",
+                      cursor: "pointer", fontFamily: theme.font.sans,
+                      borderColor: typeFilter.includes(t) ? theme.color.accent : theme.color.border,
+                      background: typeFilter.includes(t) ? theme.color.accentSoft : theme.color.surface,
+                      color: typeFilter.includes(t) ? theme.color.accent2 : theme.color.textMuted,
                     }}
                   >
                     {TYPE_LABELS[t] ?? t} <strong>{n}</strong>
@@ -148,27 +149,27 @@ export function TransferOwnershipModal({
               </div>
 
               <div style={{
-                maxHeight: 240, overflowY: "auto", border: "1px solid #E8E1D5",
-                borderRadius: 6, background: "white",
+                maxHeight: 240, overflowY: "auto", border: `1px solid ${theme.color.border}`,
+                borderRadius: 6, background: theme.color.surface,
               }}>
                 {items.length === 0 ? (
-                  <div style={{ padding: 16, fontSize: 12, color: "#7A7068" }}>
+                  <div style={{ padding: 16, fontSize: 12, color: theme.color.textMuted }}>
                     No objects owned by this user.
                   </div>
                 ) : items.slice(0, 100).map((i) => (
                   <div key={i.ts_guid} style={{
                     display: "flex", alignItems: "center", gap: 8,
-                    padding: "6px 12px", fontSize: 12, borderBottom: "1px solid #F2EDE3",
+                    padding: "6px 12px", fontSize: 12, borderBottom: `1px solid ${theme.color.bg}`,
                   }}>
                     <span style={{
                       padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600,
-                      background: "#F3F4F6", color: "#374151",
+                      background: theme.color.surface3, color: theme.color.textSecondary,
                     }}>{TYPE_LABELS[i.object_type] ?? i.object_type}</span>
-                    <span style={{ fontFamily: "Geist, sans-serif", color: "#1A1714" }}>{i.name}</span>
+                    <span style={{ fontFamily: theme.font.sans, color: theme.color.textPrimary }}>{i.name}</span>
                   </div>
                 ))}
                 {items.length > 100 && (
-                  <div style={{ padding: "6px 12px", fontSize: 11, color: "#7A7068", fontStyle: "italic" }}>
+                  <div style={{ padding: "6px 12px", fontSize: 11, color: theme.color.textMuted, fontStyle: "italic" }}>
                     …and {items.length - 100} more
                   </div>
                 )}
@@ -189,8 +190,8 @@ export function TransferOwnershipModal({
                     placeholder="TRANSFER"
                     style={{
                       width: "100%", padding: "8px 12px", fontSize: 13,
-                      border: "1px solid #E8E1D5", borderRadius: 6,
-                      fontFamily: "Geist Mono, ui-monospace, monospace",
+                      border: `1px solid ${theme.color.border}`, borderRadius: 6,
+                      fontFamily: theme.font.mono,
                     }}
                   />
                 </div>
@@ -236,27 +237,27 @@ export function Modal({
 }) {
   return (
     <div style={{
-      position: "fixed", inset: 0, background: "rgba(20,15,10,0.45)",
+      position: "fixed", inset: 0, background: theme.color.overlay,
       display: "flex", alignItems: "center", justifyContent: "center",
-      zIndex: 50, fontFamily: "Geist, sans-serif",
+      zIndex: 50, fontFamily: theme.font.sans,
     }} onClick={onClose}>
       <div style={{
         width: 600, maxHeight: "85vh", overflowY: "auto",
-        background: "#FAF8F4", border: "1px solid #E8E1D5",
+        background: theme.color.surface, border: `1px solid ${theme.color.border}`,
         borderRadius: 10, padding: 24,
       }} onClick={(e) => e.stopPropagation()}>
         <div style={{
           display: "flex", justifyContent: "space-between", alignItems: "center",
           marginBottom: 16,
         }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: "#1A1714" }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: theme.color.textPrimary }}>
             {title}
           </h2>
           <button
             onClick={onClose}
             style={{
               padding: 4, border: "none", background: "transparent",
-              cursor: "pointer", color: "#7A7068",
+              cursor: "pointer", color: theme.color.textMuted,
             }}
           ><X size={16} /></button>
         </div>
@@ -275,22 +276,22 @@ export function FromToBar({
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-      background: "white", border: "1px solid #E8E1D5", borderRadius: 6,
+      background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
       marginBottom: 16, fontSize: 12,
     }}>
       <div>
-        <div style={{ fontWeight: 600, color: "#1A1714" }}>{fromUser.display_name || fromUser.username}</div>
-        <div style={{ color: "#7A7068" }}>{fromUser.email || fromUser.username}</div>
+        <div style={{ fontWeight: 600, color: theme.color.textPrimary }}>{fromUser.display_name || fromUser.username}</div>
+        <div style={{ color: theme.color.textMuted }}>{fromUser.email || fromUser.username}</div>
       </div>
-      <ArrowRight size={14} style={{ color: "#7A7068" }} />
+      <ArrowRight size={14} style={{ color: theme.color.textMuted }} />
       <div>
         {target ? (
           <>
-            <div style={{ fontWeight: 600, color: "#1A1714" }}>{target.display_name || target.username}</div>
-            <div style={{ color: "#7A7068" }}>{target.email || target.username}</div>
+            <div style={{ fontWeight: 600, color: theme.color.textPrimary }}>{target.display_name || target.username}</div>
+            <div style={{ color: theme.color.textMuted }}>{target.email || target.username}</div>
           </>
         ) : (
-          <span style={{ color: "#7A7068", fontStyle: "italic" }}>pick a recipient below…</span>
+          <span style={{ color: theme.color.textMuted, fontStyle: "italic" }}>pick a recipient below…</span>
         )}
       </div>
     </div>
@@ -300,8 +301,8 @@ export function FromToBar({
 export function Label({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
-      fontSize: 11, fontWeight: 600, color: "#7A7068", textTransform: "uppercase",
-      letterSpacing: "0.04em", marginBottom: 6, fontFamily: "Geist, sans-serif",
+      fontSize: 11, fontWeight: 600, color: theme.color.textMuted, textTransform: "uppercase",
+      letterSpacing: "0.04em", marginBottom: 6, fontFamily: theme.font.sans,
     }}>{children}</div>
   );
 }
@@ -327,10 +328,11 @@ export function PrimaryButton({
       disabled={disabled}
       style={{
         padding: "8px 16px", fontSize: 13, fontWeight: 600,
-        background: disabled ? "#C4B5FD" : "#8B5CF6", color: "white",
+        background: disabled ? theme.color.violetBorder : theme.gradient.accent, color: theme.color.onAccent,
         border: "none", borderRadius: 6,
+        boxShadow: disabled ? "none" : theme.shadow.glowAccent,
         cursor: disabled ? "not-allowed" : "pointer",
-        fontFamily: "Geist, sans-serif",
+        fontFamily: theme.font.sans,
       }}
     >{children}</button>
   );
@@ -349,10 +351,10 @@ export function SecondaryButton({
       disabled={disabled}
       style={{
         padding: "8px 16px", fontSize: 13, fontWeight: 500,
-        background: "white", color: "#1A1714",
-        border: "1px solid #E8E1D5", borderRadius: 6,
+        background: theme.color.surface, color: theme.color.textPrimary,
+        border: `1px solid ${theme.color.border}`, borderRadius: 6,
         cursor: disabled ? "not-allowed" : "pointer",
-        fontFamily: "Geist, sans-serif",
+        fontFamily: theme.font.sans,
       }}
     >{children}</button>
   );
@@ -371,10 +373,10 @@ export function DangerButton({
       disabled={disabled}
       style={{
         padding: "8px 16px", fontSize: 13, fontWeight: 600,
-        background: disabled ? "#FCA5A5" : "#DC2626", color: "white",
+        background: disabled ? theme.color.dangerBorder : theme.color.danger, color: theme.color.onAccent,
         border: "none", borderRadius: 6,
         cursor: disabled ? "not-allowed" : "pointer",
-        fontFamily: "Geist, sans-serif",
+        fontFamily: theme.font.sans,
       }}
     >{children}</button>
   );
@@ -383,20 +385,20 @@ export function DangerButton({
 export function ErrorBox({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
-      padding: "10px 14px", fontSize: 12, background: "#FEF2F2",
-      border: "1px solid #FCA5A5", borderRadius: 6, color: "#991B1B",
-      fontFamily: "Geist, sans-serif",
+      padding: "10px 14px", fontSize: 12, background: theme.color.dangerSoft,
+      border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6, color: theme.color.danger,
+      fontFamily: theme.font.sans,
     }}><strong>Error:</strong> {children}</div>
   );
 }
 
 const hintStyle: React.CSSProperties = {
-  padding: "8px 12px", fontSize: 12, color: "#5B21B6",
-  background: "#F5F0FF", border: "1px solid #DDD6FE", borderRadius: 6,
-  fontFamily: "Geist, sans-serif",
+  padding: "8px 12px", fontSize: 12, color: theme.color.accent2,
+  background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6,
+  fontFamily: theme.font.sans,
 };
 
 const codeStyle: React.CSSProperties = {
-  padding: "1px 6px", background: "#F3F4F6", borderRadius: 3,
-  fontFamily: "Geist Mono, ui-monospace, monospace", fontSize: 11,
+  padding: "1px 6px", background: theme.color.surface3, borderRadius: 3,
+  fontFamily: theme.font.mono, fontSize: 11,
 };

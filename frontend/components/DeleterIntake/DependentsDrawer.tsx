@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { deleterApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { DeleterResolveResponse, RootSearchItem } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -72,40 +73,40 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
       {/* Backdrop */}
       <div
         onClick={onClose}
-        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.15)", zIndex: 200 }}
+        style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 200 }}
       />
 
       {/* Drawer */}
       <div style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: 480,
-        background: "#FFFFFF", boxShadow: "-4px 0 24px rgba(0,0,0,0.12)",
+        background: theme.color.surface, boxShadow: theme.shadow.lg,
         zIndex: 201, display: "flex", flexDirection: "column",
-        fontFamily: "Geist, sans-serif",
+        fontFamily: theme.font.sans,
       }}>
 
         {/* Header */}
         <div style={{
-          padding: "20px 24px", borderBottom: "1px solid #E8E1D5",
+          padding: "20px 24px", borderBottom: `1px solid ${theme.color.border}`,
           display: "flex", alignItems: "flex-start", gap: 12,
         }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{
-              fontSize: 11, color: "#7A7068", marginBottom: 4,
+              fontSize: 11, color: theme.color.textMuted, marginBottom: 4,
               textTransform: "uppercase", letterSpacing: "0.05em",
             }}>
               Deletion preview
             </div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", wordBreak: "break-word" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, wordBreak: "break-word" }}>
               {object.name}
             </div>
-            <div style={{ fontSize: 12, color: "#7A7068", marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: theme.color.textMuted, marginTop: 4 }}>
               {TYPE_LABELS[object.object_type] ?? object.object_type}
               {object.owner_name ? ` · ${object.owner_name}` : ""}
             </div>
           </div>
           <button onClick={onClose} style={{
             background: "none", border: "none", cursor: "pointer",
-            color: "#7A7068", padding: 4, flexShrink: 0,
+            color: theme.color.textMuted, padding: 4, flexShrink: 0,
           }}>
             <X size={18} />
           </button>
@@ -114,15 +115,15 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
         {/* Body */}
         <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
           {loading && (
-            <div style={{ color: "#7A7068", fontSize: 13, textAlign: "center", marginTop: 40 }}>
+            <div style={{ color: theme.color.textMuted, fontSize: 13, textAlign: "center", marginTop: 40 }}>
               Resolving dependents…
             </div>
           )}
 
           {error && (
             <div style={{
-              background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8,
-              padding: "12px 16px", fontSize: 13, color: "#991B1B",
+              background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 8,
+              padding: "12px 16px", fontSize: 13, color: theme.color.danger,
             }}>
               {error}
             </div>
@@ -132,13 +133,13 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
             <>
               {/* Impact summary */}
               <div style={{
-                background: total > 0 ? "#FFFBEB" : "#F0FDF4",
-                border: `1px solid ${total > 0 ? "#FDE68A" : "#BBF7D0"}`,
+                background: total > 0 ? theme.color.warnSoft : theme.color.successSoft,
+                border: `1px solid ${total > 0 ? theme.color.warnBorder : theme.color.successBorder}`,
                 borderRadius: 8, padding: "12px 14px", marginBottom: 16,
                 display: "flex", alignItems: "flex-start", gap: 10,
               }}>
-                <AlertTriangle size={16} color={total > 0 ? "#92400E" : "#166534"} style={{ flexShrink: 0, marginTop: 2 }} />
-                <div style={{ fontSize: 13, color: total > 0 ? "#78350F" : "#14532D" }}>
+                <AlertTriangle size={16} color={total > 0 ? theme.color.warn : theme.color.success} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ fontSize: 13, color: total > 0 ? theme.color.warn : theme.color.success }}>
                   {total > 0 ? (
                     <>
                       Deleting this would also delete <strong>{total}</strong> downstream
@@ -158,7 +159,7 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
                   {byTypeEntries.map(([t, n]) => (
                     <span key={t} style={{
                       display: "inline-block", padding: "3px 10px", borderRadius: 20,
-                      fontSize: 11, fontWeight: 500, background: "#F3F4F6", color: "#374151",
+                      fontSize: 11, fontWeight: 500, background: theme.color.surface3, color: theme.color.textSecondary,
                     }}>
                       {n} {TYPE_LABELS[t] ?? t}{n > 1 ? "s" : ""}
                     </span>
@@ -169,7 +170,7 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
               {/* Items list */}
               {response.items.length > 0 && (
                 <div style={{
-                  fontSize: 11, fontWeight: 600, color: "#7A7068",
+                  fontSize: 11, fontWeight: 600, color: theme.color.textMuted,
                   textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8,
                 }}>
                   Affected objects
@@ -179,22 +180,22 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
                 {response.items.map((item) => (
                   <div key={item.ts_guid} style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
-                    background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
+                    background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
                   }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{
-                        fontSize: 13, color: "#1A1714",
+                        fontSize: 13, color: theme.color.textPrimary,
                         overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                       }}>
                         {item.name}
                       </div>
                       {item.owner_name && (
-                        <div style={{ fontSize: 11, color: "#7A7068" }}>{item.owner_name}</div>
+                        <div style={{ fontSize: 11, color: theme.color.textMuted }}>{item.owner_name}</div>
                       )}
                     </div>
                     <span style={{
                       padding: "1px 8px", borderRadius: 12, fontSize: 10, fontWeight: 500,
-                      background: "#F3F4F6", color: "#374151", flexShrink: 0, lineHeight: "16px",
+                      background: theme.color.surface3, color: theme.color.textSecondary, flexShrink: 0, lineHeight: "16px",
                     }}>
                       {TYPE_LABELS[item.object_type] ?? item.object_type}
                     </span>
@@ -208,22 +209,23 @@ export default function DependentsDrawer({ object, clusterId, orgId, onClose, on
         {/* Footer */}
         {!loading && !error && response && (
           <div style={{
-            padding: "12px 24px", borderTop: "1px solid #E8E1D5",
+            padding: "12px 24px", borderTop: `1px solid ${theme.color.border}`,
             display: "flex", alignItems: "center", gap: 10,
           }}>
-            <span style={{ fontSize: 12, color: "#7A7068" }}>
+            <span style={{ fontSize: 12, color: theme.color.textMuted }}>
               {total + 1} total object{total === 0 ? "" : "s"} would be deleted
             </span>
             <div style={{ flex: 1 }} />
             <button onClick={onClose} style={{
               padding: "7px 14px", fontSize: 13, fontWeight: 500,
-              background: "white", border: "1px solid #E8E1D5", borderRadius: 6,
-              cursor: "pointer", color: "#7A7068", fontFamily: "Geist, sans-serif",
+              background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+              cursor: "pointer", color: theme.color.textMuted, fontFamily: theme.font.sans,
             }}>Cancel</button>
             <button onClick={() => onCommit(object, response)} style={{
               padding: "7px 14px", fontSize: 13, fontWeight: 600,
-              background: "#6D28D9", color: "white", border: "none", borderRadius: 6,
-              cursor: "pointer", fontFamily: "Geist, sans-serif",
+              background: theme.gradient.accent, color: theme.color.onAccent, border: "none", borderRadius: 6,
+              boxShadow: theme.shadow.glowAccent,
+              cursor: "pointer", fontFamily: theme.font.sans,
             }}>
               Use as deletion root
             </button>

@@ -11,6 +11,7 @@ import {
   Modal, Label, Footer, DangerButton, SecondaryButton, ErrorBox,
 } from "@/components/Users/TransferOwnershipModal";
 import { usersApi, jobsApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { UserListItem, DeleteDryRunItem, DeleteDryRunResult } from "@/lib/types";
 
 type Step = "preview" | "confirming" | "submitting";
@@ -121,31 +122,31 @@ export function DeleteUsersModal({
       {!loading && (
         <>
           <div style={{
-            maxHeight: 240, overflowY: "auto", border: "1px solid #E8E1D5",
-            borderRadius: 6, background: "white",
+            maxHeight: 240, overflowY: "auto", border: `1px solid ${theme.color.border}`,
+            borderRadius: 6, background: theme.color.surface,
           }}>
             {items.map((u) => (
               <div key={u.ts_guid} style={{
                 display: "flex", alignItems: "center", gap: 8,
-                padding: "8px 12px", fontSize: 12, borderBottom: "1px solid #F2EDE3",
+                padding: "8px 12px", fontSize: 12, borderBottom: `1px solid ${theme.color.bg}`,
               }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+                  <div style={{ fontWeight: 500, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
                     {u.display_name || u.username}
                   </div>
-                  <div style={{ fontSize: 11, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+                  <div style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
                     {u.username}{u.email ? ` · ${u.email}` : ""}
                   </div>
                 </div>
                 {u.is_admin && (
                   <span style={{
                     padding: "2px 8px", fontSize: 10, fontWeight: 600,
-                    borderRadius: 10, background: "#FEF3C7", color: "#92400E",
+                    borderRadius: 10, background: theme.color.warnSoft, color: theme.color.warn,
                   }}>ADMIN</span>
                 )}
                 <span style={{
-                  fontSize: 11, color: u.owned_object_count > 0 ? "#92400E" : "#7A7068",
-                  fontFamily: "Geist, sans-serif",
+                  fontSize: 11, color: u.owned_object_count > 0 ? theme.color.warn : theme.color.textMuted,
+                  fontFamily: theme.font.sans,
                 }}>
                   {u.owned_object_count} owned object{u.owned_object_count === 1 ? "" : "s"}
                 </span>
@@ -154,22 +155,22 @@ export function DeleteUsersModal({
           </div>
 
           {unrecognized.length > 0 && (
-            <div style={{ ...hintStyle, marginTop: 10, color: "#92400E", background: "#FFFBEB", borderColor: "#FCD34D" }}>
+            <div style={{ ...hintStyle, marginTop: 10, color: theme.color.warn, background: theme.color.warnSoft, borderColor: theme.color.warnBorder }}>
               <strong>{unrecognized.length} unrecognized GUID{unrecognized.length === 1 ? "" : "s"}</strong> — these will be skipped:
               <pre style={{
-                marginTop: 6, padding: 6, background: "white", borderRadius: 4,
-                fontSize: 10, color: "#7A7068", maxHeight: 60, overflowY: "auto",
+                marginTop: 6, padding: 6, background: theme.color.surface, borderRadius: 4,
+                fontSize: 10, color: theme.color.textMuted, maxHeight: 60, overflowY: "auto",
               }}>{unrecognized.join("\n")}</pre>
             </div>
           )}
 
           {missingLive.length > 0 && (
-            <div style={{ ...hintStyle, marginTop: 10, color: "#92400E", background: "#FFFBEB", borderColor: "#FCD34D" }}>
+            <div style={{ ...hintStyle, marginTop: 10, color: theme.color.warn, background: theme.color.warnSoft, borderColor: theme.color.warnBorder }}>
               <strong>{missingLive.length} user{missingLive.length === 1 ? "" : "s"} no longer exist on the cluster</strong>
               {" "}— already deleted upstream; the delete will simply skip {missingLive.length === 1 ? "it" : "them"}:
               <pre style={{
-                marginTop: 6, padding: 6, background: "white", borderRadius: 4,
-                fontSize: 10, color: "#7A7068", maxHeight: 60, overflowY: "auto",
+                marginTop: 6, padding: 6, background: theme.color.surface, borderRadius: 4,
+                fontSize: 10, color: theme.color.textMuted, maxHeight: 60, overflowY: "auto",
               }}>{missingLive.join("\n")}</pre>
             </div>
           )}
@@ -177,9 +178,9 @@ export function DeleteUsersModal({
           {(ownedTotal > 0 || adminCount > 0) && (
             <div style={{
               display: "flex", alignItems: "flex-start", gap: 8, marginTop: 10,
-              padding: "10px 12px", background: "#FEF2F2", border: "1px solid #FCA5A5",
-              borderRadius: 6, fontSize: 12, color: "#991B1B",
-              fontFamily: "Geist, sans-serif",
+              padding: "10px 12px", background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
+              borderRadius: 6, fontSize: 12, color: theme.color.danger,
+              fontFamily: theme.font.sans,
             }}>
               <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
               <div>
@@ -204,8 +205,8 @@ export function DeleteUsersModal({
                 placeholder="DELETE"
                 style={{
                   width: "100%", padding: "8px 12px", fontSize: 13,
-                  border: "1px solid #E8E1D5", borderRadius: 6,
-                  fontFamily: "Geist Mono, ui-monospace, monospace",
+                  border: `1px solid ${theme.color.border}`, borderRadius: 6,
+                  fontFamily: theme.font.mono,
                 }}
               />
             </div>
@@ -238,12 +239,12 @@ export function DeleteUsersModal({
 }
 
 const hintStyle: React.CSSProperties = {
-  padding: "8px 12px", fontSize: 12, color: "#5B21B6",
-  background: "#F5F0FF", border: "1px solid #DDD6FE", borderRadius: 6,
-  fontFamily: "Geist, sans-serif",
+  padding: "8px 12px", fontSize: 12, color: theme.color.accent2,
+  background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6,
+  fontFamily: theme.font.sans,
 };
 
 const codeStyle: React.CSSProperties = {
-  padding: "1px 6px", background: "#F3F4F6", borderRadius: 3,
-  fontFamily: "Geist Mono, ui-monospace, monospace", fontSize: 11,
+  padding: "1px 6px", background: theme.color.surface3, borderRadius: 3,
+  fontFamily: theme.font.mono, fontSize: 11,
 };

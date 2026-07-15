@@ -4,6 +4,7 @@
  */
 import { useRef, useState } from "react";
 import { Upload } from "lucide-react";
+import { theme } from "@/lib/theme";
 
 interface Props {
   onSubmit: (guids: string[]) => void;
@@ -51,18 +52,18 @@ export function ListPaste({ onSubmit, onClear, hasResolved }: Props) {
         rows={8}
         style={{
           width: "100%", padding: "10px 12px", fontSize: 12,
-          fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
-          border: "1px solid #E8E1D5", borderRadius: 6, outline: "none",
-          background: "white", resize: "vertical",
+          fontFamily: theme.font.mono,
+          border: `1px solid ${theme.color.border}`, borderRadius: 6, outline: "none",
+          background: theme.color.surface, resize: "vertical",
         }}
       />
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, fontFamily: "Geist, sans-serif" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, fontFamily: theme.font.sans }}>
         <button
           onClick={() => fileRef.current?.click()}
           style={{
             display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", fontSize: 12,
-            background: "white", border: "1px solid #E8E1D5", borderRadius: 6,
-            cursor: "pointer", color: "#0F0E0D",
+            background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+            cursor: "pointer", color: theme.color.textPrimary,
           }}
         >
           <Upload size={13} /> Upload CSV
@@ -79,7 +80,7 @@ export function ListPaste({ onSubmit, onClear, hasResolved }: Props) {
           }}
         />
 
-        <span style={{ fontSize: 12, color: "#7A7068" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted }}>
           {previewCount > 0 ? `${previewCount} GUIDs detected` : "No GUIDs yet"}
         </span>
 
@@ -89,8 +90,8 @@ export function ListPaste({ onSubmit, onClear, hasResolved }: Props) {
               onClick={() => { setRaw(""); onClear(); }}
               style={{
                 padding: "7px 14px", fontSize: 12,
-                background: "transparent", border: "1px solid #E8E1D5", borderRadius: 6,
-                cursor: "pointer", color: "#0F0E0D",
+                background: "transparent", border: `1px solid ${theme.color.border}`, borderRadius: 6,
+                cursor: "pointer", color: theme.color.textPrimary,
               }}
             >Clear</button>
           )}
@@ -99,9 +100,10 @@ export function ListPaste({ onSubmit, onClear, hasResolved }: Props) {
             onClick={() => onSubmit(splitGuids(raw))}
             style={{
               padding: "7px 14px", fontSize: 12, fontWeight: 600,
-              background: previewCount === 0 ? "#E8E1D5" : "#6D28D9",
-              color: previewCount === 0 ? "#9CA3AF" : "white",
+              background: previewCount === 0 ? theme.color.border : theme.gradient.accent,
+              color: previewCount === 0 ? theme.color.textMuted : theme.color.onAccent,
               border: "none", borderRadius: 6,
+              boxShadow: previewCount === 0 ? "none" : theme.shadow.glowAccent,
               cursor: previewCount === 0 ? "not-allowed" : "pointer",
             }}
           >Resolve list</button>

@@ -1,0 +1,420 @@
+/*
+ * theme.css — the single source of truth for the app's visual design tokens.
+ *
+ * HOW THEMING WORKS
+ * -----------------
+ * Every color/shadow/gradient in the app resolves through a CSS custom property
+ * declared here. Components never hardcode a hex — they reference `theme.*` from
+ * `@/lib/theme` (which returns `var(--token)` strings), or one of the utility
+ * classes at the bottom of this file.
+ *
+ * A "theme" is just a block that overrides these variables:
+ *   - `:root`                          → the default (Compendium Light)
+ *   - `:root[data-theme="<id>"]`       → an alternate theme
+ *
+ * `<ThemeProvider>` (see lib/theme) flips `data-theme` on <html>, so switching a
+ * theme re-points every `var()` at once — no component re-render needed.
+ *
+ * TO ADD A NEW THEME
+ * ------------------
+ *   1. Add a `:root[data-theme="my-theme"] { … }` block below overriding the
+ *      tokens you care about (unset tokens inherit the Light defaults).
+ *   2. Register it in `lib/theme/registry.ts` so the switcher lists it.
+ * That's the whole contract.
+ */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Compendium Light — the default theme
+ * ───────────────────────────────────────────────────────────────────────────*/
+:root,
+:root[data-theme="compendium-light"] {
+  /* Surfaces */
+  --bg:            #f5fafd;   /* app background */
+  --surface:       #ffffff;   /* cards, bars, panels */
+  --surface-2:     #f5fafd;   /* subtle inset / nested surface */
+  --surface-3:     #eaf1f7;   /* deeper inset, hover fills */
+
+  /* Borders */
+  --border:        #e1ecf0;   /* default hairline */
+  --border-light:  #c2d4dc;   /* inputs, buttons (slightly stronger) */
+
+  /* Brand palette */
+  --navy:          #1a1f4a;   /* brand ink */
+  --accent:        #00c9de;   /* cyan — primary accent */
+  --accent-2:      #6366f1;   /* violet/indigo — gradient partner */
+  --accent-soft:   #ecf7f9;   /* cyan tint — focus halos, soft fills */
+  --accent-border: #b8e0dd;   /* cyan-tinted border */
+  --violet-soft:   #eef0fe;   /* violet tint fill */
+  --violet-border: #c7cbf5;   /* violet-tinted border */
+
+  /* Text (all AA-contrast on white) */
+  --text-primary:  #1a1f4a;   /* = navy */
+  --text-secondary:#4a5573;
+  --text-muted:    #5d698c;   /* >=4.5:1 on white — do not lighten past this */
+
+  /* Status (solid + soft + border triple each) */
+  --success:        #2d8b65;  --success-soft: #e6f4ed;  --success-border: #c0dccf;
+  --warn:           #c08930;  --warn-soft:    #faf3e0;  --warn-border:    #ead9a8;
+  --danger:         #b85450;  --danger-soft:  #fae9e8;  --danger-border:  #ebcccc;
+
+  /* Code surface */
+  --code-bg:       #0a0f24;   /* near-black navy for code blocks */
+  --code-fg:       #e6edf3;
+
+  /* Modal / drawer scrim — navy-tinted, never pure black */
+  --overlay:       rgba(26, 31, 74, 0.45);
+
+  /* Always-white text/fills that sit on a gradient or solid accent */
+  --on-accent:     #ffffff;
+
+  /* Elevation (navy-tinted shadows) */
+  --shadow-xs:   0 1px 3px  rgba(26, 31, 74, 0.06);
+  --shadow-sm:   0 2px 8px  rgba(26, 31, 74, 0.12);
+  --shadow-md:   0 8px 24px rgba(26, 31, 74, 0.12);
+  --shadow-lg:   0 10px 28px rgba(26, 31, 74, 0.28);
+  --glow-accent: 0 2px 10px rgba(0, 201, 222, 0.30);
+
+  /* Accent gradients (the accent is ALWAYS a gradient on filled elements) */
+  --gradient-accent:          linear-gradient(135deg, var(--accent), var(--accent-2));
+  --gradient-accent-vertical: linear-gradient(180deg, var(--accent), var(--accent-2));
+
+  /* Shape */
+  --radius-card:    9px;
+  --radius-control: 8px;
+  --radius-pill:    999px;
+
+  /* Type */
+  --sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Compendium Dark — a faithful dark translation (accent hues unchanged so the
+ * brand reads the same). Only overrides what differs from Light.
+ * ───────────────────────────────────────────────────────────────────────────*/
+:root[data-theme="compendium-dark"] {
+  --bg:            #0a0f24;
+  --surface:       #121834;
+  --surface-2:     #0e1430;
+  --surface-3:     #1b2246;
+  --border:        #242c52;
+  --border-light:  #313a66;
+  --navy:          #e8ecff;
+  --accent:        #00c9de;   /* unchanged */
+  --accent-2:      #818cf8;   /* lifted for contrast on dark */
+  --accent-soft:   #0e2b33;
+  --accent-border: #1c4a52;
+  --violet-soft:   #1e2150;
+  --violet-border: #3a3f7a;
+  --text-primary:  #e8ecff;
+  --text-secondary:#aab3d4;
+  --text-muted:    #8792b8;
+  --success:        #4fbf8f;  --success-soft: #102a20;  --success-border: #1c4a3a;
+  --warn:           #e0b25a;  --warn-soft:    #2c2410;  --warn-border:    #4a3d1c;
+  --danger:         #e07b76;  --danger-soft:  #2e1615;  --danger-border:  #4a2321;
+  --code-bg:       #05081a;
+  --code-fg:       #e6edf3;
+  --overlay:       rgba(3, 5, 15, 0.60);
+  --on-accent:     #06121f;
+
+  --shadow-xs:   0 1px 3px  rgba(0, 0, 0, 0.40);
+  --shadow-sm:   0 2px 8px  rgba(0, 0, 0, 0.45);
+  --shadow-md:   0 8px 24px rgba(0, 0, 0, 0.50);
+  --shadow-lg:   0 10px 28px rgba(0, 0, 0, 0.60);
+  --glow-accent: 0 2px 12px rgba(0, 201, 222, 0.38);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Base
+ * ───────────────────────────────────────────────────────────────────────────*/
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; }
+button { font-family: inherit; }
+
+/* The signature: a fixed 3px cyan→violet stripe down the far left of the app. */
+body::before {
+  content: '';
+  position: fixed; left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--gradient-accent-vertical);
+  z-index: 1000; pointer-events: none;
+}
+
+/* ── Keyframes ─────────────────────────────────────────────────────────────── */
+@keyframes spin      { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes popoverIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes syncSlide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@keyframes status-pulse { 50% { opacity: .3; } }
+
+/* Hide number-input spinner arrows in popovers (cleaner look) */
+.stale-num::-webkit-outer-spin-button,
+.stale-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stale-num { -moz-appearance: textfield; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Utility component classes (optional — inline styles may also use theme.*)
+ * ───────────────────────────────────────────────────────────────────────────*/
+
+/* Primary (brand) button — filled with the accent gradient */
+.btn-primary {
+  height: 34px; padding: 0 14px; border: none; border-radius: var(--radius-control);
+  font: 600 13px var(--sans); color: var(--on-accent);
+  background: var(--gradient-accent);
+  box-shadow: var(--glow-accent);
+  cursor: pointer;
+}
+.btn-primary:hover { opacity: .88; }
+.btn-primary:disabled { opacity: .5; cursor: default; }
+
+/* Secondary button — outline that lights up to accent on hover */
+.btn {
+  height: 34px; padding: 0 14px; border-radius: var(--radius-control);
+  font: 600 13px var(--sans);
+  background: var(--surface); color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  transition: border-color .18s, color .18s;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Input / select — soft cyan halo on focus, never a browser outline */
+.input {
+  height: 34px; padding: 0 11px; border-radius: var(--radius-control);
+  font-size: 13px; color: var(--text-primary);
+  background: var(--bg); border: 1px solid var(--border-light);
+  outline: none; transition: border-color .18s, box-shadow .18s;
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Card / panel */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-md);
+}
+
+/* Logo mark — gradient tile */
+.mark {
+  width: 26px; height: 26px; border-radius: 7px;
+  display: grid; place-items: center; color: var(--on-accent);
+  background: var(--gradient-accent);
+  box-shadow: var(--glow-accent);
+}
+
+/* Beta / brand tag (pill) */
+.tag {
+  font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .4px;
+  color: var(--accent); border: 1px solid var(--accent);
+  border-radius: var(--radius-pill); padding: 1px 7px;
+}
+
+/* Status pill + traffic-light dot */
+.status {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: 600 11.5px var(--mono); letter-spacing: .02em;
+  padding: 4px 11px; border-radius: 20px; white-space: nowrap;
+}
+.status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.status[data-state="idle"]       { color: var(--text-muted); background: var(--surface-3); }
+.status[data-state="connecting"] { color: var(--warn);    background: var(--warn-soft);    border: 1px solid var(--warn-border); }
+.status[data-state="ok"]         { color: var(--success); background: var(--success-soft); border: 1px solid var(--success-border); }
+.status[data-state="error"]      { color: var(--danger);  background: var(--danger-soft);  border: 1px solid var(--danger-border); }
+.status[data-state="connecting"]::before { animation: status-pulse 1s ease-in-out infinite; }
+
+/* Code block */
+.code {
+  background: var(--code-bg); color: var(--code-fg);
+  font: 500 12px var(--mono); line-height: 1.6;
+  border-radius: var(--radius-card); padding: 14px 16px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AG Grid (alpine theme) — bind AG's own CSS variables to our tokens so data
+ * grids adopt the active theme, then polish the filter popups.
+ * ───────────────────────────────────────────────────────────────────────────*/
+.ag-theme-alpine {
+  --ag-font-family: var(--sans);
+  --ag-font-size: 13px;
+  --ag-background-color: var(--surface);
+  --ag-odd-row-background-color: var(--surface);
+  --ag-header-background-color: var(--surface-2);
+  --ag-control-panel-background-color: var(--surface-2);
+  --ag-border-color: var(--border);
+  --ag-row-border-color: var(--border);
+  --ag-header-column-separator-color: var(--border);
+  --ag-foreground-color: var(--text-primary);
+  --ag-data-color: var(--text-primary);
+  --ag-secondary-foreground-color: var(--text-secondary);
+  --ag-header-foreground-color: var(--text-muted);
+  --ag-disabled-foreground-color: var(--text-muted);
+  --ag-row-hover-color: var(--surface-3);
+  --ag-selected-row-background-color: var(--accent-soft);
+  --ag-range-selection-background-color: var(--accent-soft);
+  --ag-input-focus-border-color: var(--accent);
+  --ag-range-selection-border-color: var(--accent);
+  --ag-alpine-active-color: var(--accent);
+  --ag-checkbox-checked-color: var(--accent);
+  --ag-input-border-color: var(--border-light);
+}
+
+.ag-theme-alpine .ag-popup .ag-menu,
+.ag-theme-alpine .ag-popup .ag-filter,
+.ag-theme-alpine .ag-popup .ag-tabs {
+  font-family: var(--sans);
+  width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+  background: var(--surface);
+  overflow: hidden;
+  animation: popoverIn 140ms ease-out;
+}
+.ag-theme-alpine .ag-filter-wrapper,
+.ag-theme-alpine .ag-filter-body-wrapper { padding: 12px 12px 14px !important; }
+.ag-theme-alpine .ag-filter-body-wrapper > * + * { margin-top: 8px !important; }
+
+/* Inputs (operator dropdown + text/number/date input) */
+.ag-theme-alpine .ag-picker-field-wrapper,
+.ag-theme-alpine .ag-input-field-input,
+.ag-theme-alpine .ag-text-field input,
+.ag-theme-alpine .ag-number-field input,
+.ag-theme-alpine .ag-date-field input {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 32px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 6px !important;
+  font-size: 13px !important;
+  font-family: var(--sans) !important;
+  color: var(--text-primary) !important;
+  background: var(--bg) !important;
+  box-shadow: none !important;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+.ag-theme-alpine .ag-input-field-input::placeholder,
+.ag-theme-alpine .ag-text-field input::placeholder,
+.ag-theme-alpine .ag-number-field input::placeholder { color: var(--text-muted) !important; }
+.ag-theme-alpine .ag-picker-field-wrapper:focus,
+.ag-theme-alpine .ag-picker-field-wrapper:focus-within,
+.ag-theme-alpine .ag-input-field-input:focus,
+.ag-theme-alpine .ag-text-field input:focus,
+.ag-theme-alpine .ag-number-field input:focus,
+.ag-theme-alpine .ag-date-field input:focus {
+  background: var(--surface) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-soft) !important;
+  outline: none !important;
+}
+.ag-theme-alpine .ag-picker-field-icon { color: var(--text-muted) !important; }
+
+/* Footer (Apply panel) */
+.ag-theme-alpine .ag-filter-apply-panel {
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
+  padding: 8px 12px !important;
+  border-top: 1px solid var(--border) !important;
+  background: var(--surface) !important;
+  gap: 4px !important;
+}
+.ag-theme-alpine .ag-filter-apply-panel > * { flex: 0 0 auto !important; margin: 0 !important; }
+
+/* Reset — ghost / text-button style */
+.ag-theme-alpine .ag-filter-apply-panel-button,
+.ag-theme-alpine .ag-filter-apply-panel button,
+.ag-theme-alpine .ag-standard-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+  font-family: var(--sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  height: 30px !important;
+  padding: 0 12px !important;
+  margin: 0 !important;
+  line-height: 1 !important;
+  border-radius: 6px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  cursor: pointer !important;
+  min-width: auto !important;
+  letter-spacing: 0.1px !important;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+.ag-theme-alpine .ag-filter-apply-panel-button:hover,
+.ag-theme-alpine .ag-filter-apply-panel button:hover,
+.ag-theme-alpine .ag-standard-button:hover {
+  background: var(--surface-3) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Apply — primary gradient button */
+.ag-theme-alpine .ag-filter-apply-panel [data-ref="applyFilterButton"],
+.ag-theme-alpine .ag-filter-apply-panel [ref="applyFilterButton"],
+.ag-theme-alpine .ag-filter-apply-panel button.ag-filter-apply-panel-button:last-of-type,
+.ag-theme-alpine .ag-filter-apply-panel button:last-of-type {
+  padding: 0 14px !important;
+  min-width: 64px !important;
+  font-weight: 600 !important;
+  background: var(--gradient-accent) !important;
+  border-color: transparent !important;
+  color: var(--on-accent) !important;
+  box-shadow: var(--glow-accent) !important;
+}
+.ag-theme-alpine .ag-filter-apply-panel [data-ref="applyFilterButton"]:hover,
+.ag-theme-alpine .ag-filter-apply-panel [ref="applyFilterButton"]:hover,
+.ag-theme-alpine .ag-filter-apply-panel button.ag-filter-apply-panel-button:last-of-type:hover,
+.ag-theme-alpine .ag-filter-apply-panel button:last-of-type:hover { opacity: .88; }
+.ag-theme-alpine .ag-filter-apply-panel [data-ref="applyFilterButton"]:active,
+.ag-theme-alpine .ag-filter-apply-panel button:last-of-type:active { transform: translateY(1px); }
+
+/* Header funnel icon — subtle until filter is active */
+.ag-theme-alpine .ag-header-cell-menu-button,
+.ag-theme-alpine .ag-header-icon {
+  color: var(--text-muted);
+  opacity: 0.6;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+  border-radius: 4px;
+  padding: 2px;
+}
+.ag-theme-alpine .ag-header-cell-menu-button:hover,
+.ag-theme-alpine .ag-header-icon:hover { opacity: 1; color: var(--text-secondary); }
+.ag-theme-alpine .ag-header-cell-filtered .ag-header-icon {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Operator dropdown menu */
+.ag-theme-alpine .ag-list,
+.ag-theme-alpine .ag-virtual-list-viewport { border-radius: 8px; }
+.ag-theme-alpine .ag-list-item {
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 7px 12px;
+  color: var(--text-primary);
+  transition: background 100ms ease;
+}
+.ag-theme-alpine .ag-list-item:hover { background: var(--surface-2); }
+.ag-theme-alpine .ag-list-item.ag-active-item {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+  font-weight: 500;
+  box-shadow: inset 3px 0 0 var(--accent);
+}

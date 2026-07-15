@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, User, Users } from "lucide-react";
 
 import { sharingApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { PrincipalPickerItem } from "@/lib/types";
 
 export function PrincipalPicker({
@@ -70,10 +71,10 @@ export function PrincipalPicker({
       <div style={{ position: "relative" }}>
         <div style={{
           display: "flex", alignItems: "center", gap: 6,
-          border: `1px solid ${open ? "#C4B5FD" : "#E8E1D5"}`, background: "white",
+          border: `1px solid ${open ? theme.color.violetBorder : theme.color.border}`, background: theme.color.surface,
           borderRadius: 6, padding: "6px 10px",
         }}>
-          <Search size={14} style={{ color: "#7A7068" }} />
+          <Search size={14} style={{ color: theme.color.textMuted }} />
           <input
             type="text"
             value={query}
@@ -82,7 +83,7 @@ export function PrincipalPicker({
             onBlur={() => { blurTimer.current = setTimeout(() => setOpen(false), 150); }}
             onChange={(e) => setQuery(e.target.value)}
             style={{
-              flex: 1, fontSize: 13, fontFamily: "Geist, sans-serif",
+              flex: 1, fontSize: 13, fontFamily: theme.font.sans,
               border: "none", outline: "none", background: "transparent",
             }}
           />
@@ -92,12 +93,12 @@ export function PrincipalPicker({
           <div style={{
             position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30,
             marginTop: 4, maxHeight: 280, overflowY: "auto",
-            background: "white", border: "1px solid #E8E1D5", borderRadius: 6,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.08)",
+            background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+            boxShadow: theme.shadow.md,
           }}>
-            {loading && <div style={{ padding: 10, fontSize: 12, color: "#7A7068" }}>Searching…</div>}
+            {loading && <div style={{ padding: 10, fontSize: 12, color: theme.color.textMuted }}>Searching…</div>}
             {!loading && visibleResults.length === 0 && (
-              <div style={{ padding: 10, fontSize: 12, color: "#7A7068" }}>No matches.</div>
+              <div style={{ padding: 10, fontSize: 12, color: theme.color.textMuted }}>No matches.</div>
             )}
             {visibleResults.map((p) => (
               <button
@@ -107,15 +108,15 @@ export function PrincipalPicker({
                   display: "flex", alignItems: "center", gap: 8, width: "100%",
                   textAlign: "left", padding: "8px 12px", fontSize: 12,
                   border: "none", background: "transparent", cursor: "pointer",
-                  fontFamily: "Geist, sans-serif", borderBottom: "1px solid #F2EDE3",
+                  fontFamily: theme.font.sans, borderBottom: `1px solid ${theme.color.border}`,
                 }}
               >
                 {p.principal_type === "USER_GROUP"
-                  ? <Users size={12} style={{ color: "#6D28D9" }} />
-                  : <User size={12} style={{ color: "#7A7068" }} />}
+                  ? <Users size={12} style={{ color: theme.color.accent2 }} />
+                  : <User size={12} style={{ color: theme.color.textMuted }} />}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, color: "#1A1714" }}>{p.display_name}</div>
-                  <div style={{ fontSize: 10, color: "#7A7068" }}>{p.name}</div>
+                  <div style={{ fontWeight: 500, color: theme.color.textPrimary }}>{p.display_name}</div>
+                  <div style={{ fontSize: 10, color: theme.color.textMuted }}>{p.name}</div>
                 </div>
               </button>
             ))}
@@ -131,9 +132,9 @@ export function PrincipalPicker({
             <span key={p.ts_guid + ":" + p.principal_type} style={{
               display: "flex", alignItems: "center", gap: 6,
               padding: "3px 8px", fontSize: 11, fontWeight: 500,
-              background: p.principal_type === "USER_GROUP" ? "#EDE9FE" : "#F2EDE3",
-              color: p.principal_type === "USER_GROUP" ? "#6D28D9" : "#374151",
-              borderRadius: 12, fontFamily: "Geist, sans-serif",
+              background: p.principal_type === "USER_GROUP" ? theme.color.violetSoft : theme.color.surface2,
+              color: p.principal_type === "USER_GROUP" ? theme.color.accent2 : theme.color.textSecondary,
+              borderRadius: 12, fontFamily: theme.font.sans,
             }}>
               {p.principal_type === "USER_GROUP" ? <Users size={11} /> : <User size={11} />}
               {p.display_name}

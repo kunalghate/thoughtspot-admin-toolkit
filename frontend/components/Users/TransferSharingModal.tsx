@@ -15,6 +15,7 @@ import {
   Modal, FromToBar, Label, Footer, PrimaryButton, SecondaryButton, ErrorBox,
 } from "@/components/Users/TransferOwnershipModal";
 import { usersApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { UserListItem, SharingPermissionItem } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -104,9 +105,9 @@ export function TransferSharingModal({
             placeholder="Search for a replacement user…"
           />
           <div style={{
-            marginTop: 12, padding: "8px 12px", fontSize: 11, color: "#7A7068",
-            background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 4,
-            fontFamily: "Geist, sans-serif",
+            marginTop: 12, padding: "8px 12px", fontSize: 11, color: theme.color.textMuted,
+            background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 4,
+            fontFamily: theme.font.sans,
           }}>
             Cluster admins are rejected — they already see everything.
           </div>
@@ -126,39 +127,39 @@ export function TransferSharingModal({
                 {Object.entries(byType).map(([t, n]) => (
                   <span key={t} style={{
                     padding: "3px 10px", fontSize: 11, fontWeight: 500, borderRadius: 14,
-                    background: "#F5F0FF", color: "#6D28D9",
-                    fontFamily: "Geist, sans-serif",
+                    background: theme.color.violetSoft, color: theme.color.accent2,
+                    fontFamily: theme.font.sans,
                   }}>{TYPE_LABELS[t] ?? t}: {n}</span>
                 ))}
               </div>
 
               <div style={{
-                maxHeight: 240, overflowY: "auto", border: "1px solid #E8E1D5",
-                borderRadius: 6, background: "white",
+                maxHeight: 240, overflowY: "auto", border: `1px solid ${theme.color.border}`,
+                borderRadius: 6, background: theme.color.surface,
               }}>
                 {items.length === 0 ? (
-                  <div style={{ padding: 16, fontSize: 12, color: "#7A7068" }}>
+                  <div style={{ padding: 16, fontSize: 12, color: theme.color.textMuted }}>
                     Source user has no shared objects (already a member of everything via groups, or no access).
                   </div>
                 ) : items.slice(0, 100).map((i) => (
                   <div key={i.metadata_id} style={{
                     display: "flex", alignItems: "center", gap: 8,
-                    padding: "6px 12px", fontSize: 12, borderBottom: "1px solid #F2EDE3",
+                    padding: "6px 12px", fontSize: 12, borderBottom: `1px solid ${theme.color.bg}`,
                   }}>
                     <span style={{
                       padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600,
-                      background: "#F3F4F6", color: "#374151",
+                      background: theme.color.surface3, color: theme.color.textSecondary,
                     }}>{TYPE_LABELS[i.metadata_type] ?? i.metadata_type}</span>
-                    <span style={{ flex: 1, color: "#1A1714" }}>{i.metadata_name}</span>
+                    <span style={{ flex: 1, color: theme.color.textPrimary }}>{i.metadata_name}</span>
                     <span style={{
                       padding: "1px 7px", borderRadius: 10, fontSize: 10, fontWeight: 600,
-                      background: i.share_mode === "MODIFY" ? "#FEF3C7" : "#D1FAE5",
-                      color: i.share_mode === "MODIFY" ? "#92400E" : "#065F46",
+                      background: i.share_mode === "MODIFY" ? theme.color.warnSoft : theme.color.successSoft,
+                      color: i.share_mode === "MODIFY" ? theme.color.warn : theme.color.success,
                     }}>{i.share_mode}</span>
                   </div>
                 ))}
                 {items.length > 100 && (
-                  <div style={{ padding: "6px 12px", fontSize: 11, color: "#7A7068", fontStyle: "italic" }}>
+                  <div style={{ padding: "6px 12px", fontSize: 11, color: theme.color.textMuted, fontStyle: "italic" }}>
                     …and {items.length - 100} more
                   </div>
                 )}
@@ -171,7 +172,7 @@ export function TransferSharingModal({
 
               <label style={{
                 display: "flex", alignItems: "center", gap: 6, marginTop: 10,
-                fontSize: 12, color: "#1A1714", fontFamily: "Geist, sans-serif",
+                fontSize: 12, color: theme.color.textPrimary, fontFamily: theme.font.sans,
               }}>
                 <input
                   type="checkbox" checked={notify}
@@ -190,8 +191,8 @@ export function TransferSharingModal({
                     placeholder="SHARE"
                     style={{
                       width: "100%", padding: "8px 12px", fontSize: 13,
-                      border: "1px solid #E8E1D5", borderRadius: 6,
-                      fontFamily: "Geist Mono, ui-monospace, monospace",
+                      border: `1px solid ${theme.color.border}`, borderRadius: 6,
+                      fontFamily: theme.font.mono,
                     }}
                   />
                 </div>
@@ -226,12 +227,12 @@ export function TransferSharingModal({
 }
 
 const hintStyle: React.CSSProperties = {
-  padding: "8px 12px", fontSize: 12, color: "#5B21B6",
-  background: "#F5F0FF", border: "1px solid #DDD6FE", borderRadius: 6,
-  fontFamily: "Geist, sans-serif",
+  padding: "8px 12px", fontSize: 12, color: theme.color.accent2,
+  background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6,
+  fontFamily: theme.font.sans,
 };
 
 const codeStyle: React.CSSProperties = {
-  padding: "1px 6px", background: "#F3F4F6", borderRadius: 3,
-  fontFamily: "Geist Mono, ui-monospace, monospace", fontSize: 11,
+  padding: "1px 6px", background: theme.color.surface3, borderRadius: 3,
+  fontFamily: theme.font.mono, fontSize: 11,
 };

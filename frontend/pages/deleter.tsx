@@ -27,6 +27,7 @@ import { DownstreamPicker } from "@/components/DeleterIntake/DownstreamPicker";
 import { TagPicker } from "@/components/DeleterIntake/TagPicker";
 import { ListPaste } from "@/components/DeleterIntake/ListPaste";
 import { deleterApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { DeleterItem, DeleterMode, DeleterResolveResponse, RootSearchItem } from "@/lib/types";
 
 const MODES: { id: DeleterMode; label: string; icon: typeof GitBranch; tagline: string }[] = [
@@ -234,8 +235,8 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* ── Mode tab strip ──────────────────────────────────────────────── */}
       <div style={{
-        display: "flex", gap: 0, borderBottom: "1px solid #E8E1D5",
-        background: "#FAF8F4", paddingLeft: 24, flexShrink: 0,
+        display: "flex", gap: 0, borderBottom: `1px solid ${theme.color.border}`,
+        background: theme.color.surface, paddingLeft: 24, flexShrink: 0,
       }}>
         {MODES.map(({ id, label, icon: Icon }) => (
           <button
@@ -244,9 +245,9 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
             style={{
               display: "flex", alignItems: "center", gap: 8,
               padding: "10px 18px", fontSize: 13, fontWeight: mode === id ? 600 : 400,
-              fontFamily: "Geist, sans-serif", cursor: "pointer", border: "none",
-              background: "transparent", color: mode === id ? "#6D28D9" : "#7A7068",
-              borderBottom: mode === id ? "2px solid #8B5CF6" : "2px solid transparent",
+              fontFamily: theme.font.sans, cursor: "pointer", border: "none",
+              background: "transparent", color: mode === id ? theme.color.accent2 : theme.color.textMuted,
+              borderBottom: mode === id ? `2px solid ${theme.color.accent}` : "2px solid transparent",
               marginBottom: -1,
             }}
           >
@@ -262,7 +263,7 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
       }}>
         {/* Mode tagline */}
         <div style={{
-          fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif",
+          fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans,
         }}>
           {MODES.find((m) => m.id === mode)?.tagline}
         </div>
@@ -305,9 +306,9 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
         {/* Resolve summary banner */}
         {error && (
           <div style={{
-            padding: "10px 14px", fontSize: 12, fontFamily: "Geist, sans-serif",
-            background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 6,
-            color: "#991B1B",
+            padding: "10px 14px", fontSize: 12, fontFamily: theme.font.sans,
+            background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6,
+            color: theme.color.danger,
           }}>
             <strong>Error:</strong> {error}
           </div>
@@ -325,14 +326,14 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
         {items.length > 0 && selectedCount > 0 && (
           <div style={{
             display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
-            background: "#EDE9FE", border: "1px solid #C4B5FD", borderRadius: 6, flexShrink: 0,
+            background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6, flexShrink: 0,
             flexWrap: "wrap",
           }}>
-            <span style={{ fontSize: 13, color: "#6D28D9", fontWeight: 500, fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>
+            <span style={{ fontSize: 13, color: theme.color.accent2, fontWeight: 500, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
               {selectedCount} of {items.length} selected
             </span>
 
-            <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+            <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
               · TML backup will be taken before each delete (restorable from History)
             </span>
 
@@ -343,8 +344,8 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
               onClick={handleDeleteClick}
               style={{
                 padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
-                cursor: "pointer", border: "1px solid #FECACA", background: "#FEF2F2",
-                color: "#991B1B", fontFamily: "Geist, sans-serif",
+                cursor: "pointer", border: `1px solid ${theme.color.dangerBorder}`, background: theme.color.dangerSoft,
+                color: theme.color.danger, fontFamily: theme.font.sans,
               }}
             >
               Delete {selectedCount} item{selectedCount === 1 ? "" : "s"}…
@@ -354,8 +355,8 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
               onClick={handleClearSelection}
               style={{
                 display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
-                borderRadius: 4, border: "1px solid #E8E1D5", background: "transparent",
-                fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+                borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
+                fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
               }}
             >
               <X size={11} /> Clear
@@ -367,13 +368,13 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
         {items.length > 0 && selectedCount === 0 && (
           <div style={{
             display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
-            background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
+            background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
             flexShrink: 0,
           }}>
-            <span style={{ fontSize: 13, color: "#C4B5FD" }}>☑</span>
-            <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", lineHeight: 1.5 }}>
+            <span style={{ fontSize: 13, color: theme.color.violetBorder }}>☑</span>
+            <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
               Check rows to select objects — then{" "}
-              <strong style={{ color: "#991B1B" }}>Delete selected</strong> for a safety-checked deletion with TML backup.
+              <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
             </span>
           </div>
         )}
@@ -435,26 +436,26 @@ function ResolveSummary({
 
   return (
     <div style={{
-      padding: "10px 14px", fontSize: 13, fontFamily: "Geist, sans-serif",
-      background: "#F5F0FF", border: "1px solid #DDD6FE", borderRadius: 6,
-      color: "#5B21B6",
+      padding: "10px 14px", fontSize: 13, fontFamily: theme.font.sans,
+      background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6,
+      color: theme.color.accent2,
     }}>
       {resolving && <span>Resolving…</span>}
       {!resolving && total === 0 && unrecognized.length === 0 && <span>No items matched.</span>}
       {!resolving && total > 0 && (
         <>
           <strong>Resolved {total} item{total === 1 ? "" : "s"}</strong>
-          {breakdown && <span style={{ color: "#7A7068", marginLeft: 8 }}>({breakdown})</span>}
+          {breakdown && <span style={{ color: theme.color.textMuted, marginLeft: 8 }}>({breakdown})</span>}
         </>
       )}
       {unrecognized.length > 0 && (
         <details style={{ marginTop: 6 }}>
-          <summary style={{ cursor: "pointer", color: "#991B1B" }}>
+          <summary style={{ cursor: "pointer", color: theme.color.danger }}>
             {unrecognized.length} unrecognized GUID{unrecognized.length === 1 ? "" : "s"}
           </summary>
           <pre style={{
-            marginTop: 6, padding: 8, background: "white", border: "1px solid #FCA5A5",
-            borderRadius: 4, fontSize: 11, color: "#7A7068", maxHeight: 120, overflowY: "auto",
+            marginTop: 6, padding: 8, background: theme.color.surface, border: `1px solid ${theme.color.dangerBorder}`,
+            borderRadius: 4, fontSize: 11, color: theme.color.textMuted, maxHeight: 120, overflowY: "auto",
           }}>{unrecognized.join("\n")}</pre>
         </details>
       )}
@@ -492,10 +493,10 @@ function TagOnlyAction({
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-      background: "#FFFBEB", border: "1px dashed #FCD34D", borderRadius: 6,
-      fontFamily: "Geist, sans-serif",
+      background: theme.color.warnSoft, border: `1px dashed ${theme.color.warnBorder}`, borderRadius: 6,
+      fontFamily: theme.font.sans,
     }}>
-      <div style={{ flex: 1, fontSize: 12, color: "#92400E" }}>
+      <div style={{ flex: 1, fontSize: 12, color: theme.color.warn }}>
         <strong>Or:</strong> delete <em>just the tag</em> (objects stay; the label is removed from every object).
       </div>
       {!confirmOpen ? (
@@ -503,8 +504,8 @@ function TagOnlyAction({
           onClick={() => setConfirmOpen(true)}
           style={{
             padding: "6px 12px", fontSize: 12, fontWeight: 500,
-            background: "white", border: "1px solid #FCD34D", borderRadius: 6,
-            cursor: "pointer", color: "#92400E", fontFamily: "Geist, sans-serif",
+            background: theme.color.surface, border: `1px solid ${theme.color.warnBorder}`, borderRadius: 6,
+            cursor: "pointer", color: theme.color.warn, fontFamily: theme.font.sans,
           }}
         >Delete tag only</button>
       ) : (
@@ -513,9 +514,9 @@ function TagOnlyAction({
             onClick={() => setConfirmOpen(false)}
             disabled={busy}
             style={{
-              padding: "6px 10px", fontSize: 12, background: "white",
-              border: "1px solid #E8E1D5", borderRadius: 6, cursor: busy ? "not-allowed" : "pointer",
-              color: "#7A7068", fontFamily: "Geist, sans-serif",
+              padding: "6px 10px", fontSize: 12, background: theme.color.surface,
+              border: `1px solid ${theme.color.border}`, borderRadius: 6, cursor: busy ? "not-allowed" : "pointer",
+              color: theme.color.textMuted, fontFamily: theme.font.sans,
             }}
           >Cancel</button>
           <button
@@ -523,15 +524,15 @@ function TagOnlyAction({
             disabled={busy}
             style={{
               padding: "6px 12px", fontSize: 12, fontWeight: 600,
-              background: busy ? "#FCD34D" : "#D97706", color: "white",
+              background: busy ? theme.color.warnBorder : theme.color.warn, color: theme.color.onAccent,
               border: "none", borderRadius: 6, cursor: busy ? "not-allowed" : "pointer",
-              fontFamily: "Geist, sans-serif",
+              fontFamily: theme.font.sans,
             }}
           >{busy ? "Deleting…" : `Confirm delete "${tagName}"`}</button>
         </div>
       )}
       {error && (
-        <span style={{ fontSize: 12, color: "#991B1B" }}>{error}</span>
+        <span style={{ fontSize: 12, color: theme.color.danger }}>{error}</span>
       )}
     </div>
   );
@@ -542,7 +543,7 @@ function EmptyState({ message }: { message: string }) {
     <AppShell pageTitle="Bulk Delete" entityType="metadata">
       <div style={{
         height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 14, color: "#7A7068", fontFamily: "Geist, sans-serif",
+        fontSize: 14, color: theme.color.textMuted, fontFamily: theme.font.sans,
       }}>{message}</div>
     </AppShell>
   );

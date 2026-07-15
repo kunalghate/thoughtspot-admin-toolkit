@@ -13,6 +13,7 @@ import { useCallback, useState } from "react";
 import { X, Share2, ChevronRight } from "lucide-react";
 
 import { sharingApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import { PrincipalPicker } from "./PrincipalPicker";
 import { SharingPreviewTable } from "./PreviewTable";
 import type {
@@ -93,7 +94,7 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
     <>
       {/* Backdrop */}
       <div
-        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }}
+        style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }}
         onClick={busy ? undefined : onClose}
       />
 
@@ -102,23 +103,23 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
         data-testid="share-modal"
         style={{
           position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-          width: 720, maxHeight: "85vh", background: "#fff", borderRadius: 10, zIndex: 301,
-          display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
+          width: 720, maxHeight: "85vh", background: theme.color.surface, borderRadius: 10, zIndex: 301,
+          display: "flex", flexDirection: "column", boxShadow: theme.shadow.lg,
           overflow: "hidden",
         }}
       >
         {/* Header */}
         <div style={{
           display: "flex", alignItems: "center", gap: 8, padding: "16px 20px",
-          borderBottom: "1px solid #E8E1D5", flexShrink: 0,
+          borderBottom: `1px solid ${theme.color.border}`, flexShrink: 0,
         }}>
-          <Share2 size={16} style={{ color: "#8B5CF6" }} />
-          <span style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif", flex: 1 }}>
+          <Share2 size={16} style={{ color: theme.color.accent }} />
+          <span style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, flex: 1 }}>
             Share {objectGuids.length.toLocaleString()} object{objectGuids.length === 1 ? "" : "s"}
           </span>
           <button
             onClick={busy ? undefined : onClose}
-            style={{ background: "none", border: "none", cursor: busy ? "not-allowed" : "pointer", color: "#7A7068", padding: 4 }}
+            style={{ background: "none", border: "none", cursor: busy ? "not-allowed" : "pointer", color: theme.color.textMuted, padding: 4 }}
           >
             <X size={16} />
           </button>
@@ -128,9 +129,9 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
         <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
           {error && (
             <div style={{
-              padding: "10px 14px", fontSize: 12, background: "#FEF2F2",
-              border: "1px solid #FCA5A5", borderRadius: 6, color: "#991B1B",
-              fontFamily: "Geist, sans-serif",
+              padding: "10px 14px", fontSize: 12, background: theme.color.dangerSoft,
+              border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6, color: theme.color.danger,
+              fontFamily: theme.font.sans,
             }}>
               <strong>Error:</strong> {error}
             </div>
@@ -153,10 +154,10 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
                   onClick={() => { setMode(m); resetPreview(); }}
                   style={{
                     flex: 1, padding: "8px 6px", fontSize: 12, fontWeight: 600,
-                    border: `1px solid ${mode === m ? "#8B5CF6" : "#E8E1D5"}`,
-                    background: mode === m ? "#F5F0FF" : "white",
-                    color: mode === m ? "#6D28D9" : "#7A7068",
-                    borderRadius: 6, cursor: "pointer", fontFamily: "Geist, sans-serif",
+                    border: `1px solid ${mode === m ? theme.color.accent : theme.color.border}`,
+                    background: mode === m ? theme.color.accentSoft : theme.color.surface,
+                    color: mode === m ? theme.color.accent2 : theme.color.textMuted,
+                    borderRadius: 6, cursor: "pointer", fontFamily: theme.font.sans,
                   }}
                 >
                   {m === "READ_ONLY" ? "View" : m === "MODIFY" ? "Edit" : "Remove"}
@@ -166,7 +167,7 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
 
             <label style={{
               display: "flex", alignItems: "center", gap: 6, marginTop: 10,
-              fontSize: 12, color: "#1A1714", fontFamily: "Geist, sans-serif",
+              fontSize: 12, color: theme.color.textPrimary, fontFamily: theme.font.sans,
             }}>
               <input
                 type="checkbox" checked={notify}
@@ -184,10 +185,11 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                 padding: "10px 16px", fontSize: 13, fontWeight: 600,
-                background: canPreview && !previewing ? "#8B5CF6" : "#C4B5FD",
-                color: "white", border: "none", borderRadius: 6,
+                background: canPreview && !previewing ? theme.gradient.accent : theme.color.violetBorder,
+                boxShadow: canPreview && !previewing ? theme.shadow.glowAccent : "none",
+                color: theme.color.onAccent, border: "none", borderRadius: 6,
                 cursor: canPreview && !previewing ? "pointer" : "not-allowed",
-                fontFamily: "Geist, sans-serif",
+                fontFamily: theme.font.sans,
               }}
             >
               {previewing ? "Building preview…" : "Preview changes"} <ChevronRight size={14} />
@@ -199,9 +201,9 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
             <>
               <div style={{
                 display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                background: "#F5F0FF", border: "1px solid #DDD6FE", borderRadius: 6, flexShrink: 0,
+                background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6, flexShrink: 0,
               }}>
-                <div style={{ flex: 1, fontSize: 13, color: "#5B21B6", fontFamily: "Geist, sans-serif" }}>
+                <div style={{ flex: 1, fontSize: 13, color: theme.color.accent2, fontFamily: theme.font.sans }}>
                   <strong>{preview.will_change_count}</strong> of {preview.total} pair
                   {preview.total === 1 ? "" : "s"} will change.
                 </div>
@@ -217,7 +219,7 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
         {/* Footer */}
         <div style={{
           display: "flex", alignItems: "center", gap: 10, padding: "12px 20px",
-          borderTop: "1px solid #E8E1D5", flexShrink: 0,
+          borderTop: `1px solid ${theme.color.border}`, flexShrink: 0,
         }}>
           <div style={{ flex: 1 }} />
           {preview && (
@@ -228,17 +230,17 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
               onChange={(e) => setConfirmText(e.target.value)}
               style={{
                 padding: "6px 10px", fontSize: 12, width: 180,
-                border: "1px solid #DDD6FE", borderRadius: 4,
-                fontFamily: "Geist Mono, ui-monospace, monospace",
+                border: `1px solid ${theme.color.violetBorder}`, borderRadius: 4,
+                fontFamily: theme.font.mono,
               }}
             />
           )}
           <button
             onClick={busy ? undefined : onClose}
             style={{
-              padding: "6px 12px", fontSize: 12, fontWeight: 500, background: "white",
-              border: "1px solid #E8E1D5", borderRadius: 6, color: "#7A7068",
-              cursor: busy ? "not-allowed" : "pointer", fontFamily: "Geist, sans-serif",
+              padding: "6px 12px", fontSize: 12, fontWeight: 500, background: theme.color.surface,
+              border: `1px solid ${theme.color.border}`, borderRadius: 6, color: theme.color.textMuted,
+              cursor: busy ? "not-allowed" : "pointer", fontFamily: theme.font.sans,
             }}
           >
             Cancel
@@ -248,9 +250,10 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
             onClick={handleExecute}
             style={{
               padding: "6px 16px", fontSize: 12, fontWeight: 600,
-              background: canApply ? "#8B5CF6" : "#C4B5FD", color: "white",
+              background: canApply ? theme.gradient.accent : theme.color.violetBorder, color: theme.color.onAccent,
+              boxShadow: canApply ? theme.shadow.glowAccent : "none",
               border: "none", borderRadius: 6,
-              cursor: canApply ? "pointer" : "not-allowed", fontFamily: "Geist, sans-serif",
+              cursor: canApply ? "pointer" : "not-allowed", fontFamily: theme.font.sans,
             }}
           >
             {executing ? "Starting…" : "Apply"}
@@ -265,8 +268,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   return (
     <div>
       <div style={{
-        fontSize: 11, fontWeight: 600, color: "#7A7068", textTransform: "uppercase",
-        letterSpacing: "0.04em", marginBottom: 8, fontFamily: "Geist, sans-serif",
+        fontSize: 11, fontWeight: 600, color: theme.color.textMuted, textTransform: "uppercase",
+        letterSpacing: "0.04em", marginBottom: 8, fontFamily: theme.font.sans,
       }}>{title}</div>
       {children}
     </div>

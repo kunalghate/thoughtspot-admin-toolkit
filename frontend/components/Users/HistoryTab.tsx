@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 
 import { usersApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { UserHistoryItem } from "@/lib/types";
 
 const ACTION_LABELS: Record<string, string> = {
@@ -14,10 +15,10 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  SUCCESS: { bg: "#D1FAE5", fg: "#065F46" },
-  PARTIAL: { bg: "#FEF3C7", fg: "#92400E" },
-  FAILED:  { bg: "#FEE2E2", fg: "#991B1B" },
-  PENDING: { bg: "#F3F4F6", fg: "#374151" },
+  SUCCESS: { bg: theme.color.successSoft, fg: theme.color.success },
+  PARTIAL: { bg: theme.color.warnSoft, fg: theme.color.warn },
+  FAILED:  { bg: theme.color.dangerSoft, fg: theme.color.danger },
+  PENDING: { bg: theme.color.surface3, fg: theme.color.textSecondary },
 };
 
 export function UsersHistoryTab({
@@ -64,8 +65,8 @@ export function UsersHistoryTab({
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           style={{
-            padding: "7px 10px", fontSize: 13, fontFamily: "Geist, sans-serif",
-            border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+            padding: "7px 10px", fontSize: 13, fontFamily: theme.font.sans,
+            border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
             cursor: "pointer",
           }}
         >
@@ -74,23 +75,23 @@ export function UsersHistoryTab({
           <option value="transfer_sharing">Transfer sharing</option>
           <option value="delete">Delete user</option>
         </select>
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
           {loading ? "Loading…" : `${items.length} entries`}
         </span>
       </div>
 
       {error && (
         <div style={{
-          padding: "10px 14px", fontSize: 12, background: "#FEF2F2",
-          border: "1px solid #FCA5A5", borderRadius: 6, color: "#991B1B",
-          fontFamily: "Geist, sans-serif",
+          padding: "10px 14px", fontSize: 12, background: theme.color.dangerSoft,
+          border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6, color: theme.color.danger,
+          fontFamily: theme.font.sans,
         }}><strong>Error:</strong> {error}</div>
       )}
 
       {!loading && items.length === 0 && !error && (
         <div style={{
-          padding: 32, fontSize: 13, color: "#7A7068", textAlign: "center",
-          fontFamily: "Geist, sans-serif",
+          padding: 32, fontSize: 13, color: theme.color.textMuted, textAlign: "center",
+          fontFamily: theme.font.sans,
         }}>
           No user-management actions yet.
         </div>
@@ -98,16 +99,16 @@ export function UsersHistoryTab({
 
       {items.length > 0 && (
         <div style={{
-          border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+          border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
           overflow: "hidden",
         }}>
           <div style={{
             display: "grid",
             gridTemplateColumns: "180px 160px 1fr 1fr 100px 100px",
-            padding: "10px 14px", background: "#FAF8F4",
-            borderBottom: "1px solid #E8E1D5", fontSize: 11,
-            fontWeight: 600, color: "#7A7068", textTransform: "uppercase",
-            letterSpacing: "0.04em", fontFamily: "Geist, sans-serif",
+            padding: "10px 14px", background: theme.color.surface,
+            borderBottom: `1px solid ${theme.color.border}`, fontSize: 11,
+            fontWeight: 600, color: theme.color.textMuted, textTransform: "uppercase",
+            letterSpacing: "0.04em", fontFamily: theme.font.sans,
           }}>
             <div>When</div>
             <div>Action</div>
@@ -123,17 +124,17 @@ export function UsersHistoryTab({
                 display: "grid",
                 gridTemplateColumns: "180px 160px 1fr 1fr 100px 100px",
                 padding: "10px 14px", fontSize: 12, alignItems: "center",
-                borderBottom: "1px solid #F2EDE3", fontFamily: "Geist, sans-serif",
+                borderBottom: `1px solid ${theme.color.bg}`, fontFamily: theme.font.sans,
               }}>
-                <div style={{ color: "#7A7068" }}>{new Date(r.executed_at).toLocaleString()}</div>
-                <div style={{ color: "#1A1714" }}>{ACTION_LABELS[r.action_type] ?? r.action_type}</div>
-                <div style={{ color: "#1A1714" }}>
+                <div style={{ color: theme.color.textMuted }}>{new Date(r.executed_at).toLocaleString()}</div>
+                <div style={{ color: theme.color.textPrimary }}>{ACTION_LABELS[r.action_type] ?? r.action_type}</div>
+                <div style={{ color: theme.color.textPrimary }}>
                   {r.from_display_name || r.from_username || "—"}
                 </div>
-                <div style={{ color: "#1A1714" }}>
+                <div style={{ color: theme.color.textPrimary }}>
                   {r.to_display_name || r.to_username || "—"}
                 </div>
-                <div style={{ textAlign: "right", color: "#1A1714" }}>
+                <div style={{ textAlign: "right", color: theme.color.textPrimary }}>
                   {r.items_succeeded} / {r.items_total}
                 </div>
                 <div style={{ textAlign: "center" }}>

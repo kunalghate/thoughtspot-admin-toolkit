@@ -22,6 +22,7 @@ import { SharingHistoryTab } from "@/components/Sharing/HistoryTab";
 import { ShareModal } from "@/components/Sharing/ShareModal";
 import { metadataApi } from "@/lib/api";
 import { serializeFilterModel } from "@/lib/agGridFilters";
+import { theme } from "@/lib/theme";
 import type { MetadataObject } from "@/lib/types";
 
 const PAGE_SIZE = 200;
@@ -64,7 +65,7 @@ function SharingContent({ syncVersion }: { syncVersion: number }) {
     return (
       <div style={{
         height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 14, color: "#7A7068", fontFamily: "Geist, sans-serif",
+        fontSize: 14, color: theme.color.textMuted, fontFamily: theme.font.sans,
       }}>Select a cluster from the topbar to start.</div>
     );
   }
@@ -73,8 +74,8 @@ function SharingContent({ syncVersion }: { syncVersion: number }) {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* Tabs */}
       <div style={{
-        display: "flex", borderBottom: "1px solid #E8E1D5",
-        background: "#FAF8F4", paddingLeft: 24, flexShrink: 0,
+        display: "flex", borderBottom: `1px solid ${theme.color.border}`,
+        background: theme.color.surface, paddingLeft: 24, flexShrink: 0,
       }}>
         {[
           { id: "share" as Tab, label: "Share", icon: Share2 },
@@ -86,9 +87,9 @@ function SharingContent({ syncVersion }: { syncVersion: number }) {
             style={{
               display: "flex", alignItems: "center", gap: 8,
               padding: "10px 18px", fontSize: 13, fontWeight: tab === id ? 600 : 400,
-              fontFamily: "Geist, sans-serif", cursor: "pointer", border: "none",
-              background: "transparent", color: tab === id ? "#6D28D9" : "#7A7068",
-              borderBottom: tab === id ? "2px solid #8B5CF6" : "2px solid transparent",
+              fontFamily: theme.font.sans, cursor: "pointer", border: "none",
+              background: "transparent", color: tab === id ? theme.color.accent2 : theme.color.textMuted,
+              borderBottom: tab === id ? `2px solid ${theme.color.accent}` : "2px solid transparent",
               marginBottom: -1,
             }}
           >
@@ -223,16 +224,16 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
 
         {/* Search */}
         <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 320 }}>
-          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#7A7068" }} />
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: theme.color.textMuted }} />
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Search by name…"
             style={{
               width: "100%", paddingLeft: 30, paddingRight: 10,
-              height: 34, borderRadius: 6, border: "1px solid #E8E1D5",
-              background: "#FAF8F4", fontSize: 13, color: "#1A1714",
-              fontFamily: "Geist, sans-serif", outline: "none",
+              height: 34, borderRadius: 6, border: `1px solid ${theme.color.border}`,
+              background: theme.color.surface, fontSize: 13, color: theme.color.textPrimary,
+              fontFamily: theme.font.sans, outline: "none",
             }}
           />
         </div>
@@ -246,10 +247,10 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
                 onClick={() => setTypes(active ? selectedTypes.filter((x) => x !== t) : [...selectedTypes, t])}
                 style={{
                   padding: "4px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer",
-                  fontFamily: "Geist, sans-serif", fontWeight: active ? 500 : 400,
-                  background: active ? "#EDE9FE" : "#FAF8F4",
-                  border: `1px solid ${active ? "#8B5CF6" : "#E8E1D5"}`,
-                  color: active ? "#6D28D9" : "#7A7068",
+                  fontFamily: theme.font.sans, fontWeight: active ? 500 : 400,
+                  background: active ? theme.color.accentSoft : theme.color.surface,
+                  border: `1px solid ${active ? theme.color.accent : theme.color.border}`,
+                  color: active ? theme.color.accent2 : theme.color.textMuted,
                 }}
               >
                 {TYPE_LABELS[t]}
@@ -262,8 +263,8 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
         {hasFilters && (
           <button onClick={clearFilters} style={{
             display: "flex", alignItems: "center", gap: 4, padding: "4px 10px",
-            borderRadius: 6, border: "1px solid #E8E1D5", background: "transparent",
-            fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+            borderRadius: 6, border: `1px solid ${theme.color.border}`, background: "transparent",
+            fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
           }}>
             <X size={11} /> Clear
           </button>
@@ -271,7 +272,7 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
 
         <div style={{ flex: 1 }} />
 
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace", whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono, whiteSpace: "nowrap" }}>
           {displayCount}
         </span>
 
@@ -279,9 +280,9 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
           onClick={() => gridRef.current?.api.exportDataAsCsv({ fileName: "sharing-objects.csv" })}
           style={{
             display: "flex", alignItems: "center", gap: 5, padding: "6px 12px",
-            borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4",
-            fontSize: 12, fontWeight: 500, color: "#1A1714", cursor: "pointer",
-            fontFamily: "Geist, sans-serif",
+            borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+            fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, cursor: "pointer",
+            fontFamily: theme.font.sans,
           }}
         >
           <Download size={13} /> Export CSV
@@ -292,10 +293,10 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
       {selectedGuids.size > 0 ? (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
-          background: "#EDE9FE", border: "1px solid #C4B5FD", borderRadius: 6, flexShrink: 0,
+          background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6, flexShrink: 0,
           flexWrap: "wrap",
         }}>
-          <span style={{ fontSize: 13, color: "#6D28D9", fontWeight: 500, fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 13, color: theme.color.accent2, fontWeight: 500, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
             {selectedGuids.size} selected
           </span>
 
@@ -307,8 +308,9 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
             style={{
               display: "flex", alignItems: "center", gap: 6,
               padding: "5px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600,
-              cursor: "pointer", border: "1px solid #8B5CF6", background: "#8B5CF6",
-              color: "#fff", fontFamily: "Geist, sans-serif",
+              cursor: "pointer", border: `1px solid ${theme.color.accent}`, background: theme.gradient.accent,
+              boxShadow: theme.shadow.glowAccent,
+              color: theme.color.onAccent, fontFamily: theme.font.sans,
             }}
           >
             <Share2 size={13} /> Share selected…
@@ -318,8 +320,8 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
             onClick={() => gridRef.current?.api.deselectAll()}
             style={{
               display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
-              borderRadius: 4, border: "1px solid #E8E1D5", background: "transparent",
-              fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+              borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
+              fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
             }}
           >
             <X size={11} /> Clear
@@ -328,11 +330,11 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
       ) : (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
-          background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6, flexShrink: 0,
+          background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6, flexShrink: 0,
         }}>
-          <span style={{ fontSize: 13, color: "#C4B5FD" }}>☑</span>
-          <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", lineHeight: 1.5 }}>
-            Check rows to select objects — then <strong style={{ color: "#6D28D9" }}>Share selected</strong> to
+          <span style={{ fontSize: 13, color: theme.color.violetBorder }}>☑</span>
+          <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
+            Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Share selected</strong> to
             pick recipients and an access level, preview the diff, and apply.
           </span>
         </div>

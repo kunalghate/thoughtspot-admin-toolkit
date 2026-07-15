@@ -6,6 +6,7 @@ import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { metadataApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import { serializeFilterModel } from "@/lib/agGridFilters";
 import type { MetadataObject } from "@/lib/types";
 import "ag-grid-community/styles/ag-grid.css";
@@ -146,16 +147,16 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
 
         {/* Search box */}
         <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 320 }}>
-          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#7A7068" }} />
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: theme.color.textMuted }} />
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Search by name…"
             style={{
               width: "100%", paddingLeft: 30, paddingRight: 10,
-              height: 34, borderRadius: 6, border: "1px solid #E8E1D5",
-              background: "#FAF8F4", fontSize: 13, color: "#1A1714",
-              fontFamily: "Geist, sans-serif", outline: "none",
+              height: 34, borderRadius: 6, border: `1px solid ${theme.color.border}`,
+              background: theme.color.surface, fontSize: 13, color: theme.color.textPrimary,
+              fontFamily: theme.font.sans, outline: "none",
             }}
           />
         </div>
@@ -169,10 +170,10 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
                 onClick={() => setTypes(active ? selectedTypes.filter((x) => x !== t) : [...selectedTypes, t])}
                 style={{
                   padding: "4px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer",
-                  fontFamily: "Geist, sans-serif", fontWeight: active ? 500 : 400,
-                  background: active ? "#EDE9FE" : "#FAF8F4",
-                  border: `1px solid ${active ? "#8B5CF6" : "#E8E1D5"}`,
-                  color: active ? "#6D28D9" : "#7A7068",
+                  fontFamily: theme.font.sans, fontWeight: active ? 500 : 400,
+                  background: active ? theme.color.accentSoft : theme.color.surface,
+                  border: `1px solid ${active ? theme.color.accent : theme.color.border}`,
+                  color: active ? theme.color.accent2 : theme.color.textMuted,
                 }}
               >
                 {TYPE_LABELS[t]}
@@ -185,8 +186,8 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
         {hasFilters && (
           <button onClick={clearFilters} style={{
             display: "flex", alignItems: "center", gap: 4, padding: "4px 10px",
-            borderRadius: 6, border: "1px solid #E8E1D5", background: "transparent",
-            fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+            borderRadius: 6, border: `1px solid ${theme.color.border}`, background: "transparent",
+            fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
           }}>
             <X size={11} /> Clear
           </button>
@@ -194,15 +195,15 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
 
         <div style={{ flex: 1 }} />
 
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono }}>
           {displayCount}
         </span>
 
         <button onClick={exportCsv} style={{
           display: "flex", alignItems: "center", gap: 5, padding: "6px 12px",
-          borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4",
-          fontSize: 12, fontWeight: 500, color: "#1A1714", cursor: "pointer",
-          fontFamily: "Geist, sans-serif",
+          borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+          fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, cursor: "pointer",
+          fontFamily: theme.font.sans,
         }}>
           <Download size={13} /> Export CSV
         </button>
