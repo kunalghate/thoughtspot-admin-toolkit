@@ -28,7 +28,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from sqlmodel import col, select
+from sqlmodel import col, func, select
 from sqlmodel import delete as sql_delete
 
 from ts_admin.database import get_session
@@ -308,6 +308,396 @@ def _write_dependencies_sync_log(cluster_id: str, org_id: int, *, record_count: 
         session.commit()
 
 
+# ── BUILD: Phase 2 column map + connection / liveboard edges (TML) ──────────────
+#
+# The 3-layer column map and the two edge kinds the dependency API can't supply
+# come from LOGICAL_TABLE + LIVEBOARD TML (JSON edoc). Parsers are pure functions
+# (unit-tested against canned TML) so parser fidelity — THE risk — is exercisable
+# without a live cluster; the Phase 3 debug endpoint validates against real data.
+
+_MODEL_KINDS = ("worksheet", "model")
+_SOURCE_KINDS = ("table", "view", "sql_view")
+
+
+def _load_edoc(item: dict) -> dict | None:
+    """Return the parsed TML dict for an export item, or None if inaccessible."""
+    edoc = item.get("edoc")
+    if isinstance(edoc, dict):
+        return edoc
+    if isinstance(edoc, str) and edoc.strip():
+        import json
+
+        try:
+            return json.loads(edoc)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _classify_edoc(edoc: dict) -> tuple[str, dict]:
+    """(kind, body) for a TML edoc — the top-level key is the discriminator."""
+    for key in (*_MODEL_KINDS, *_SOURCE_KINDS, "answer", "liveboard"):
+        body = edoc.get(key)
+        if isinstance(body, dict):
+            return key, body
+    return "", {}
+
+
+def _parse_physical_source(body: dict) -> dict:
+    """
+    Parse a physical table / view TML body into the db layer:
+    {db_table, connection_name, connection_guid, columns: {display_name → db_column}}.
+    The column display `name` is what connected models reference in `column_id`.
+    """
+    conn = body.get("connection") or {}
+    columns: dict[str, str] = {}
+    for c in body.get("columns", []) or []:
+        display = c.get("name")
+        if display:
+            columns[display] = c.get("db_column_name", "") or ""
+    return {
+        "db_table": body.get("db_table") or body.get("name", "") or "",
+        "connection_name": conn.get("name", "") or "",
+        "connection_guid": conn.get("fqn", "") or "",
+        "columns": columns,
+    }
+
+
+def _model_alias_map(body: dict) -> dict[str, tuple[str, str]]:
+    """
+    Map every `column_id` prefix a model column can use → (table_name, table_guid).
+
+    A prefix may be a table_paths id (worksheet), a model_tables id, or a table
+    name directly. `tables`/`model_tables[].fqn` supplies the source GUID.
+    """
+    alias: dict[str, tuple[str, str]] = {}
+    name_to_fqn: dict[str, str] = {}
+    for tbl in (body.get("tables") or body.get("model_tables") or []):
+        name = tbl.get("name") or tbl.get("id")
+        fqn = tbl.get("fqn", "") or ""
+        if not name:
+            continue
+        name_to_fqn[name] = fqn
+        alias[name] = (name, fqn)
+        if tbl.get("id"):
+            alias[tbl["id"]] = (name, fqn)
+    for path in body.get("table_paths", []) or []:
+        pid, tname = path.get("id"), path.get("table")
+        if pid and tname:
+            alias[pid] = (tname, name_to_fqn.get(tname, ""))
+    return alias
+
+
+def _resolve_model_columns(
+    *,
+    guid: str,
+    body: dict,
+    physical_by_guid: dict[str, dict],
+    physical_by_name: dict[str, dict],
+    cluster_id: str,
+    org_id: int,
+):
+    """
+    3-layer resolution for one worksheet/model: model_column → table_column →
+    db_column, joining source columns via the (already-exported) physical tables.
+    """
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+
+    alias = _model_alias_map(body)
+    cols = body.get("worksheet_columns") or body.get("columns") or []
+    rows: list[CachedColumnLineage] = []
+    for c in cols:
+        model_col = c.get("name")
+        if not model_col:
+            continue
+        column_id = c.get("column_id", "") or ""
+        table_name = table_guid = table_col = ""
+        if "::" in column_id:
+            prefix, table_col = column_id.split("::", 1)
+            table_name, table_guid = alias.get(prefix, (prefix, ""))
+
+        phys = None
+        if table_guid:
+            phys = physical_by_guid.get(table_guid)
+        if phys is None and table_name:
+            phys = physical_by_name.get(table_name)
+
+        rows.append(
+            CachedColumnLineage(
+                cluster_id=cluster_id,
+                org_id=org_id,
+                model_guid=guid,
+                model_column_name=model_col,
+                table_guid=table_guid,
+                table_column_name=table_col,
+                db_table=phys["db_table"] if phys else "",
+                db_column_name=(phys["columns"].get(table_col, "") if phys else ""),
+                connection_name=phys["connection_name"] if phys else "",
+            )
+        )
+    return rows
+
+
+def _search_query_columns(search_query: str) -> set[str]:
+    """Pull `[Column]` tokens out of a search_query string (one of 3 usage sources)."""
+    import re
+
+    if not search_query:
+        return set()
+    return {tok.strip() for tok in re.findall(r"\[([^\]]+)\]", search_query) if tok.strip()}
+
+
+def _extract_col_usage_from_answer(answer: dict) -> tuple[list[str], set[str]]:
+    """
+    From an answer body (standalone or liveboard-embedded), return
+    (referenced_model_guids, used_column_names) — the union of three sources:
+    answer_columns, table.table_columns[].column_id, and search_query tokens.
+    """
+    model_guids = [t.get("fqn") for t in (answer.get("tables") or []) if t.get("fqn")]
+    used: set[str] = set()
+    for c in answer.get("answer_columns", []) or []:
+        if c.get("name"):
+            used.add(c["name"])
+    table = answer.get("table") or {}
+    for c in table.get("table_columns", []) or []:
+        cid = c.get("column_id")
+        if cid:
+            used.add(cid)  # for answers, column_id is the display name
+    used |= _search_query_columns(answer.get("search_query", "") or "")
+    return model_guids, used
+
+
+def _embedded_answers(liveboard_body: dict):
+    """Yield each visualization's embedded answer body from a liveboard TML."""
+    for viz in liveboard_body.get("visualizations", []) or []:
+        answer = viz.get("answer")
+        if isinstance(answer, dict):
+            yield answer
+
+
+async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, incremental: bool = True) -> int:
+    """
+    Phase 2: build the 3-layer column map (LOGICAL_TABLE TML) plus the two edge
+    kinds only TML supplies — table→connection (CONNECTS) and liveboard→model
+    (USES) — from LIVEBOARD TML.
+
+    Logical tables are always fully exported (they're the minority set and a
+    model's column resolution needs its source tables present in the same batch).
+    Liveboards are exported incrementally: unchanged ones (modified_at ≤ the last
+    column build) keep their existing usage rows + edges. Returns rows written.
+    """
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    # 1. Universe + last-build timestamp (for liveboard incrementality).
+    with get_session() as session:
+        meta_rows = session.exec(
+            select(
+                CachedMetadata.ts_guid,
+                CachedMetadata.name,
+                CachedMetadata.object_type,
+                CachedMetadata.modified_at,
+            ).where(
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+            )
+        ).all()
+        last_built = session.exec(
+            select(func.max(CachedColumnLineage.synced_at)).where(
+                CachedColumnLineage.cluster_id == cluster_id,
+                CachedColumnLineage.org_id == org_id,
+            )
+        ).first()
+
+    meta_by_guid = {r[0]: (r[1], r[2]) for r in meta_rows}
+    table_guids = [r[0] for r in meta_rows if (r[2] or "").upper() in LOGICAL_TABLE_TYPES]
+    all_liveboards = [(r[0], r[3]) for r in meta_rows if _node_type(r[2]) == "LIVEBOARD"]
+
+    def _changed(modified_at) -> bool:
+        return not incremental or last_built is None or modified_at is None or modified_at > last_built
+
+    lb_guids = [guid for guid, modified_at in all_liveboards if _changed(modified_at)]
+
+    if not table_guids and not lb_guids:
+        return 0
+
+    cluster = _get_cluster(cluster_id)
+    physical_by_guid: dict[str, dict] = {}
+    physical_by_name: dict[str, dict] = {}
+    model_specs: list[tuple[str, dict]] = []  # (guid, body)
+    connect_edges: dict[str, dict] = {}       # table_guid → edge fields
+    lineage_rows: list = []
+    usage_rows: list = []
+    lb_uses_edges: list = []
+    inaccessible = 0
+    progress = 0
+
+    async with ThoughtSpotClient(
+        url=cluster.url,
+        auth=cluster.build_auth_strategy(org_id=org_id),
+    ) as client:
+        conn_name_to_guid = {c["name"]: c["id"] for c in await client.list_connections() if c.get("name")}
+
+        # 2a. Logical tables → physical summaries + model specs (parse, don't hoard raw TML).
+        for chunk in _chunks(table_guids, 50):
+            items = await client.tml_export(object_ids=chunk, edoc_format="JSON")
+            for item in items:
+                edoc = _load_edoc(item)
+                if edoc is None:
+                    inaccessible += 1
+                    continue
+                guid = (edoc.get("guid") or (item.get("info") or {}).get("id") or "")
+                kind, body = _classify_edoc(edoc)
+                if kind in _SOURCE_KINDS:
+                    summary = _parse_physical_source(body)
+                    if guid:
+                        physical_by_guid[guid] = summary
+                    if body.get("name"):
+                        physical_by_name[body["name"]] = summary
+                    conn_guid = summary["connection_guid"] or conn_name_to_guid.get(summary["connection_name"], "")
+                    if guid and summary["connection_name"]:
+                        connect_edges[guid] = {
+                            "source_guid": guid,
+                            "source_type": "DB_TABLE",
+                            "source_name": meta_by_guid.get(guid, (body.get("name", ""), ""))[0],
+                            "target_guid": conn_guid or f"conn::{summary['connection_name']}",
+                            "target_type": "CONNECTION",
+                            "target_name": summary["connection_name"],
+                            "relation": "CONNECTS",
+                        }
+                elif kind in _MODEL_KINDS and guid:
+                    model_specs.append((guid, body))
+            progress += len(chunk)
+            update_progress(job_id, progress)
+
+        # 2b. Resolve model column lineage now that all physical tables are known.
+        for guid, body in model_specs:
+            lineage_rows.extend(
+                _resolve_model_columns(
+                    guid=guid, body=body,
+                    physical_by_guid=physical_by_guid, physical_by_name=physical_by_name,
+                    cluster_id=cluster_id, org_id=org_id,
+                )
+            )
+
+        # 2c. Liveboards → model→liveboard USES edges + per-column usage (attributed to the LB).
+        for chunk in _chunks(lb_guids, 50):
+            items = await client.tml_export(object_ids=chunk, edoc_format="JSON")
+            for item in items:
+                edoc = _load_edoc(item)
+                if edoc is None:
+                    inaccessible += 1
+                    continue
+                guid = (edoc.get("guid") or (item.get("info") or {}).get("id") or "")
+                kind, body = _classify_edoc(edoc)
+                if kind != "liveboard" or not guid:
+                    continue
+                lb_name = meta_by_guid.get(guid, (body.get("name", ""), ""))[0]
+                seen_models: set[str] = set()
+                for answer in _embedded_answers(body):
+                    model_guids, used_cols = _extract_col_usage_from_answer(answer)
+                    for model_guid in model_guids:
+                        if model_guid not in seen_models:
+                            seen_models.add(model_guid)
+                            m_name, m_type = meta_by_guid.get(model_guid, ("", ""))
+                            lb_uses_edges.append(
+                                CachedDependency(
+                                    cluster_id=cluster_id, org_id=org_id,
+                                    source_guid=guid, source_type="LIVEBOARD", source_name=lb_name,
+                                    target_guid=model_guid, target_type=_node_type(m_type),
+                                    target_name=m_name,
+                                    relation="USES",
+                                )
+                            )
+                        for col in used_cols:
+                            usage_rows.append(
+                                CachedColumnUsage(
+                                    cluster_id=cluster_id, org_id=org_id,
+                                    model_guid=model_guid, model_column_name=col,
+                                    consumer_guid=guid, consumer_type="LIVEBOARD", consumer_name=lb_name,
+                                )
+                            )
+            progress += len(chunk)
+            update_progress(job_id, progress)
+
+    # 3. Persist (delete-before-insert, scoped for incremental liveboards).
+    now = datetime.now(timezone.utc)
+    written = _persist_column_map(
+        cluster_id=cluster_id, org_id=org_id, now=now,
+        lineage_rows=lineage_rows, connect_edges=list(connect_edges.values()),
+        lb_guids=lb_guids, lb_uses_edges=lb_uses_edges, usage_rows=usage_rows,
+    )
+    if inaccessible:
+        logger.info("Column map: %d inaccessible TML stub(s) for cluster=%s org=%s", inaccessible, cluster_id, org_id)
+    logger.info("Built column map (%d rows) for cluster=%s org=%s", written, cluster_id, org_id)
+    return written
+
+
+def _persist_column_map(
+    *, cluster_id, org_id, now, lineage_rows, connect_edges, lb_guids, lb_uses_edges, usage_rows
+) -> int:
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+
+    with get_session() as session:
+        # Column lineage: full rebuild (all logical tables were re-exported).
+        session.exec(
+            sql_delete(CachedColumnLineage).where(
+                CachedColumnLineage.cluster_id == cluster_id,
+                CachedColumnLineage.org_id == org_id,
+            )
+        )
+        # CONNECTS edges: full rebuild.
+        session.exec(
+            sql_delete(CachedDependency).where(
+                CachedDependency.cluster_id == cluster_id,
+                CachedDependency.org_id == org_id,
+                CachedDependency.relation == "CONNECTS",
+            )
+        )
+        # Liveboard USES edges + usage rows: scoped to the (re-exported) liveboards.
+        if lb_guids:
+            session.exec(
+                sql_delete(CachedDependency).where(
+                    CachedDependency.cluster_id == cluster_id,
+                    CachedDependency.org_id == org_id,
+                    CachedDependency.relation == "USES",
+                    CachedDependency.source_type == "LIVEBOARD",
+                    col(CachedDependency.source_guid).in_(lb_guids),
+                )
+            )
+            session.exec(
+                sql_delete(CachedColumnUsage).where(
+                    CachedColumnUsage.cluster_id == cluster_id,
+                    CachedColumnUsage.org_id == org_id,
+                    CachedColumnUsage.consumer_type == "LIVEBOARD",
+                    col(CachedColumnUsage.consumer_guid).in_(lb_guids),
+                )
+            )
+        session.commit()
+
+        count = 0
+        for row in lineage_rows:
+            row.synced_at = now
+            session.add(row)
+            count += 1
+        for fields in connect_edges:
+            session.add(CachedDependency(cluster_id=cluster_id, org_id=org_id, synced_at=now, **fields))
+            count += 1
+        for edge in lb_uses_edges:
+            edge.synced_at = now
+            session.add(edge)
+            count += 1
+        for row in usage_rows:
+            row.synced_at = now
+            session.add(row)
+            count += 1
+        session.commit()
+    return count
+
+
 # ── READ: topology (left-list universe) ─────────────────────────────────────────
 
 
@@ -449,6 +839,9 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
         # ── Impact: transitive downstream closure size (bounded) ──
         downstream_count = _downstream_closure_count(session, cluster_id, org_id, guid)
 
+        # ── Columns: the 3-layer map (Phase 2), scoped to the root ──
+        columns = _columns_for_root(session, cluster_id, org_id, guid, root_node_type)
+
     capped = any(consumer_totals.get(t, 0) > rendered_per_type.get(t, 0) for t in consumer_totals)
     return {
         "root": root,
@@ -458,7 +851,7 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
         "consumer_totals": consumer_totals,
         "capped": capped,
         "impact": {"downstream_count": downstream_count},
-        "columns": [],
+        "columns": columns,
     }
 
 
@@ -498,6 +891,87 @@ def _downstream_closure_count(session, cluster_id: str, org_id: int, guid: str) 
                 next_frontier.append(src)
         frontier = next_frontier
     return len(visited)
+
+
+def _columns_for_root(session, cluster_id: str, org_id: int, guid: str, node_type: str) -> list[dict]:
+    """
+    The 3-layer column map for the selected root, scoped to it:
+
+      - Model / logical-table root → its columns, each with the full "used by"
+        consumer list from ts_column_usage.
+      - Answer / Liveboard root → the columns *it* uses, resolved down through
+        its model(s); "used by" is just this consumer.
+
+    Returns [] when no column data exists yet (pre-Phase-2 build).
+    """
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+
+    def _usage_entry(u: CachedColumnUsage) -> dict:
+        return {"guid": u.consumer_guid, "name": u.consumer_name, "node_type": u.consumer_type}
+
+    if node_type in ("ANSWER", "LIVEBOARD"):
+        usage = session.exec(
+            select(CachedColumnUsage).where(
+                CachedColumnUsage.cluster_id == cluster_id,
+                CachedColumnUsage.org_id == org_id,
+                CachedColumnUsage.consumer_guid == guid,
+            )
+        ).all()
+        if not usage:
+            return []
+        model_guids = {u.model_guid for u in usage}
+        lineage = session.exec(
+            select(CachedColumnLineage).where(
+                CachedColumnLineage.cluster_id == cluster_id,
+                CachedColumnLineage.org_id == org_id,
+                col(CachedColumnLineage.model_guid).in_(model_guids),
+            )
+        ).all()
+        lineage_map = {(r.model_guid, r.model_column_name): r for r in lineage}
+        out: list[dict] = []
+        for u in sorted(usage, key=lambda x: x.model_column_name.lower()):
+            r = lineage_map.get((u.model_guid, u.model_column_name))
+            out.append(_column_row(r, u.model_guid, u.model_column_name, [_usage_entry(u)]))
+        return out
+
+    # Model / logical-table root.
+    lineage = session.exec(
+        select(CachedColumnLineage).where(
+            CachedColumnLineage.cluster_id == cluster_id,
+            CachedColumnLineage.org_id == org_id,
+            CachedColumnLineage.model_guid == guid,
+        )
+    ).all()
+    if not lineage:
+        return []
+    usage = session.exec(
+        select(CachedColumnUsage).where(
+            CachedColumnUsage.cluster_id == cluster_id,
+            CachedColumnUsage.org_id == org_id,
+            CachedColumnUsage.model_guid == guid,
+        )
+    ).all()
+    used_by: dict[str, list[dict]] = {}
+    for u in usage:
+        used_by.setdefault(u.model_column_name, []).append(_usage_entry(u))
+    return [
+        _column_row(r, r.model_guid, r.model_column_name, used_by.get(r.model_column_name, []))
+        for r in sorted(lineage, key=lambda x: x.model_column_name.lower())
+    ]
+
+
+def _column_row(r, model_guid: str, model_column_name: str, used_by: list[dict]) -> dict:
+    return {
+        "model_guid": model_guid,
+        "model_column_name": model_column_name,
+        "table_guid": r.table_guid if r else "",
+        "table_column_name": r.table_column_name if r else "",
+        "db_table": r.db_table if r else "",
+        "db_column_name": r.db_column_name if r else "",
+        "connection_name": r.connection_name if r else "",
+        "used_by": used_by,
+    }
 
 
 # ── READ: paginated consumers (fan-out drawer) ──────────────────────────────────

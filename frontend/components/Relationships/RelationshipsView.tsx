@@ -17,6 +17,7 @@ import { theme } from "@/lib/theme";
 import type { LineageGraphResponse, RootKind, TopologyItem, TopologyResponse } from "@/lib/types";
 import { ObjectList } from "./ObjectList";
 import { ConsumersDrawer } from "./ConsumersDrawer";
+import { ColumnsGrid } from "./ColumnsGrid";
 import { Legend } from "./Legend";
 import { rootKindFor, tabForNodeType, type ExplorerTab } from "./nodeStyles";
 
@@ -59,6 +60,7 @@ export function RelationshipsView({
 
   const [pinned, setPinned] = useState<Set<string>>(new Set());
   const [breadcrumb, setBreadcrumb] = useState<Crumb[]>([]);
+  const [detailTab, setDetailTab] = useState<"flow" | "columns">("flow");
   const [drawerType, setDrawerType] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
   const [buildProgress, setBuildProgress] = useState<number | null>(null);
@@ -241,6 +243,28 @@ export function RelationshipsView({
         </div>
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          {selected && graph && (graph.nodes.length > 1 || lineageBuilt) && !graphLoading && !graphError && (
+            <div style={{ display: "flex", gap: 2, padding: "6px 12px 0", borderBottom: `1px solid ${theme.color.border}`, background: theme.color.surface, flexShrink: 0 }}>
+              {(["flow", "columns"] as const).map((st) => (
+                <button
+                  key={st}
+                  onClick={() => setDetailTab(st)}
+                  style={{
+                    padding: "6px 14px", fontSize: 12.5, fontWeight: detailTab === st ? 600 : 400,
+                    fontFamily: theme.font.sans, cursor: "pointer", border: "none", background: "transparent",
+                    color: detailTab === st ? theme.color.accent2 : theme.color.textMuted,
+                    borderBottom: detailTab === st ? `2px solid ${theme.color.accent2}` : "2px solid transparent",
+                    marginBottom: -1, textTransform: "capitalize",
+                  }}
+                >
+                  {st === "flow" ? "Flow" : "Columns"}
+                  {st === "columns" && graph.columns.length > 0 && (
+                    <span style={{ marginLeft: 6, fontSize: 11, color: theme.color.textMuted }}>{graph.columns.length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ flex: 1, minHeight: 0 }}>
             {!selected ? (
               <CenteredMessage>
@@ -252,7 +276,11 @@ export function RelationshipsView({
             ) : graphError ? (
               <CenteredMessage><strong>Couldn&apos;t load lineage.</strong> {graphError}</CenteredMessage>
             ) : graph && (graph.nodes.length > 1 || lineageBuilt) ? (
-              <LineageFlow data={graph} onJump={onJump} onOpenDrawer={setDrawerType} />
+              detailTab === "flow" ? (
+                <LineageFlow data={graph} onJump={onJump} onOpenDrawer={setDrawerType} />
+              ) : (
+                <ColumnsGrid columns={graph.columns} onJump={onJump} />
+              )
             ) : (
               <BuildLineagePrompt building={building} progress={buildProgress} onBuild={triggerBuild} />
             )}
