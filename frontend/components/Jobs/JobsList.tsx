@@ -12,6 +12,7 @@ import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import { useShell } from "@/components/Shell";
+import { theme } from "@/lib/theme";
 import { diagnosticsApi, jobsApi } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/types";
 
@@ -27,12 +28,12 @@ const JOB_TYPE_LABELS: Record<string, string> = {
 };
 
 const STATUS_COLORS: Record<JobStatus, { bg: string; fg: string }> = {
-  QUEUED:   { bg: "#F3F4F6", fg: "#374151" },
-  PENDING:  { bg: "#F3F4F6", fg: "#374151" },
-  RUNNING:  { bg: "#E0F2FE", fg: "#0369A1" },
-  COMPLETE: { bg: "#D1FAE5", fg: "#065F46" },
-  PARTIAL:  { bg: "#FEF3C7", fg: "#92400E" },
-  FAILED:   { bg: "#FEF2F2", fg: "#991B1B" },
+  QUEUED:   { bg: theme.color.surface3, fg: theme.color.textSecondary },
+  PENDING:  { bg: theme.color.surface3, fg: theme.color.textSecondary },
+  RUNNING:  { bg: theme.color.accentSoft, fg: theme.color.accent2 },
+  COMPLETE: { bg: theme.color.successSoft, fg: theme.color.success },
+  PARTIAL:  { bg: theme.color.warnSoft, fg: theme.color.warn },
+  FAILED:   { bg: theme.color.dangerSoft, fg: theme.color.danger },
 };
 
 function relativeDate(iso: string | null): string {
@@ -60,7 +61,7 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     minWidth: 200,
     sortable: true,
     cellRenderer: (p: { value: string }) => (
-      <span style={{ fontFamily: "Geist, sans-serif", fontSize: 13 }}>
+      <span style={{ fontFamily: theme.font.sans, fontSize: 13 }}>
         {JOB_TYPE_LABELS[p.value] ?? p.value}
       </span>
     ),
@@ -71,11 +72,11 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     width: 120,
     sortable: true,
     cellRenderer: (p: { value: JobStatus }) => {
-      const c = STATUS_COLORS[p.value] ?? { bg: "#F3F4F6", fg: "#374151" };
+      const c = STATUS_COLORS[p.value] ?? { bg: theme.color.surface3, fg: theme.color.textSecondary };
       return (
         <span style={{
           padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
-          fontFamily: "Geist, sans-serif", letterSpacing: "0.02em",
+          fontFamily: theme.font.sans, letterSpacing: "0.02em",
           background: c.bg, color: c.fg,
         }}>{p.value}</span>
       );
@@ -95,15 +96,15 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     cellRenderer: (p: { value: string; data?: Job }) => {
       const job = p.data;
       if (!job || !job.total) {
-        return <span style={{ color: "#9CA3AF", fontSize: 12 }}>—</span>;
+        return <span style={{ color: theme.color.textMuted, fontSize: 12 }}>—</span>;
       }
       const pct = Math.min(100, Math.round(job.progress_pct ?? 0));
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 60, height: 6, background: "#E8E1D5", borderRadius: 3, overflow: "hidden" }}>
-            <div style={{ width: `${pct}%`, height: "100%", background: "#8B5CF6" }} />
+          <div style={{ width: 60, height: 6, background: theme.color.border, borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: theme.gradient.accent }} />
           </div>
-          <span style={{ fontSize: 11, fontFamily: "Geist Mono, monospace", color: "#7A7068" }}>
+          <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.color.textMuted }}>
             {p.value}
           </span>
         </div>
@@ -134,19 +135,19 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     cellRenderer: (p: { value: string | null; data?: Job }) => {
       const job = p.data;
       if (!p.value || !job) {
-        return <span style={{ color: "#C4B5FD", fontSize: 12 }}>—</span>;
+        return <span style={{ color: theme.color.violetBorder, fontSize: 12 }}>—</span>;
       }
       return (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          <span style={{ color: "#991B1B", fontSize: 12, fontFamily: "Geist, sans-serif" }}>
+          <span style={{ color: theme.color.danger, fontSize: 12, fontFamily: theme.font.sans }}>
             {p.value}
           </span>
           <button
             onClick={(e) => { e.stopPropagation(); onShowDetails(job); }}
             style={{
               padding: "1px 8px", fontSize: 11, fontWeight: 500,
-              background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 4,
-              cursor: "pointer", color: "#991B1B", fontFamily: "Geist, sans-serif",
+              background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 4,
+              cursor: "pointer", color: theme.color.danger, fontFamily: theme.font.sans,
             }}
           >Details</button>
         </span>
@@ -159,7 +160,7 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     width: 280,
     sortable: false,
     cellRenderer: (p: { value: string }) => (
-      <span title={p.value} style={{ fontFamily: "Geist Mono, monospace", fontSize: 11, color: "#7A7068" }}>
+      <span title={p.value} style={{ fontFamily: theme.font.mono, fontSize: 11, color: theme.color.textMuted }}>
         {p.value}
       </span>
     ),
@@ -233,7 +234,7 @@ export function JobsList() {
       padding: 24, gap: 12, overflow: "hidden",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono }}>
           {displayCount}
         </span>
         <div style={{ flex: 1 }} />
@@ -241,8 +242,8 @@ export function JobsList() {
           onClick={reloadGrid}
           style={{
             padding: "6px 12px", fontSize: 12, fontWeight: 500,
-            background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
-            cursor: "pointer", color: "#1A1714", fontFamily: "Geist, sans-serif",
+            background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+            cursor: "pointer", color: theme.color.textPrimary, fontFamily: theme.font.sans,
           }}
         >Refresh</button>
       </div>
@@ -297,7 +298,7 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, background: "rgba(15, 12, 10, 0.55)",
+        position: "fixed", inset: 0, background: theme.color.overlay,
         display: "flex", alignItems: "center", justifyContent: "center",
         zIndex: 1000, padding: 24,
       }}
@@ -305,23 +306,23 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: "#FFFEFB", borderRadius: 12,
+          background: theme.color.surface, borderRadius: 12,
           maxWidth: 720, width: "100%", maxHeight: "85vh",
           display: "flex", flexDirection: "column",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-          border: "1px solid #E8E1D5", fontFamily: "Geist, sans-serif",
+          boxShadow: theme.shadow.lg,
+          border: `1px solid ${theme.color.border}`, fontFamily: theme.font.sans,
         }}
       >
         <div style={{
-          padding: "18px 22px", borderBottom: "1px solid #E8E1D5",
+          padding: "18px 22px", borderBottom: `1px solid ${theme.color.border}`,
           display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
         }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 16, fontWeight: 600, color: "#1A1714" }}>
+            <div style={{ fontSize: 16, fontWeight: 600, color: theme.color.textPrimary }}>
               {friendlyTitle}
             </div>
             {friendlyHint && (
-              <div style={{ fontSize: 13, color: "#574F47", marginTop: 4 }}>
+              <div style={{ fontSize: 13, color: theme.color.textSecondary, marginTop: 4 }}>
                 {friendlyHint}
               </div>
             )}
@@ -331,7 +332,7 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
             aria-label="Close"
             style={{
               background: "transparent", border: "none", cursor: "pointer",
-              fontSize: 22, color: "#7A7068", padding: "0 4px", lineHeight: 1,
+              fontSize: 22, color: theme.color.textMuted, padding: "0 4px", lineHeight: 1,
             }}
           >×</button>
         </div>
@@ -340,17 +341,17 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14, fontSize: 12 }}>
             {job.error_type && (
               <span style={{
-                background: "#FEF2F2", color: "#991B1B",
-                padding: "3px 10px", borderRadius: 12, fontFamily: "Geist Mono, monospace",
+                background: theme.color.dangerSoft, color: theme.color.danger,
+                padding: "3px 10px", borderRadius: 12, fontFamily: theme.font.mono,
               }}>{job.error_type}</span>
             )}
             <span style={{
-              background: "#F3F0EA", color: "#574F47",
-              padding: "3px 10px", borderRadius: 12, fontFamily: "Geist Mono, monospace",
+              background: theme.color.surface2, color: theme.color.textSecondary,
+              padding: "3px 10px", borderRadius: 12, fontFamily: theme.font.mono,
             }}>{JOB_TYPE_LABELS[job.job_type] ?? job.job_type}</span>
             <span title={job.id} style={{
-              background: "#F3F0EA", color: "#574F47",
-              padding: "3px 10px", borderRadius: 12, fontFamily: "Geist Mono, monospace",
+              background: theme.color.surface2, color: theme.color.textSecondary,
+              padding: "3px 10px", borderRadius: 12, fontFamily: theme.font.mono,
             }}>{job.id.slice(0, 8)}…</span>
           </div>
 
@@ -360,36 +361,36 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
                 onClick={() => setShowTraceback((v) => !v)}
                 style={{
                   padding: "6px 12px", fontSize: 12, fontWeight: 500,
-                  background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
-                  cursor: "pointer", color: "#1A1714", fontFamily: "Geist, sans-serif",
+                  background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+                  cursor: "pointer", color: theme.color.textPrimary, fontFamily: theme.font.sans,
                   marginBottom: 10,
                 }}
               >{showTraceback ? "Hide technical details" : "Show technical details"}</button>
               {showTraceback && (
                 <pre style={{
-                  background: "#1A1714", color: "#F3F0EA",
+                  background: theme.color.codeBg, color: theme.color.codeFg,
                   padding: 14, borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
-                  fontFamily: "Geist Mono, monospace",
+                  fontFamily: theme.font.mono,
                   maxHeight: "40vh", overflow: "auto",
                   whiteSpace: "pre-wrap", wordBreak: "break-word",
                 }}>{job.error_traceback}</pre>
               )}
             </>
           ) : (
-            <div style={{ fontSize: 12, color: "#7A7068", fontStyle: "italic" }}>
+            <div style={{ fontSize: 12, color: theme.color.textMuted, fontStyle: "italic" }}>
               No traceback was captured for this job.
             </div>
           )}
         </div>
 
         <div style={{
-          padding: "14px 22px", borderTop: "1px solid #E8E1D5",
+          padding: "14px 22px", borderTop: `1px solid ${theme.color.border}`,
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
         }}>
           <a
             href={bundleUrl}
             style={{
-              fontSize: 12, color: "#6D28D9", fontWeight: 500,
+              fontSize: 12, color: theme.color.accent2, fontWeight: 500,
               textDecoration: "none",
             }}
           >Download diagnostics for this job</a>
@@ -397,8 +398,8 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
             onClick={onClose}
             style={{
               padding: "6px 14px", fontSize: 12, fontWeight: 500,
-              background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
-              cursor: "pointer", color: "#1A1714", fontFamily: "Geist, sans-serif",
+              background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
+              cursor: "pointer", color: theme.color.textPrimary, fontFamily: theme.font.sans,
             }}
           >Close</button>
         </div>

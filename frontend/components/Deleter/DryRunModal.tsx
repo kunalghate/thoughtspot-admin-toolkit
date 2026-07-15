@@ -18,6 +18,7 @@ import type { IDatasource, IGetRowsParams } from "ag-grid-community";
 import { X, Loader2, AlertTriangle, Share2, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 
 import { jobsApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { DeleterItem, DryRunSummary, Job, PaginatedResponse } from "@/lib/types";
 import { OBJECT_COLUMNS } from "./columns";
 
@@ -186,9 +187,9 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
   };
 
   const resultColors = {
-    success: { bg: "#D1FAE5", border: "#6EE7B7", text: "#065F46", icon: CheckCircle },
-    partial: { bg: "#FEF3C7", border: "#FCD34D", text: "#92400E", icon: AlertCircle },
-    failed:  { bg: "#FEF2F2", border: "#FECACA", text: "#991B1B", icon: XCircle },
+    success: { bg: theme.color.successSoft, border: theme.color.successBorder, text: theme.color.success, icon: CheckCircle },
+    partial: { bg: theme.color.warnSoft, border: theme.color.warnBorder, text: theme.color.warn, icon: AlertCircle },
+    failed:  { bg: theme.color.dangerSoft, border: theme.color.dangerBorder, text: theme.color.danger, icon: XCircle },
   };
 
   const resultText = () => {
@@ -222,7 +223,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
     <>
       {/* Backdrop */}
       <div
-        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }}
+        style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }}
         onClick={state === "polling" || state === "running" ? undefined : () => onClose(state === "complete")}
       />
 
@@ -234,25 +235,25 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
         position: "fixed", top: "50%", left: "50%",
         transform: "translate(-50%, -50%)",
         width: 680, maxHeight: "85vh",
-        background: "#fff", borderRadius: 10, zIndex: 301,
+        background: theme.color.surface, borderRadius: 10, zIndex: 301,
         display: "flex", flexDirection: "column",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.18)",
+        boxShadow: theme.shadow.lg,
         overflow: "hidden",
       }}>
 
         {/* ── Header ── */}
         <div style={{
           display: "flex", alignItems: "center", padding: "16px 20px",
-          borderBottom: "1px solid #E8E1D5", flexShrink: 0,
+          borderBottom: `1px solid ${theme.color.border}`, flexShrink: 0,
         }}>
-          <span style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif", flex: 1 }}>
+          <span style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, flex: 1 }}>
             {state === "polling"  && "Checking impact…"}
             {state === "ready"    && `Delete ${objectIds.length.toLocaleString()} objects`}
             {state === "running"  && "Deleting objects…"}
             {state === "complete" && "Delete complete"}
           </span>
           {(state === "ready" || state === "complete") && (
-            <button onClick={() => onClose(state === "complete")} style={{ background: "none", border: "none", cursor: "pointer", color: "#7A7068", padding: 4 }}>
+            <button onClick={() => onClose(state === "complete")} style={{ background: "none", border: "none", cursor: "pointer", color: theme.color.textMuted, padding: 4 }}>
               <X size={16} />
             </button>
           )}
@@ -262,19 +263,19 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
         <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
 
           {error && state !== "complete" && (
-            <div style={{ padding: 12, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 6, color: "#991B1B", fontSize: 13, fontFamily: "Geist, sans-serif" }}>
+            <div style={{ padding: 12, background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6, color: theme.color.danger, fontSize: 13, fontFamily: theme.font.sans }}>
               {error}
             </div>
           )}
 
           {/* Polling */}
           {state === "polling" && !error && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "32px 0", color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
-              <Loader2 size={28} style={{ animation: "spin 1s linear infinite", color: "#8B5CF6" }} />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "32px 0", color: theme.color.textMuted, fontFamily: theme.font.sans }}>
+              <Loader2 size={28} style={{ animation: "spin 1s linear infinite", color: theme.color.accent }} />
               <div style={{ fontSize: 14, textAlign: "center" }}>
                 Checking {objectIds.length.toLocaleString()} objects for permissions and dependencies…
               </div>
-              <div style={{ fontSize: 12, color: "#A89D94" }}>This runs as a background job — no timeout risk.</div>
+              <div style={{ fontSize: 12, color: theme.color.textMuted }}>This runs as a background job — no timeout risk.</div>
             </div>
           )}
 
@@ -286,12 +287,12 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
                 {impactCards.map(({ label, value }) => (
                   <div key={label} style={{
                     flex: 1, padding: "12px 14px", borderRadius: 8,
-                    background: "#FAF8F4", border: "1px solid #E8E1D5", textAlign: "center",
+                    background: theme.color.surface, border: `1px solid ${theme.color.border}`, textAlign: "center",
                   }}>
-                    <div style={{ fontSize: 22, fontWeight: 600, color: "#1A1714", fontFamily: "Geist Mono, monospace" }}>
+                    <div style={{ fontSize: 22, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.mono }}>
                       {value.toLocaleString()}
                     </div>
-                    <div style={{ fontSize: 11, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 2 }}>
+                    <div style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 2 }}>
                       {label}
                     </div>
                   </div>
@@ -300,7 +301,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
 
               {summary.shared_count > 0 && (
                 <WarningBox icon={<Share2 size={14} />} title={`${summary.shared_count} shared object${summary.shared_count !== 1 ? "s" : ""} — access will be revoked`}>
-                  <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 4 }}>
                     Affected: {summary.affected_principals.slice(0, 5).map((p) => p.name).join(", ")}
                     {summary.affected_principals.length > 5 && ` +${summary.affected_principals.length - 5} more`}
                   </div>
@@ -309,7 +310,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
 
               {summary.dependency_warnings.length > 0 && (
                 <WarningBox icon={<AlertTriangle size={14} />} title={`${summary.dependency_warnings.length} object${summary.dependency_warnings.length !== 1 ? "s" : ""} have active dependents — HIGH RISK`} color="red">
-                  <ul style={{ margin: "4px 0 0 0", padding: "0 0 0 16px", fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+                  <ul style={{ margin: "4px 0 0 0", padding: "0 0 0 16px", fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
                     {summary.dependency_warnings.slice(0, 3).map((w) => (
                       <li key={w.ts_guid}>{w.name} ({w.dependents.length} dependent{w.dependents.length !== 1 ? "s" : ""})</li>
                     ))}
@@ -322,7 +323,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
 
               {summary.errors.length > 0 && (
                 <WarningBox icon={<AlertCircle size={14} />} title={`${summary.errors.length} object${summary.errors.length !== 1 ? "s" : ""} could not be checked`} color="gray">
-                  <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 4 }}>
                     These will still be included in the delete batch. Check the audit log for details.
                   </div>
                 </WarningBox>
@@ -330,7 +331,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
 
               {/* Object list grid */}
               <div>
-                <div style={{ fontSize: 12, fontWeight: 500, color: "#7A7068", fontFamily: "Geist, sans-serif", marginBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: theme.color.textMuted, fontFamily: theme.font.sans, marginBottom: 6 }}>
                   Objects to be deleted
                 </div>
                 <div className="ag-theme-alpine" style={{ height: 200 }}>
@@ -349,8 +350,8 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
 
               {/* DELETE confirmation */}
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <label style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
-                  Type <strong style={{ color: "#991B1B", fontFamily: "Geist Mono, monospace" }}>DELETE</strong> to confirm
+                <label style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
+                  Type <strong style={{ color: theme.color.danger, fontFamily: theme.font.mono }}>DELETE</strong> to confirm
                 </label>
                 <input
                   data-testid="dryrun-confirm-input"
@@ -360,9 +361,9 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
                   autoFocus
                   style={{
                     height: 36, padding: "0 12px", borderRadius: 6, fontSize: 14,
-                    border: `1px solid ${confirmInput === "DELETE" ? "#6EE7B7" : "#E8E1D5"}`,
-                    background: confirmInput === "DELETE" ? "#F0FDF4" : "#fff",
-                    fontFamily: "Geist Mono, monospace", outline: "none", color: "#1A1714",
+                    border: `1px solid ${confirmInput === "DELETE" ? theme.color.successBorder : theme.color.border}`,
+                    background: confirmInput === "DELETE" ? theme.color.successSoft : theme.color.surface,
+                    fontFamily: theme.font.mono, outline: "none", color: theme.color.textPrimary,
                   }}
                 />
               </div>
@@ -375,28 +376,28 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
               {executeJob ? (
                 <>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 14, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+                    <span style={{ fontSize: 14, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
                       {executeJob.progress.toLocaleString()} / {executeJob.total.toLocaleString()} objects processed
                     </span>
-                    <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace" }}>
+                    <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono }}>
                       {executeJob.total > 0 ? Math.round((executeJob.progress / executeJob.total) * 100) : 0}%
                     </span>
                   </div>
-                  <div style={{ height: 8, background: "#E8E1D5", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ height: 8, background: theme.color.border, borderRadius: 4, overflow: "hidden" }}>
                     <div style={{
-                      height: "100%", borderRadius: 4, background: "#8B5CF6",
+                      height: "100%", borderRadius: 4, background: theme.gradient.accent,
                       width: `${executeJob.total > 0 ? Math.round((executeJob.progress / executeJob.total) * 100) : 0}%`,
                       transition: "width 0.4s ease",
                     }} />
                   </div>
                 </>
               ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#7A7068", fontFamily: "Geist, sans-serif", fontSize: 14 }}>
-                  <Loader2 size={16} style={{ animation: "spin 1s linear infinite", color: "#8B5CF6" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.color.textMuted, fontFamily: theme.font.sans, fontSize: 14 }}>
+                  <Loader2 size={16} style={{ animation: "spin 1s linear infinite", color: theme.color.accent }} />
                   Starting delete job…
                 </div>
               )}
-              <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+              <div style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
                 TML backups are written before each deletion — you can restore any object from History.
               </div>
             </div>
@@ -415,21 +416,21 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
               }}>
                 <Icon size={18} style={{ color: c.text, flexShrink: 0, marginTop: 1 }} />
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 500, color: c.text, fontFamily: "Geist, sans-serif" }}>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: c.text, fontFamily: theme.font.sans }}>
                     {resultText()}
                   </div>
                   <div style={{ display: "flex", gap: 12, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <button
                       onClick={() => { onClose(true); onViewHistory(); }}
                       style={{
-                        fontSize: 12, color: "#6D28D9", fontFamily: "Geist, sans-serif",
+                        fontSize: 12, color: theme.color.accent2, fontFamily: theme.font.sans,
                         background: "none", border: "none", cursor: "pointer", padding: 0,
                         textDecoration: "underline",
                       }}
                     >
                       View in History →
                     </button>
-                    <span style={{ fontSize: 11, color: "#A89D94", fontFamily: "Geist, sans-serif" }}>
+                    <span style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
                       TML backups available to download from the History tab.
                     </span>
                   </div>
@@ -443,14 +444,14 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
         {state === "ready" && (
           <div style={{
             display: "flex", justifyContent: "flex-end", gap: 8,
-            padding: "12px 20px", borderTop: "1px solid #E8E1D5", flexShrink: 0,
+            padding: "12px 20px", borderTop: `1px solid ${theme.color.border}`, flexShrink: 0,
           }}>
             <button
               onClick={() => onClose(false)}
               style={{
                 padding: "7px 16px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-                border: "1px solid #E8E1D5", background: "#FAF8F4",
-                color: "#7A7068", fontFamily: "Geist, sans-serif",
+                border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+                color: theme.color.textMuted, fontFamily: theme.font.sans,
               }}
             >
               Cancel
@@ -461,11 +462,11 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
               onClick={handleConfirm}
               style={{
                 padding: "7px 16px", borderRadius: 6, fontSize: 13,
-                fontWeight: 500, fontFamily: "Geist, sans-serif",
+                fontWeight: 500, fontFamily: theme.font.sans,
                 cursor: confirmInput === "DELETE" ? "pointer" : "default",
                 border: "none",
-                background: confirmInput === "DELETE" ? "#DC2626" : "#FCA5A5",
-                color: "#fff",
+                background: confirmInput === "DELETE" ? theme.color.danger : theme.color.dangerBorder,
+                color: theme.color.onAccent,
                 transition: "background 0.15s",
               }}
             >
@@ -489,9 +490,9 @@ function WarningBox({
   color?: "amber" | "red" | "gray";
 }) {
   const colors = {
-    amber: { bg: "#FEF3C7", border: "#FCD34D", text: "#92400E" },
-    red:   { bg: "#FEF2F2", border: "#FECACA", text: "#991B1B" },
-    gray:  { bg: "#F9FAFB", border: "#E5E7EB", text: "#374151" },
+    amber: { bg: theme.color.warnSoft, border: theme.color.warnBorder, text: theme.color.warn },
+    red:   { bg: theme.color.dangerSoft, border: theme.color.dangerBorder, text: theme.color.danger },
+    gray:  { bg: theme.color.surface3, border: theme.color.border, text: theme.color.textSecondary },
   };
   const c = colors[color];
   return (
@@ -499,7 +500,7 @@ function WarningBox({
       padding: "10px 12px", borderRadius: 6,
       background: c.bg, border: `1px solid ${c.border}`,
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, color: c.text, fontSize: 13, fontFamily: "Geist, sans-serif", fontWeight: 500 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, color: c.text, fontSize: 13, fontFamily: theme.font.sans, fontWeight: 500 }}>
         {icon} {title}
       </div>
       {children}

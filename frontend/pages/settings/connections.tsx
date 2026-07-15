@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus, Trash2, CheckCircle, XCircle, Pencil } from "lucide-react";
 import AppShell from "@/components/Shell";
 import { SettingsTabs } from "@/components/SettingsTabs";
+import { theme } from "@/lib/theme";
 import { clustersApi } from "@/lib/api";
 import type { Cluster } from "@/lib/types";
 
@@ -52,10 +53,10 @@ export default function ConnectionsPage() {
         {/* Header row */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div>
-            <h2 style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif", margin: 0 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, margin: 0 }}>
               ThoughtSpot Clusters
             </h2>
-            <p style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 4 }}>
+            <p style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 4 }}>
               Connect to one or more ThoughtSpot instances. Credentials are stored securely in your OS keychain.
             </p>
           </div>
@@ -65,8 +66,9 @@ export default function ConnectionsPage() {
               onClick={() => setShowForm(true)}
               style={{
                 display: "flex", alignItems: "center", gap: 6, padding: "7px 14px",
-                background: "#8B5CF6", color: "white", border: "none", borderRadius: 6,
-                fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "Geist, sans-serif",
+                background: theme.gradient.accent, boxShadow: theme.shadow.glowAccent,
+                color: theme.color.onAccent, border: "none", borderRadius: 6,
+                fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: theme.font.sans,
                 flexShrink: 0,
               }}
             >
@@ -77,7 +79,7 @@ export default function ConnectionsPage() {
 
         {/* Cluster list */}
         {loading ? (
-          <p style={{ fontSize: 13, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>Loading…</p>
+          <p style={{ fontSize: 13, color: theme.color.textMuted, fontFamily: theme.font.sans }}>Loading…</p>
         ) : clusters.length === 0 ? (
           <EmptyState onAdd={() => setShowForm(true)} />
         ) : (
@@ -141,7 +143,7 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
 
   return (
     <div style={{
-      background: "#FAF8F4", border: `1px solid ${cluster.is_active ? "#8B5CF6" : "#E8E1D5"}`,
+      background: theme.color.surface, border: `1px solid ${cluster.is_active ? theme.color.accent : theme.color.border}`,
       borderRadius: 8, padding: "16px 20px",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -149,41 +151,41 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
         {/* Active indicator */}
         <div style={{
           width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-          background: cluster.is_active ? "#8B5CF6" : "#E8E1D5",
+          background: cluster.is_active ? theme.color.accent : theme.color.border,
         }} />
 
         {/* Cluster info */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
               {cluster.name}
             </span>
             {cluster.is_active && (
               <span style={{
-                fontSize: 10, fontWeight: 500, color: "#6D28D9",
-                background: "#EDE9FE", padding: "1px 7px", borderRadius: 10,
-                fontFamily: "Geist, sans-serif", textTransform: "uppercase", letterSpacing: "0.05em",
+                fontSize: 10, fontWeight: 500, color: theme.color.accent2,
+                background: theme.color.accentSoft, padding: "1px 7px", borderRadius: 10,
+                fontFamily: theme.font.sans, textTransform: "uppercase", letterSpacing: "0.05em",
               }}>
                 Active
               </span>
             )}
           </div>
-          <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 2 }}>
             {cluster.url} · {cluster.username} · {AUTH_LABELS[cluster.auth_type as AuthType] ?? cluster.auth_type}
           </div>
         </div>
 
         {/* Test connection */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {testState === "ok" && <CheckCircle size={14} color="#059669" />}
-          {testState === "fail" && <XCircle size={14} color="#DC2626" />}
+          {testState === "ok" && <CheckCircle size={14} color={theme.color.success} />}
+          {testState === "fail" && <XCircle size={14} color={theme.color.danger} />}
           <button
             onClick={handleTest}
             disabled={testState === "testing"}
             style={{
               padding: "5px 11px", borderRadius: 5, fontSize: 12, fontWeight: 500,
-              border: "1px solid #E8E1D5", background: "transparent", cursor: "pointer",
-              color: "#1A1714", fontFamily: "Geist, sans-serif",
+              border: `1px solid ${theme.color.border}`, background: "transparent", cursor: "pointer",
+              color: theme.color.textPrimary, fontFamily: theme.font.sans,
               opacity: testState === "testing" ? 0.6 : 1,
             }}
           >
@@ -197,8 +199,8 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
             onClick={onActivate}
             style={{
               padding: "5px 11px", borderRadius: 5, fontSize: 12, fontWeight: 500,
-              border: "1px solid #8B5CF6", background: "transparent", cursor: "pointer",
-              color: "#8B5CF6", fontFamily: "Geist, sans-serif",
+              border: `1px solid ${theme.color.accent}`, background: "transparent", cursor: "pointer",
+              color: theme.color.accent2, fontFamily: theme.font.sans,
             }}
           >
             Set active
@@ -208,7 +210,7 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
         {/* Edit */}
         <button
           onClick={onEdit}
-          style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "#A89E96" }}
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: theme.color.textMuted }}
           title="Edit cluster"
         >
           <Pencil size={14} />
@@ -217,7 +219,7 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
         {/* Delete */}
         <button
           onClick={onDelete}
-          style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "#A89E96" }}
+          style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: theme.color.textMuted }}
           title="Remove cluster"
         >
           <Trash2 size={14} />
@@ -225,7 +227,7 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
       </div>
 
       {testState === "fail" && testError && (
-        <p style={{ margin: "8px 0 0 20px", fontSize: 12, color: "#DC2626", fontFamily: "Geist, sans-serif" }}>
+        <p style={{ margin: "8px 0 0 20px", fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans }}>
           {testError}
         </p>
       )}
@@ -238,21 +240,22 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   return (
     <div style={{
-      border: "2px dashed #E8E1D5", borderRadius: 10, padding: "48px 32px",
+      border: `2px dashed ${theme.color.border}`, borderRadius: 10, padding: "48px 32px",
       textAlign: "center",
     }}>
-      <h3 style={{ fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif", margin: "0 0 8px" }}>
+      <h3 style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, margin: "0 0 8px" }}>
         No clusters configured
       </h3>
-      <p style={{ fontSize: 13, color: "#7A7068", fontFamily: "Geist, sans-serif", margin: "0 0 20px" }}>
+      <p style={{ fontSize: 13, color: theme.color.textMuted, fontFamily: theme.font.sans, margin: "0 0 20px" }}>
         Add your first ThoughtSpot instance to get started.
       </p>
       <button
         onClick={onAdd}
         style={{
           display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 16px",
-          background: "#8B5CF6", color: "white", border: "none", borderRadius: 6,
-          fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "Geist, sans-serif",
+          background: theme.gradient.accent, boxShadow: theme.shadow.glowAccent,
+          color: theme.color.onAccent, border: "none", borderRadius: 6,
+          fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: theme.font.sans,
         }}
       >
         <Plus size={14} /> Add cluster
@@ -317,21 +320,21 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
   return (
     <>
       {/* Backdrop */}
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)", zIndex: 40 }} />
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 40 }} />
 
       {/* Panel */}
       <div style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: 420,
-        background: "#FAF8F4", borderLeft: "1px solid #E8E1D5",
+        background: theme.color.surface, borderLeft: `1px solid ${theme.color.border}`,
         zIndex: 50, display: "flex", flexDirection: "column",
-        boxShadow: "-8px 0 32px rgba(0,0,0,0.08)",
+        boxShadow: theme.shadow.lg,
       }}>
         {/* Header */}
-        <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid #E8E1D5" }}>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+        <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${theme.color.border}` }}>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
             Add cluster
           </h3>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
             Credentials are saved to your OS keychain.
           </p>
         </div>
@@ -366,30 +369,30 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
           {/* Test result */}
           {testState !== "idle" && (
             <div style={{
-              padding: "10px 12px", borderRadius: 6, fontSize: 12, fontFamily: "Geist, sans-serif",
-              background: testState === "ok" ? "#D1FAE5" : testState === "fail" ? "#FEE2E2" : "#F0EBE3",
-              color: testState === "ok" ? "#059669" : testState === "fail" ? "#DC2626" : "#7A7068",
+              padding: "10px 12px", borderRadius: 6, fontSize: 12, fontFamily: theme.font.sans,
+              background: testState === "ok" ? theme.color.successSoft : testState === "fail" ? theme.color.dangerSoft : theme.color.surface2,
+              color: testState === "ok" ? theme.color.success : testState === "fail" ? theme.color.danger : theme.color.textMuted,
             }}>
               {testState === "testing" ? "Testing connection…" : testMsg}
             </div>
           )}
 
           {error && (
-            <div style={{ padding: "10px 12px", borderRadius: 6, fontSize: 12, color: "#DC2626", background: "#FEE2E2", fontFamily: "Geist, sans-serif" }}>
+            <div style={{ padding: "10px 12px", borderRadius: 6, fontSize: 12, color: theme.color.danger, background: theme.color.dangerSoft, fontFamily: theme.font.sans }}>
               {error}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div style={{ padding: "16px 24px", borderTop: "1px solid #E8E1D5", display: "flex", gap: 10 }}>
+        <div style={{ padding: "16px 24px", borderTop: `1px solid ${theme.color.border}`, display: "flex", gap: 10 }}>
           <button
             onClick={handleTest}
             disabled={!canSave || testState === "testing"}
             style={{
               flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 13, fontWeight: 500,
-              border: "1px solid #E8E1D5", background: "transparent", cursor: "pointer",
-              color: "#1A1714", fontFamily: "Geist, sans-serif",
+              border: `1px solid ${theme.color.border}`, background: "transparent", cursor: "pointer",
+              color: theme.color.textPrimary, fontFamily: theme.font.sans,
               opacity: !canSave || testState === "testing" ? 0.5 : 1,
             }}
           >
@@ -400,8 +403,9 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
             disabled={!canSave || saving}
             style={{
               flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 13, fontWeight: 500,
-              border: "none", background: "#8B5CF6", color: "white", cursor: "pointer",
-              fontFamily: "Geist, sans-serif",
+              border: "none", background: theme.gradient.accent, boxShadow: theme.shadow.glowAccent,
+              color: theme.color.onAccent, cursor: "pointer",
+              fontFamily: theme.font.sans,
               opacity: !canSave || saving ? 0.5 : 1,
             }}
           >
@@ -459,17 +463,17 @@ function EditClusterPanel({ cluster, onClose, onSaved }: {
 
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.2)", zIndex: 49 }} />
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 49 }} />
       <div style={panelStyle}>
         <div style={{
-          width: 420, height: "100%", background: "#FAF8F4",
-          borderLeft: "1px solid #E8E1D5", padding: 28,
+          width: 420, height: "100%", background: theme.color.surface,
+          borderLeft: `1px solid ${theme.color.border}`, padding: 28,
           display: "flex", flexDirection: "column", gap: 20,
-          overflowY: "auto", zIndex: 50, fontFamily: "Geist, sans-serif",
+          overflowY: "auto", zIndex: 50, fontFamily: theme.font.sans,
         }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#1A1714" }}>Edit cluster</h3>
-            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#7A7068", fontSize: 18 }}>✕</button>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary }}>Edit cluster</h3>
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: theme.color.textMuted, fontSize: 18 }}>✕</button>
           </div>
 
           <Field label="Display name">
@@ -499,20 +503,21 @@ function EditClusterPanel({ cluster, onClose, onSaved }: {
             />
           </Field>
 
-          {error && <p style={{ margin: 0, fontSize: 12, color: "#DC2626" }}>{error}</p>}
+          {error && <p style={{ margin: 0, fontSize: 12, color: theme.color.danger }}>{error}</p>}
 
           <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
             <button onClick={onClose} style={{
               flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 13, fontWeight: 500,
-              border: "1px solid #E8E1D5", background: "transparent", cursor: "pointer",
-              color: "#1A1714", fontFamily: "Geist, sans-serif",
+              border: `1px solid ${theme.color.border}`, background: "transparent", cursor: "pointer",
+              color: theme.color.textPrimary, fontFamily: theme.font.sans,
             }}>
               Cancel
             </button>
             <button onClick={handleSave} disabled={saving} style={{
               flex: 1, padding: "8px 0", borderRadius: 6, fontSize: 13, fontWeight: 500,
-              border: "none", background: "#8B5CF6", color: "white", cursor: "pointer",
-              fontFamily: "Geist, sans-serif", opacity: saving ? 0.6 : 1,
+              border: "none", background: theme.gradient.accent, boxShadow: theme.shadow.glowAccent,
+              color: theme.color.onAccent, cursor: "pointer",
+              fontFamily: theme.font.sans, opacity: saving ? 0.6 : 1,
             }}>
               {saving ? "Saving…" : "Save changes"}
             </button>
@@ -528,9 +533,9 @@ function EditClusterPanel({ cluster, onClose, onSaved }: {
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", fontFamily: "Geist, sans-serif", display: "block", marginBottom: 6 }}>
+      <label style={{ fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, fontFamily: theme.font.sans, display: "block", marginBottom: 6 }}>
         {label}
-        {hint && <span style={{ fontWeight: 400, color: "#7A7068", marginLeft: 6 }}>{hint}</span>}
+        {hint && <span style={{ fontWeight: 400, color: theme.color.textMuted, marginLeft: 6 }}>{hint}</span>}
       </label>
       {children}
     </div>
@@ -540,8 +545,8 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 const inputStyle = {
   style: {
     width: "100%", height: 34, padding: "0 10px", borderRadius: 6,
-    border: "1px solid #E8E1D5", background: "#FFFFFF",
-    fontSize: 13, color: "#1A1714", fontFamily: "Geist, sans-serif",
+    border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+    fontSize: 13, color: theme.color.textPrimary, fontFamily: theme.font.sans,
     outline: "none", boxSizing: "border-box" as const,
   }
 };

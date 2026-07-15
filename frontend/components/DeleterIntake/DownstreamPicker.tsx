@@ -14,6 +14,7 @@ import "ag-grid-community/styles/ag-theme-alpine.css";
 import { OBJECT_COLUMNS } from "@/components/Deleter/columns";
 import DependentsDrawer from "@/components/DeleterIntake/DependentsDrawer";
 import { metadataApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { DeleterResolveResponse, MetadataObject, RootSearchItem } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -104,20 +105,20 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
     return (
       <div style={{
         display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-        background: "#F5F0FF", border: "1px solid #C4B5FD", borderRadius: 6,
+        background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6,
       }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#5B21B6" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: theme.color.accent2 }}>
           Root: {pickedRoot.name}
         </span>
-        <span style={{ fontSize: 12, color: "#7A7068" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted }}>
           ({TYPE_LABELS[pickedRoot.object_type] ?? pickedRoot.object_type} · {pickedRoot.owner_name})
         </span>
         <button
           onClick={() => onPick(null)}
           style={{
             marginLeft: "auto", padding: "4px 10px", fontSize: 12,
-            background: "transparent", border: "1px solid #C4B5FD", borderRadius: 4,
-            color: "#6D28D9", cursor: "pointer", fontFamily: "Geist, sans-serif",
+            background: "transparent", border: `1px solid ${theme.color.violetBorder}`, borderRadius: 4,
+            color: theme.color.accent2, cursor: "pointer", fontFamily: theme.font.sans,
           }}
         >Change root</button>
       </div>
@@ -150,7 +151,7 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
         <div style={{ position: "relative", flex: "1 1 240px", maxWidth: 480 }}>
           <Search size={14} style={{
             position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)",
-            color: "#9CA3AF", pointerEvents: "none",
+            color: theme.color.textMuted, pointerEvents: "none",
           }} />
           <input
             type="text"
@@ -159,8 +160,8 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
             placeholder="Filter synced objects…"
             style={{
               width: "100%", padding: "9px 12px 9px 34px", fontSize: 13,
-              border: "1px solid #E8E1D5", borderRadius: 6,
-              fontFamily: "Geist, sans-serif", outline: "none", background: "white",
+              border: `1px solid ${theme.color.border}`, borderRadius: 6,
+              fontFamily: theme.font.sans, outline: "none", background: theme.color.surface,
             }}
           />
           {filter && (
@@ -168,7 +169,7 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
               onClick={() => setFilter("")}
               style={{
                 position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
-                background: "transparent", border: "none", color: "#9CA3AF", cursor: "pointer",
+                background: "transparent", border: "none", color: theme.color.textMuted, cursor: "pointer",
                 padding: 4,
               }}
             ><X size={14} /></button>
@@ -188,10 +189,10 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
                 }
                 style={{
                   padding: "4px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer",
-                  fontFamily: "Geist, sans-serif", fontWeight: active ? 500 : 400,
-                  background: active ? "#EDE9FE" : "#FAF8F4",
-                  border: `1px solid ${active ? "#8B5CF6" : "#E8E1D5"}`,
-                  color: active ? "#6D28D9" : "#7A7068",
+                  fontFamily: theme.font.sans, fontWeight: active ? 500 : 400,
+                  background: active ? theme.color.accentSoft : theme.color.surface,
+                  border: `1px solid ${active ? theme.color.accent : theme.color.border}`,
+                  color: active ? theme.color.accent2 : theme.color.textMuted,
                 }}
               >
                 {label}
@@ -203,8 +204,8 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
               onClick={() => setSelectedChips([])}
               style={{
                 display: "flex", alignItems: "center", gap: 4, padding: "4px 10px",
-                borderRadius: 6, border: "1px solid #E8E1D5", background: "transparent",
-                fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+                borderRadius: 6, border: `1px solid ${theme.color.border}`, background: "transparent",
+                fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
               }}
             >
               <X size={11} /> Clear
@@ -214,12 +215,12 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
 
         <div style={{ flex: 1 }} />
 
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace", whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono, whiteSpace: "nowrap" }}>
           {loading && "Loading synced metadata…"}
-          {error && <span style={{ color: "#991B1B" }}>Error: {error}</span>}
+          {error && <span style={{ color: theme.color.danger }}>Error: {error}</span>}
           {showCount && (
             <>
-              <strong style={{ color: "#0F0E0D" }}>{total.toLocaleString()}</strong>
+              <strong style={{ color: theme.color.textPrimary }}>{total.toLocaleString()}</strong>
               {selectedChips.length > 0 ? " matching object" : " synced object"}{total === 1 ? "" : "s"}
             </>
           )}
@@ -236,7 +237,7 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
           suppressRowClickSelection={false}
           onRowClicked={handleRowClicked}
           onGridReady={handleGridReady}
-          overlayNoRowsTemplate={`<span style="font-family: Geist, sans-serif; font-size: 12px; color: #7A7068;">${emptyOverlay}</span>`}
+          overlayNoRowsTemplate={`<span style="font-family: ${theme.font.sans}; font-size: 12px; color: ${theme.color.textMuted};">${emptyOverlay}</span>`}
         />
       </div>
 

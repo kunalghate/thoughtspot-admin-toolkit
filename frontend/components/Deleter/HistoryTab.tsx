@@ -18,6 +18,7 @@ import "ag-grid-community/styles/ag-theme-alpine.css";
 import { useShell } from "@/components/Shell";
 import { serializeFilterModel } from "@/components/Deleter/columns";
 import { archiverApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { ArchiveRecordFlatItem } from "@/lib/types";
 
 const HISTORY_PAGE_SIZE = 200;
@@ -49,9 +50,9 @@ const HISTORY_COLUMNS: ColDef[] = [
     cellRenderer: (p: { value: string }) => (
       <span style={{
         padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
-        fontFamily: "Geist, sans-serif",
-        background: p.value === "LIVEBOARD" ? "#EDE9FE" : "#F3F4F6",
-        color:      p.value === "LIVEBOARD" ? "#6D28D9"  : "#374151",
+        fontFamily: theme.font.sans,
+        background: p.value === "LIVEBOARD" ? theme.color.accentSoft : theme.color.surface3,
+        color:      p.value === "LIVEBOARD" ? theme.color.accent2  : theme.color.textSecondary,
       }}>
         {TYPE_LABELS_HIST[p.value] ?? p.value}
       </span>
@@ -87,7 +88,7 @@ const HISTORY_COLUMNS: ColDef[] = [
     sortable: false,
     filter: false,
     cellRenderer: () => (
-      <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>Admin</span>
+      <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>Admin</span>
     ),
   },
   {
@@ -115,7 +116,7 @@ export function HistoryTab() {
     if (!params.data) return null;
     const { id, name, tml_export_status } = params.data;
     if (tml_export_status !== "SUCCESS") {
-      return <span style={{ color: "#C4B5FD", fontSize: 12 }}>—</span>;
+      return <span style={{ color: theme.color.violetBorder, fontSize: 12 }}>—</span>;
     }
     return (
       <a
@@ -127,9 +128,9 @@ export function HistoryTab() {
           display: "inline-flex", alignItems: "center", gap: 5,
           padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 500,
           lineHeight: "16px",
-          border: "1px solid #E8E1D5", background: "#FFFFFF", color: "#3F3A34",
-          textDecoration: "none", fontFamily: "Geist, sans-serif",
-          boxShadow: "0 1px 0 rgba(0,0,0,0.02)",
+          border: `1px solid ${theme.color.border}`, background: theme.color.surface, color: theme.color.textSecondary,
+          textDecoration: "none", fontFamily: theme.font.sans,
+          boxShadow: theme.shadow.xs,
           transition: "background 120ms ease, border-color 120ms ease",
         }}
       >
@@ -208,7 +209,7 @@ export function HistoryTab() {
     }}>
       {/* Toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono }}>
           {displayCount}
         </span>
         <div style={{ flex: 1 }} />
@@ -216,9 +217,9 @@ export function HistoryTab() {
           onClick={() => gridRef.current?.api.exportDataAsCsv({ fileName: "deleted-objects.csv" })}
           style={{
             display: "flex", alignItems: "center", gap: 5, padding: "6px 12px",
-            borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4",
-            fontSize: 12, fontWeight: 500, color: "#1A1714", cursor: "pointer",
-            fontFamily: "Geist, sans-serif",
+            borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+            fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, cursor: "pointer",
+            fontFamily: theme.font.sans,
           }}
         >
           <Download size={13} /> Export CSV

@@ -9,6 +9,7 @@ import AppShell, { useShell } from "@/components/Shell";
 import { OBJECT_COLUMNS as ARCHIVER_COLUMNS, serializeFilterModel } from "@/components/Deleter/columns";
 import { DryRunModal } from "@/components/Deleter/DryRunModal";
 import { archiverApi, jobsApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { ArchiverItem, Job } from "@/lib/types";
 
 const PAGE_SIZE = 200;
@@ -127,39 +128,39 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
         style={{
           display: "inline-flex", alignItems: "center", gap: 6,
           padding: "6px 10px 6px 12px", borderRadius: 20,
-          fontSize: 12, fontWeight: 500, fontFamily: "Geist, sans-serif",
-          background: open ? "#F3EFFE" : "#FAF8F4",
-          border: `1px solid ${open ? "#C4B5FD" : "#E8E1D5"}`,
-          color: open ? "#6D28D9" : "#1A1714",
+          fontSize: 12, fontWeight: 500, fontFamily: theme.font.sans,
+          background: open ? theme.color.accentSoft : theme.color.surface,
+          border: `1px solid ${open ? theme.color.violetBorder : theme.color.border}`,
+          color: open ? theme.color.accent2 : theme.color.textPrimary,
           cursor: "pointer", whiteSpace: "nowrap",
           transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
         }}
-        onMouseEnter={(e) => { if (!open) e.currentTarget.style.borderColor = "#D8CFC8"; }}
-        onMouseLeave={(e) => { if (!open) e.currentTarget.style.borderColor = "#E8E1D5"; }}
+        onMouseEnter={(e) => { if (!open) e.currentTarget.style.borderColor = theme.color.borderLight; }}
+        onMouseLeave={(e) => { if (!open) e.currentTarget.style.borderColor = theme.color.border; }}
       >
         <Clock size={12} strokeWidth={2} />
-        <span style={{ color: "#7A7068", fontWeight: 400 }}>Stale:</span>
+        <span style={{ color: theme.color.textMuted, fontWeight: 400 }}>Stale:</span>
         <span>{summary}</span>
-        <ChevronDown size={12} color="#7A7068" />
+        <ChevronDown size={12} color={theme.color.textMuted} />
       </button>
 
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50,
-          width: 260, background: "#FFFFFF",
-          border: "1px solid #E8E1D5", borderRadius: 10,
-          boxShadow: "0 1px 2px rgba(26,23,20,0.04), 0 12px 28px -8px rgba(26,23,20,0.18)",
-          fontFamily: "Geist, sans-serif",
+          width: 260, background: theme.color.surface,
+          border: `1px solid ${theme.color.border}`, borderRadius: 10,
+          boxShadow: theme.shadow.md,
+          fontFamily: theme.font.sans,
           animation: "popoverIn 140ms ease-out",
           overflow: "hidden",
         }}>
           {/* Header */}
           <div style={{
-            padding: "10px 14px", borderBottom: "1px solid #F0EAE0",
+            padding: "10px 14px", borderBottom: `1px solid ${theme.color.border}`,
             display: "flex", alignItems: "center", gap: 6,
           }}>
-            <Clock size={12} color="#8B5CF6" strokeWidth={2.25} />
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#1A1714", letterSpacing: "0.01em" }}>
+            <Clock size={12} color={theme.color.accent} strokeWidth={2.25} />
+            <span style={{ fontSize: 12, fontWeight: 600, color: theme.color.textPrimary, letterSpacing: "0.01em" }}>
               Stale criteria
             </span>
           </div>
@@ -168,7 +169,7 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
           <div style={{ padding: "14px 14px 12px", display: "flex", flexDirection: "column", gap: 12 }}>
             {/* Last Accessed row */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <span style={{ fontSize: 12, color: "#3F3A34", fontWeight: 500 }}>Last Accessed ≥</span>
+              <span style={{ fontSize: 12, color: theme.color.textSecondary, fontWeight: 500 }}>Last Accessed ≥</span>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <input
                   type="number" min={1} value={draft.staleActivityDays}
@@ -177,21 +178,21 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
                   className="stale-num"
                   style={{
                     width: 64, height: 30, padding: "0 10px", borderRadius: 6,
-                    border: "1px solid #EBE3D5", background: "#FAF8F4",
-                    fontSize: 13, fontFamily: "Geist, sans-serif", color: "#1A1714",
+                    border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+                    fontSize: 13, fontFamily: theme.font.sans, color: theme.color.textPrimary,
                     outline: "none", textAlign: "right",
                   }}
                 />
-                <span style={{ fontSize: 11, color: "#7A7068", width: 28 }}>days</span>
+                <span style={{ fontSize: 11, color: theme.color.textMuted, width: 28 }}>days</span>
               </div>
             </div>
 
             {/* AND/OR unified segmented control */}
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ flex: 1, height: 1, background: "#F0EAE0" }} />
+              <div style={{ flex: 1, height: 1, background: theme.color.border }} />
               <div style={{
                 display: "inline-flex", padding: 2, borderRadius: 999,
-                background: "#F4EFE6", border: "1px solid #E8E1D5",
+                background: theme.color.surface2, border: `1px solid ${theme.color.border}`,
               }}>
                 {(["AND", "OR"] as const).map((op) => {
                   const active = draft.staleOperator === op;
@@ -202,11 +203,11 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
                       style={{
                         height: 22, padding: "0 12px", minWidth: 44,
                         fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
-                        borderRadius: 999, fontFamily: "Geist, sans-serif",
-                        background: active ? "#8B5CF6" : "transparent",
-                        color: active ? "#FFFFFF" : "#7A7068",
+                        borderRadius: 999, fontFamily: theme.font.sans,
+                        background: active ? theme.gradient.accent : "transparent",
+                        color: active ? theme.color.onAccent : theme.color.textMuted,
                         border: "none", cursor: "pointer",
-                        boxShadow: active ? "0 1px 2px rgba(139,92,246,0.25)" : "none",
+                        boxShadow: active ? theme.shadow.glowAccent : "none",
                         transition: "background 140ms ease, color 140ms ease",
                       }}
                     >
@@ -215,12 +216,12 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
                   );
                 })}
               </div>
-              <div style={{ flex: 1, height: 1, background: "#F0EAE0" }} />
+              <div style={{ flex: 1, height: 1, background: theme.color.border }} />
             </div>
 
             {/* Last Modified row */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <span style={{ fontSize: 12, color: "#3F3A34", fontWeight: 500 }}>Last Modified ≥</span>
+              <span style={{ fontSize: 12, color: theme.color.textSecondary, fontWeight: 500 }}>Last Modified ≥</span>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <input
                   type="number" min={1} value={draft.staleModifiedDays}
@@ -229,12 +230,12 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
                   className="stale-num"
                   style={{
                     width: 64, height: 30, padding: "0 10px", borderRadius: 6,
-                    border: "1px solid #EBE3D5", background: "#FAF8F4",
-                    fontSize: 13, fontFamily: "Geist, sans-serif", color: "#1A1714",
+                    border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+                    fontSize: 13, fontFamily: theme.font.sans, color: theme.color.textPrimary,
                     outline: "none", textAlign: "right",
                   }}
                 />
-                <span style={{ fontSize: 11, color: "#7A7068", width: 28 }}>days</span>
+                <span style={{ fontSize: 11, color: theme.color.textMuted, width: 28 }}>days</span>
               </div>
             </div>
           </div>
@@ -242,19 +243,19 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
           {/* Footer */}
           <div style={{
             display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8,
-            padding: "8px 12px", borderTop: "1px solid #F0EAE0", background: "#FFFFFF",
+            padding: "8px 12px", borderTop: `1px solid ${theme.color.border}`, background: theme.color.surface,
           }}>
             <button
               onClick={reset}
               style={{
                 height: 30, padding: "0 12px", borderRadius: 6,
                 border: "1px solid transparent", background: "transparent",
-                fontSize: 12, fontWeight: 500, color: "#6B6056",
-                fontFamily: "Geist, sans-serif", cursor: "pointer",
+                fontSize: 12, fontWeight: 500, color: theme.color.textMuted,
+                fontFamily: theme.font.sans, cursor: "pointer",
                 transition: "background 120ms ease, color 120ms ease",
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#F4EFE6"; e.currentTarget.style.color = "#1A1714"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#6B6056"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = theme.color.surface2; e.currentTarget.style.color = theme.color.textPrimary; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = theme.color.textMuted; }}
             >
               Reset
             </button>
@@ -262,14 +263,14 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
               onClick={apply}
               style={{
                 height: 30, padding: "0 14px", borderRadius: 6,
-                border: "1px solid #8B5CF6", background: "#8B5CF6",
-                fontSize: 12, fontWeight: 600, color: "#FFFFFF",
-                fontFamily: "Geist, sans-serif", cursor: "pointer", minWidth: 64,
-                boxShadow: "0 1px 2px rgba(139,92,246,0.25)",
+                border: `1px solid ${theme.color.accent}`, background: theme.gradient.accent,
+                fontSize: 12, fontWeight: 600, color: theme.color.onAccent,
+                fontFamily: theme.font.sans, cursor: "pointer", minWidth: 64,
+                boxShadow: theme.shadow.glowAccent,
                 transition: "background 120ms ease, border-color 120ms ease",
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "#7C3AED"; e.currentTarget.style.borderColor = "#7C3AED"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "#8B5CF6"; e.currentTarget.style.borderColor = "#8B5CF6"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = theme.gradient.accent; e.currentTarget.style.borderColor = theme.color.accent; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = theme.gradient.accent; e.currentTarget.style.borderColor = theme.color.accent; }}
             >
               Apply
             </button>
@@ -519,9 +520,9 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           cellRenderer: (p: { value: string }) => (
             <span style={{
               padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
-              fontFamily: "Geist, sans-serif",
-              background: p.value === "LIVEBOARD" ? "#EDE9FE" : "#F3F4F6",
-              color:      p.value === "LIVEBOARD" ? "#6D28D9"  : "#374151",
+              fontFamily: theme.font.sans,
+              background: p.value === "LIVEBOARD" ? theme.color.accentSoft : theme.color.surface3,
+              color:      p.value === "LIVEBOARD" ? theme.color.accent2  : theme.color.textSecondary,
             }}>
               {p.value === "LIVEBOARD" ? "Liveboard" : "Answer"}
             </span>
@@ -534,14 +535,14 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           valueFormatter: undefined,
           cellRenderer: (p: { value: string[] | null }) => {
             const tags = p.value ?? [];
-            if (!tags.length) return <span style={{ color: "#D8CFC8", fontFamily: "Geist, sans-serif" }}>—</span>;
+            if (!tags.length) return <span style={{ color: theme.color.borderLight, fontFamily: theme.font.sans }}>—</span>;
             return (
               <div style={{ display: "flex", gap: 4, alignItems: "center", height: "100%", flexWrap: "wrap" }}>
                 {tags.slice(0, 2).map((t: string) => (
                   <span key={t} style={{
                     display: "inline-block", lineHeight: "18px",
                     padding: "0 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
-                    background: "#F3F4F6", color: "#374151", fontFamily: "Geist, sans-serif",
+                    background: theme.color.surface3, color: theme.color.textSecondary, fontFamily: theme.font.sans,
                     whiteSpace: "nowrap",
                   }}>{t}</span>
                 ))}
@@ -549,7 +550,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
                   <span style={{
                     display: "inline-block", lineHeight: "18px",
                     padding: "0 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
-                    background: "#F3F4F6", color: "#374151", fontFamily: "Geist, sans-serif",
+                    background: theme.color.surface3, color: theme.color.textSecondary, fontFamily: theme.font.sans,
                   }}>
                     +{tags.length - 2}
                   </span>
@@ -590,21 +591,21 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
 
         {/* Search by name */}
         <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 300 }}>
-          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#7A7068" }} />
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: theme.color.textMuted }} />
           <input
             value={criteria.search}
             onChange={(e) => setCriteria({ ...criteria, search: e.target.value })}
             placeholder="Search by name…"
             style={{
               width: "100%", paddingLeft: 30, paddingRight: 10,
-              height: 34, borderRadius: 6, border: "1px solid #E8E1D5",
-              background: "#FAF8F4", fontSize: 13, color: "#1A1714",
-              fontFamily: "Geist, sans-serif", outline: "none",
+              height: 34, borderRadius: 6, border: `1px solid ${theme.color.border}`,
+              background: theme.color.surface, fontSize: 13, color: theme.color.textPrimary,
+              fontFamily: theme.font.sans, outline: "none",
             }}
           />
         </div>
 
-        <div style={{ width: 1, height: 18, background: "#E8E1D5", margin: "0 2px" }} />
+        <div style={{ width: 1, height: 18, background: theme.color.border, margin: "0 2px" }} />
 
         {/* Stale criteria pill — collapses Last Accessed + AND/OR + Last Modified */}
         <StaleCriteriaPill
@@ -620,7 +621,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           })}
         />
 
-        <div style={{ width: 1, height: 18, background: "#E8E1D5", margin: "0 2px" }} />
+        <div style={{ width: 1, height: 18, background: theme.color.border, margin: "0 2px" }} />
 
         {/* Type toggles */}
         {(["LIVEBOARD", "ANSWER"] as const).map((t) => {
@@ -630,10 +631,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
               onClick={() => setCriteria({ ...criteria, types: active ? criteria.types.filter((x) => x !== t) : [...criteria.types, t] })}
               style={{
                 padding: "4px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer",
-                fontFamily: "Geist, sans-serif", fontWeight: active ? 500 : 400,
-                background: active ? "#EDE9FE" : "#FAF8F4",
-                border: `1px solid ${active ? "#8B5CF6" : "#E8E1D5"}`,
-                color: active ? "#6D28D9" : "#7A7068",
+                fontFamily: theme.font.sans, fontWeight: active ? 500 : 400,
+                background: active ? theme.color.accentSoft : theme.color.surface,
+                border: `1px solid ${active ? theme.color.accent : theme.color.border}`,
+                color: active ? theme.color.accent2 : theme.color.textMuted,
               }}
             >
               {t === "LIVEBOARD" ? "Liveboard" : "Answer"}
@@ -641,19 +642,19 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           );
         })}
 
-        <div style={{ width: 1, height: 18, background: "#E8E1D5", margin: "0 2px" }} />
+        <div style={{ width: 1, height: 18, background: theme.color.border, margin: "0 2px" }} />
 
         {/* ── Filter-by-tag pills ──────────────────────────────────────── */}
         {criteria.filterTags.map((tag) => (
           <span key={tag} style={{
             display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px",
-            borderRadius: 20, fontSize: 12, fontFamily: "Geist, sans-serif",
-            background: "#FEF3C7", border: "1px solid #FCD34D", color: "#92400E",
+            borderRadius: 20, fontSize: 12, fontFamily: theme.font.sans,
+            background: theme.color.warnSoft, border: `1px solid ${theme.color.warnBorder}`, color: theme.color.warn,
           }}>
             {tag}
             <button
               onClick={() => setCriteria({ ...criteria, filterTags: criteria.filterTags.filter((t) => t !== tag) })}
-              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, color: "#92400E" }}
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, color: theme.color.warn }}
             >
               <X size={10} />
             </button>
@@ -666,10 +667,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             onClick={() => setTagPickerOpen((o) => !o)}
             style={{
               display: "flex", alignItems: "center", gap: 4, padding: "4px 10px",
-              borderRadius: 20, fontSize: 12, cursor: "pointer", fontFamily: "Geist, sans-serif",
-              background: tagPickerOpen ? "#FEF3C7" : "#FAF8F4",
-              border: `1px solid ${tagPickerOpen ? "#FCD34D" : "#E8E1D5"}`,
-              color: tagPickerOpen ? "#92400E" : "#7A7068",
+              borderRadius: 20, fontSize: 12, cursor: "pointer", fontFamily: theme.font.sans,
+              background: tagPickerOpen ? theme.color.warnSoft : theme.color.surface,
+              border: `1px solid ${tagPickerOpen ? theme.color.warnBorder : theme.color.border}`,
+              color: tagPickerOpen ? theme.color.warn : theme.color.textMuted,
             }}
           >
             + Filter by tag
@@ -677,11 +678,11 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           {tagPickerOpen && (
             <div style={{
               position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50,
-              background: "#fff", border: "1px solid #E8E1D5", borderRadius: 8,
-              boxShadow: "0 4px 16px rgba(0,0,0,0.10)", minWidth: 180, maxHeight: 240, overflowY: "auto",
+              background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 8,
+              boxShadow: theme.shadow.md, minWidth: 180, maxHeight: 240, overflowY: "auto",
             }}>
               {tagPickerOptions.length === 0 ? (
-                <div style={{ padding: "10px 14px", fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+                <div style={{ padding: "10px 14px", fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
                   No more tags available
                 </div>
               ) : tagPickerOptions.map((t) => (
@@ -693,10 +694,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
                   }}
                   style={{
                     display: "block", width: "100%", textAlign: "left",
-                    padding: "8px 14px", fontSize: 13, fontFamily: "Geist, sans-serif",
-                    background: "none", border: "none", cursor: "pointer", color: "#1A1714",
+                    padding: "8px 14px", fontSize: 13, fontFamily: theme.font.sans,
+                    background: "none", border: "none", cursor: "pointer", color: theme.color.textPrimary,
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#F2EDE3")}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = theme.color.bg)}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
                 >
                   {t.name}
@@ -711,15 +712,15 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           value={criteria.excludeTags.join(", ")}
           placeholder="Exclude tags…"
           onChange={(e) => setCriteria({ ...criteria, excludeTags: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          style={{ width: 140, height: 32, padding: "0 10px", borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4", fontSize: 12, fontFamily: "Geist, sans-serif", outline: "none" }}
+          style={{ width: 140, height: 32, padding: "0 10px", borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface, fontSize: 12, fontFamily: theme.font.sans, outline: "none" }}
         />
 
         {/* Reset */}
         {isFiltered && (
           <button onClick={() => { setCriteria(DEFAULT_CRITERIA); setTagPickerOpen(false); }} style={{
             display: "flex", alignItems: "center", gap: 4, padding: "4px 10px",
-            borderRadius: 6, border: "1px solid #E8E1D5", background: "transparent",
-            fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+            borderRadius: 6, border: `1px solid ${theme.color.border}`, background: "transparent",
+            fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
           }}>
             <X size={11} /> Reset
           </button>
@@ -727,7 +728,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
 
         <div style={{ flex: 1 }} />
 
-        <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist Mono, monospace", whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.mono, whiteSpace: "nowrap" }}>
           {displayCount}
         </span>
 
@@ -735,9 +736,9 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           onClick={() => gridRef.current?.api.exportDataAsCsv({ fileName: "stale-content.csv" })}
           style={{
             display: "flex", alignItems: "center", gap: 5, padding: "6px 12px",
-            borderRadius: 6, border: "1px solid #E8E1D5", background: "#FAF8F4",
-            fontSize: 12, fontWeight: 500, color: "#1A1714", cursor: "pointer",
-            fontFamily: "Geist, sans-serif",
+            borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+            fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, cursor: "pointer",
+            fontFamily: theme.font.sans,
           }}
         >
           <Download size={13} /> Export CSV
@@ -749,10 +750,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "8px 14px", borderRadius: 6, flexShrink: 0,
-          background: toast.ok ? "#D1FAE5" : "#FEF2F2",
-          border: `1px solid ${toast.ok ? "#6EE7B7" : "#FECACA"}`,
-          color: toast.ok ? "#065F46" : "#991B1B",
-          fontSize: 13, fontFamily: "Geist, sans-serif",
+          background: toast.ok ? theme.color.successSoft : theme.color.dangerSoft,
+          border: `1px solid ${toast.ok ? theme.color.successBorder : theme.color.dangerBorder}`,
+          color: toast.ok ? theme.color.success : theme.color.danger,
+          fontSize: 13, fontFamily: theme.font.sans,
         }}>
           {toast.msg}
           <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, marginLeft: 12, color: "inherit" }}>
@@ -765,16 +766,16 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
       {selectedGuids.size > 0 && (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
-          background: "#EDE9FE", border: "1px solid #C4B5FD", borderRadius: 6, flexShrink: 0,
+          background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6, flexShrink: 0,
           flexWrap: "wrap",
         }}>
-          <span style={{ fontSize: 13, color: "#6D28D9", fontWeight: 500, fontFamily: "Geist, sans-serif", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 13, color: theme.color.accent2, fontWeight: 500, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
             {selectedGuids.size} selected
           </span>
 
           {/* Tag name selector */}
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ fontSize: 12, color: "#6D28D9", fontFamily: "Geist, sans-serif" }}>Tag:</span>
+            <span style={{ fontSize: 12, color: theme.color.accent2, fontFamily: theme.font.sans }}>Tag:</span>
             {showCustomInput ? (
               <input
                 autoFocus
@@ -784,8 +785,8 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
                 onBlur={() => { if (!customTagName.trim()) { setShowCustomInput(false); } }}
                 style={{
                   height: 28, padding: "0 8px", borderRadius: 5, width: 140,
-                  border: "1px solid #8B5CF6", background: "#fff", fontSize: 12,
-                  fontFamily: "Geist, sans-serif", outline: "none", color: "#1A1714",
+                  border: `1px solid ${theme.color.accent}`, background: theme.color.surface, fontSize: 12,
+                  fontFamily: theme.font.sans, outline: "none", color: theme.color.textPrimary,
                 }}
               />
             ) : (
@@ -797,8 +798,8 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
                 }}
                 style={{
                   height: 28, padding: "0 6px", borderRadius: 5,
-                  border: "1px solid #8B5CF6", background: "#fff", fontSize: 12,
-                  fontFamily: "Geist, sans-serif", color: "#1A1714", cursor: "pointer",
+                  border: `1px solid ${theme.color.accent}`, background: theme.color.surface, fontSize: 12,
+                  fontFamily: theme.font.sans, color: theme.color.textPrimary, cursor: "pointer",
                 }}
               >
                 <option value="Stale">Stale</option>
@@ -816,7 +817,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
 
           {selectedTags.length > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 4 }}>
-              <span style={{ fontSize: 11, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+              <span style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
                 Remove:
               </span>
               {selectedTags.map((t) => (
@@ -828,17 +829,17 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
                     display: "inline-flex", alignItems: "center", gap: 4,
                     height: 22, padding: "0 4px 0 10px",
                     borderRadius: 20, fontSize: 11, fontWeight: 500,
-                    background: "#FEF2F2", color: "#991B1B", border: "1px solid #FECACA",
-                    fontFamily: "Geist, sans-serif", cursor: "pointer", whiteSpace: "nowrap",
+                    background: theme.color.dangerSoft, color: theme.color.danger, border: `1px solid ${theme.color.dangerBorder}`,
+                    fontFamily: theme.font.sans, cursor: "pointer", whiteSpace: "nowrap",
                     transition: "background 120ms ease, border-color 120ms ease",
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "#FEE2E2";
-                    e.currentTarget.style.borderColor = "#FCA5A5";
+                    e.currentTarget.style.background = theme.color.dangerSoft;
+                    e.currentTarget.style.borderColor = theme.color.dangerBorder;
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "#FEF2F2";
-                    e.currentTarget.style.borderColor = "#FECACA";
+                    e.currentTarget.style.background = theme.color.dangerSoft;
+                    e.currentTarget.style.borderColor = theme.color.dangerBorder;
                   }}
                 >
                   {t}
@@ -848,12 +849,12 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             </div>
           )}
 
-          <div style={{ width: 1, height: 18, background: "#C4B5FD" }} />
+          <div style={{ width: 1, height: 18, background: theme.color.violetBorder }} />
 
           <ActionButton
             data-testid="open-dryrun-modal"
             onClick={handleDeleteSelected}
-            style={{ color: "#991B1B", borderColor: "#FECACA", background: "#FEF2F2" }}
+            style={{ color: theme.color.danger, borderColor: theme.color.dangerBorder, background: theme.color.dangerSoft }}
           >
             Delete selected
           </ActionButton>
@@ -864,8 +865,8 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             onClick={() => gridRef.current?.api.deselectAll()}
             style={{
               display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
-              borderRadius: 4, border: "1px solid #E8E1D5", background: "transparent",
-              fontSize: 12, color: "#7A7068", cursor: "pointer", fontFamily: "Geist, sans-serif",
+              borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
+              fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
             }}
           >
             <X size={11} /> Clear
@@ -877,13 +878,13 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
       {selectedGuids.size === 0 && (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
-          background: "#FAF8F4", border: "1px solid #E8E1D5", borderRadius: 6,
+          background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
           flexShrink: 0,
         }}>
-          <span style={{ fontSize: 13, color: "#C4B5FD" }}>☑</span>
-          <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif", lineHeight: 1.5 }}>
-            Check rows to select objects — then <strong style={{ color: "#6D28D9" }}>Apply Tag</strong> to mark them, or{" "}
-            <strong style={{ color: "#991B1B" }}>Delete selected</strong> for a safety-checked deletion with TML backup.
+          <span style={{ fontSize: 13, color: theme.color.violetBorder }}>☑</span>
+          <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
+            Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them, or{" "}
+            <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
           </span>
         </div>
       )}
@@ -952,8 +953,8 @@ function ActionButton({
       onClick={onClick}
       style={{
         padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
-        cursor: "pointer", border: "1px solid #E8E1D5", background: "#fff",
-        color: "#1A1714", fontFamily: "Geist, sans-serif", ...style,
+        cursor: "pointer", border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+        color: theme.color.textPrimary, fontFamily: theme.font.sans, ...style,
       }}
       {...rest}
     >

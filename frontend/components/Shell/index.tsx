@@ -11,6 +11,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useRouter } from "next/router";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
+import { theme } from "@/lib/theme";
 import { clustersApi, jobsApi, syncApi } from "@/lib/api";
 import { useToast } from "../Toast";
 import type { Cluster, Org, SyncLog, EntityType } from "@/lib/types";
@@ -246,7 +247,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
 
   return (
     <ShellContext.Provider value={{ activeCluster, activeOrg, clusterOnline }}>
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: "Geist, sans-serif" }}>
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", fontFamily: theme.font.sans }}>
       <Sidebar
         activeCluster={activeCluster}
         onSwitchCluster={() => router.push("/settings/connections")}
@@ -277,14 +278,14 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
               alignItems: "center",
               gap: 12,
               padding: "10px 20px",
-              background: "#FDF2F2",
-              borderBottom: "1px solid #F3C6C6",
-              color: "#7A2018",
+              background: theme.color.dangerSoft,
+              borderBottom: `1px solid ${theme.color.dangerBorder}`,
+              color: theme.color.danger,
               fontSize: 13,
             }}
           >
             <span style={{ fontWeight: 600 }}>ThoughtSpot session expired.</span>
-            <span style={{ color: "#9A4338" }}>
+            <span style={{ color: theme.color.danger }}>
               This cluster's login is no longer valid — reads from cache still work, but syncs and live actions will
               fail until you reconnect.
             </span>
@@ -292,8 +293,8 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
               onClick={() => router.push("/settings/connections")}
               style={{
                 marginLeft: "auto",
-                background: "#C0392B",
-                color: "#fff",
+                background: theme.color.danger,
+                color: theme.color.onAccent,
                 border: "none",
                 borderRadius: 6,
                 padding: "6px 14px",
@@ -307,7 +308,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
             </button>
           </div>
         )}
-        <main style={{ flex: 1, overflowY: "auto", background: "#F2EDE3" }}>
+        <main style={{ flex: 1, overflowY: "auto", background: theme.color.bg }}>
           {children}
         </main>
       </div>

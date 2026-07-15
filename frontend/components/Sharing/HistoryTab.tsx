@@ -4,12 +4,13 @@
 import { useEffect, useState } from "react";
 
 import { sharingApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { SharingHistoryItem } from "@/lib/types";
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  SUCCESS: { bg: "#D1FAE5", fg: "#065F46" },
-  PARTIAL: { bg: "#FEF3C7", fg: "#92400E" },
-  FAILED:  { bg: "#FEE2E2", fg: "#991B1B" },
+  SUCCESS: { bg: theme.color.successSoft, fg: theme.color.success },
+  PARTIAL: { bg: theme.color.warnSoft, fg: theme.color.warn },
+  FAILED:  { bg: theme.color.dangerSoft, fg: theme.color.danger },
 };
 
 export function SharingHistoryTab({
@@ -50,22 +51,22 @@ export function SharingHistoryTab({
       display: "flex", flexDirection: "column", flex: 1, padding: 24, gap: 12,
       overflow: "auto", minHeight: 0,
     }}>
-      <div style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+      <div style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
         {loading ? "Loading…" : `${items.length} job${items.length === 1 ? "" : "s"}`}
       </div>
 
       {error && (
         <div style={{
-          padding: "10px 14px", fontSize: 12, background: "#FEF2F2",
-          border: "1px solid #FCA5A5", borderRadius: 6, color: "#991B1B",
-          fontFamily: "Geist, sans-serif",
+          padding: "10px 14px", fontSize: 12, background: theme.color.dangerSoft,
+          border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6, color: theme.color.danger,
+          fontFamily: theme.font.sans,
         }}><strong>Error:</strong> {error}</div>
       )}
 
       {!loading && items.length === 0 && !error && (
         <div style={{
-          padding: 32, fontSize: 13, color: "#7A7068", textAlign: "center",
-          fontFamily: "Geist, sans-serif",
+          padding: 32, fontSize: 13, color: theme.color.textMuted, textAlign: "center",
+          fontFamily: theme.font.sans,
         }}>
           No bulk-share jobs yet.
         </div>
@@ -73,16 +74,16 @@ export function SharingHistoryTab({
 
       {items.length > 0 && (
         <div style={{
-          border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+          border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
           overflow: "hidden",
         }}>
           <div style={{
             display: "grid",
             gridTemplateColumns: "180px 100px 120px 100px 100px 100px",
-            padding: "10px 14px", background: "#FAF8F4",
-            borderBottom: "1px solid #E8E1D5", fontSize: 11,
-            fontWeight: 600, color: "#7A7068", textTransform: "uppercase",
-            letterSpacing: "0.04em", fontFamily: "Geist, sans-serif",
+            padding: "10px 14px", background: theme.color.surface,
+            borderBottom: `1px solid ${theme.color.border}`, fontSize: 11,
+            fontWeight: 600, color: theme.color.textMuted, textTransform: "uppercase",
+            letterSpacing: "0.04em", fontFamily: theme.font.sans,
           }}>
             <div>When</div>
             <div style={{ textAlign: "right" }}>Objects</div>
@@ -98,13 +99,13 @@ export function SharingHistoryTab({
                 display: "grid",
                 gridTemplateColumns: "180px 100px 120px 100px 100px 100px",
                 padding: "10px 14px", fontSize: 12, alignItems: "center",
-                borderBottom: "1px solid #F2EDE3", fontFamily: "Geist, sans-serif",
+                borderBottom: `1px solid ${theme.color.border}`, fontFamily: theme.font.sans,
               }}>
-                <div style={{ color: "#7A7068" }}>{new Date(r.executed_at).toLocaleString()}</div>
-                <div style={{ textAlign: "right", color: "#1A1714" }}>{r.object_count}</div>
-                <div style={{ textAlign: "right", color: "#1A1714" }}>{r.principal_count}</div>
-                <div style={{ textAlign: "right", color: "#1A1714" }}>{r.succeeded}</div>
-                <div style={{ textAlign: "right", color: r.failed > 0 ? "#991B1B" : "#7A7068" }}>
+                <div style={{ color: theme.color.textMuted }}>{new Date(r.executed_at).toLocaleString()}</div>
+                <div style={{ textAlign: "right", color: theme.color.textPrimary }}>{r.object_count}</div>
+                <div style={{ textAlign: "right", color: theme.color.textPrimary }}>{r.principal_count}</div>
+                <div style={{ textAlign: "right", color: theme.color.textPrimary }}>{r.succeeded}</div>
+                <div style={{ textAlign: "right", color: r.failed > 0 ? theme.color.danger : theme.color.textMuted }}>
                   {r.failed}
                 </div>
                 <div style={{ textAlign: "center" }}>

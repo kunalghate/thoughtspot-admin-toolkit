@@ -12,6 +12,7 @@
  */
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { theme } from "@/lib/theme";
 
 type ToastKind = "success" | "error" | "info";
 
@@ -34,9 +35,9 @@ interface ToastApi {
 const ToastContext = createContext<ToastApi | null>(null);
 
 const COLORS: Record<ToastKind, { bg: string; border: string; fg: string; accent: string }> = {
-  success: { bg: "#F0FAF3", border: "#BBE8C9", fg: "#1A1714", accent: "#1E9E5A" },
-  error: { bg: "#FDF2F2", border: "#F3C6C6", fg: "#1A1714", accent: "#C0392B" },
-  info: { bg: "#F4EFFE", border: "#D8C9F7", fg: "#1A1714", accent: "#7C3AED" },
+  success: { bg: theme.color.successSoft, border: theme.color.successBorder, fg: theme.color.textPrimary, accent: theme.color.success },
+  error: { bg: theme.color.dangerSoft, border: theme.color.dangerBorder, fg: theme.color.textPrimary, accent: theme.color.danger },
+  info: { bg: theme.color.violetSoft, border: theme.color.violetBorder, fg: theme.color.textPrimary, accent: theme.color.accent2 },
 };
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
@@ -96,7 +97,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 borderLeft: `3px solid ${c.accent}`,
                 borderRadius: 8,
                 padding: "12px 14px",
-                boxShadow: "0 8px 24px -8px rgba(26,23,20,0.22)",
+                boxShadow: theme.shadow.md,
                 color: c.fg,
                 fontSize: 13,
                 lineHeight: 1.5,
@@ -106,7 +107,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600 }}>{t.message}</div>
-                  {t.hint && <div style={{ marginTop: 2, color: "#6B6056" }}>{t.hint}</div>}
+                  {t.hint && <div style={{ marginTop: 2, color: theme.color.textMuted }}>{t.hint}</div>}
                   {t.action && (
                     <button
                       onClick={() => {
@@ -116,7 +117,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                       style={{
                         marginTop: 8,
                         background: c.accent,
-                        color: "#fff",
+                        color: theme.color.onAccent,
                         border: "none",
                         borderRadius: 6,
                         padding: "5px 12px",
@@ -135,7 +136,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   style={{
                     background: "transparent",
                     border: "none",
-                    color: "#A39B91",
+                    color: theme.color.textMuted,
                     cursor: "pointer",
                     fontSize: 16,
                     lineHeight: 1,

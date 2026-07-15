@@ -21,6 +21,7 @@ import { TransferSharingModal } from "@/components/Users/TransferSharingModal";
 import { DeleteUsersModal } from "@/components/Users/DeleteUsersModal";
 import { UsersHistoryTab } from "@/components/Users/HistoryTab";
 import { usersApi } from "@/lib/api";
+import { theme } from "@/lib/theme";
 import type { UserListItem } from "@/lib/types";
 
 const PAGE_SIZE = 200;
@@ -131,8 +132,8 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
       cellRenderer: (p: { value: string }) => (
         <span style={{
           padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600,
-          background: p.value === "ACTIVE" ? "#D1FAE5" : "#FEE2E2",
-          color: p.value === "ACTIVE" ? "#065F46" : "#991B1B",
+          background: p.value === "ACTIVE" ? theme.color.successSoft : theme.color.dangerSoft,
+          color: p.value === "ACTIVE" ? theme.color.success : theme.color.danger,
         }}>{p.value}</span>
       ),
     },
@@ -153,8 +154,8 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <div style={{
-        display: "flex", borderBottom: "1px solid #E8E1D5",
-        background: "#FAF8F4", paddingLeft: 24, flexShrink: 0,
+        display: "flex", borderBottom: `1px solid ${theme.color.border}`,
+        background: theme.color.surface, paddingLeft: 24, flexShrink: 0,
       }}>
         {[
           { id: "users" as Tab, label: "Users", icon: Users },
@@ -166,9 +167,9 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
             style={{
               display: "flex", alignItems: "center", gap: 8,
               padding: "10px 18px", fontSize: 13, fontWeight: tab === id ? 600 : 400,
-              fontFamily: "Geist, sans-serif", cursor: "pointer", border: "none",
-              background: "transparent", color: tab === id ? "#6D28D9" : "#7A7068",
-              borderBottom: tab === id ? "2px solid #8B5CF6" : "2px solid transparent",
+              fontFamily: theme.font.sans, cursor: "pointer", border: "none",
+              background: "transparent", color: tab === id ? theme.color.accent2 : theme.color.textMuted,
+              borderBottom: tab === id ? `2px solid ${theme.color.accent2}` : "2px solid transparent",
               marginBottom: -1,
             }}
           >
@@ -191,8 +192,8 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               style={{
-                flex: 1, padding: "7px 12px", fontSize: 13, fontFamily: "Geist, sans-serif",
-                border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+                flex: 1, padding: "7px 12px", fontSize: 13, fontFamily: theme.font.sans,
+                border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
                 outline: "none",
               }}
             />
@@ -200,8 +201,8 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
               value={status}
               onChange={(e) => setStatus(e.target.value as "" | "ACTIVE" | "INACTIVE")}
               style={{
-                padding: "7px 10px", fontSize: 13, fontFamily: "Geist, sans-serif",
-                border: "1px solid #E8E1D5", borderRadius: 6, background: "white",
+                padding: "7px 10px", fontSize: 13, fontFamily: theme.font.sans,
+                border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
                 cursor: "pointer",
               }}
             >
@@ -209,28 +210,28 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
               <option value="ACTIVE">Active only</option>
               <option value="INACTIVE">Inactive only</option>
             </select>
-            <span style={{ fontSize: 12, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+            <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
               {total == null ? "Loading…" : `${total.toLocaleString()} user${total === 1 ? "" : "s"}`}
             </span>
           </div>
 
           {error && (
             <div style={{
-              padding: "10px 14px", fontSize: 12, fontFamily: "Geist, sans-serif",
-              background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 6,
-              color: "#991B1B",
+              padding: "10px 14px", fontSize: 12, fontFamily: theme.font.sans,
+              background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6,
+              color: theme.color.danger,
             }}><strong>Error:</strong> {error}</div>
           )}
 
           {selected.length > 0 && (
             <div style={{
               display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
-              background: "#EDE9FE", border: "1px solid #C4B5FD", borderRadius: 6,
+              background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6,
               flexShrink: 0, flexWrap: "wrap",
             }}>
               <span style={{
-                fontSize: 13, color: "#6D28D9", fontWeight: 500,
-                fontFamily: "Geist, sans-serif", whiteSpace: "nowrap",
+                fontSize: 13, color: theme.color.accent2, fontWeight: 500,
+                fontFamily: theme.font.sans, whiteSpace: "nowrap",
               }}>{selected.length} selected</span>
 
               <div style={{ flex: 1 }} />
@@ -336,10 +337,10 @@ function ActionButton({
         padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.5 : 1,
-        border: `1px solid ${isDanger ? "#FECACA" : "#C4B5FD"}`,
-        background: isDanger ? "#FEF2F2" : "white",
-        color: isDanger ? "#991B1B" : "#6D28D9",
-        fontFamily: "Geist, sans-serif",
+        border: `1px solid ${isDanger ? theme.color.dangerBorder : theme.color.violetBorder}`,
+        background: isDanger ? theme.color.dangerSoft : theme.color.surface,
+        color: isDanger ? theme.color.danger : theme.color.accent2,
+        fontFamily: theme.font.sans,
       }}
     >
       {icon} {label}
@@ -351,7 +352,7 @@ function EmptyState({ message }: { message: string }) {
   return (
     <div style={{
       height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 14, color: "#7A7068", fontFamily: "Geist, sans-serif",
+      fontSize: 14, color: theme.color.textMuted, fontFamily: theme.font.sans,
     }}>{message}</div>
   );
 }

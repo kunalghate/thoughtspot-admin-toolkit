@@ -8,6 +8,7 @@
  */
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { theme } from "@/lib/theme";
 
 interface Props {
   children: ReactNode;
@@ -43,13 +44,13 @@ export class ErrorBoundary extends Component<Props, State> {
           alignItems: "center",
           justifyContent: "center",
           padding: 24,
-          background: "#F2EDE3",
+          background: theme.color.bg,
         }}
       >
         <div
           style={{
-            background: "#FAF8F4",
-            border: "1px solid #E8E1D5",
+            background: theme.color.surface,
+            border: `1px solid ${theme.color.border}`,
             borderRadius: 10,
             padding: "32px 36px",
             maxWidth: 480,
@@ -62,18 +63,18 @@ export class ErrorBoundary extends Component<Props, State> {
               height: 40,
               borderRadius: 10,
               margin: "0 auto 18px",
-              background: "linear-gradient(135deg, #C0392B, #8E2A1E)",
+              background: theme.color.danger,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: "#fff",
+              color: theme.color.onAccent,
               fontWeight: 700,
             }}
           >
             !
           </div>
-          <h1 style={{ fontSize: 18, color: "#1A1714", margin: "0 0 8px" }}>Something broke on this screen</h1>
-          <p style={{ fontSize: 13, color: "#7A7068", margin: "0 0 20px", lineHeight: 1.6 }}>
+          <h1 style={{ fontSize: 18, color: theme.color.textPrimary, margin: "0 0 8px" }}>Something broke on this screen</h1>
+          <p style={{ fontSize: 13, color: theme.color.textMuted, margin: "0 0 20px", lineHeight: 1.6 }}>
             The rest of the toolkit is fine. Try again, and if it keeps happening, grab the support bundle from
             Settings → Diagnostics.
           </p>
@@ -81,9 +82,9 @@ export class ErrorBoundary extends Component<Props, State> {
             style={{
               textAlign: "left",
               fontSize: 11,
-              color: "#6B6056",
-              background: "#F4EFE6",
-              border: "1px solid #EBE3D5",
+              color: theme.color.textMuted,
+              background: theme.color.surface2,
+              border: `1px solid ${theme.color.border}`,
               borderRadius: 6,
               padding: "8px 10px",
               margin: "0 0 20px",
@@ -97,8 +98,9 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={this.reset}
             style={{
               padding: "8px 18px",
-              background: "#8B5CF6",
-              color: "#fff",
+              background: theme.gradient.accent,
+              boxShadow: theme.shadow.glowAccent,
+              color: theme.color.onAccent,
               border: "none",
               borderRadius: 6,
               fontSize: 13,

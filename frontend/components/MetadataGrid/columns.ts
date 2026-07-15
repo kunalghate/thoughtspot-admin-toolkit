@@ -2,17 +2,18 @@ import type { ColDef } from "ag-grid-community";
 import React from "react";
 import type { MetadataObject } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
+import { theme } from "@/lib/theme";
 
 // ── Type chip styling (shared with Archiver) ─────────────────────────────
 const TYPE_COLORS: Record<string, { bg: string; fg: string }> = {
-  LIVEBOARD:          { bg: "#EDE9FE", fg: "#6D28D9" }, // purple
-  ANSWER:             { bg: "#F3F4F6", fg: "#374151" }, // neutral gray
-  WORKSHEET:          { bg: "#DBEAFE", fg: "#1E40AF" }, // blue
-  LOGICAL_TABLE:      { bg: "#DBEAFE", fg: "#1E40AF" }, // blue (legacy)
-  ONE_TO_ONE_LOGICAL: { bg: "#CFFAFE", fg: "#155E75" }, // cyan (Table)
-  AGGR_WORKSHEET:     { bg: "#D1FAE5", fg: "#065F46" }, // green
-  SQL_VIEW:           { bg: "#FED7AA", fg: "#9A3412" }, // orange
-  USER_DEFINED:       { bg: "#F3F4F6", fg: "#374151" }, // neutral gray
+  LIVEBOARD:          { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // purple
+  ANSWER:             { bg: theme.color.surface3, fg: theme.color.textSecondary }, // neutral gray
+  WORKSHEET:          { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // blue
+  LOGICAL_TABLE:      { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // blue (legacy)
+  ONE_TO_ONE_LOGICAL: { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // cyan (Table)
+  AGGR_WORKSHEET:     { bg: theme.color.successSoft, fg: theme.color.success }, // green
+  SQL_VIEW:           { bg: theme.color.warnSoft, fg: theme.color.warn }, // orange
+  USER_DEFINED:       { bg: theme.color.surface3, fg: theme.color.textSecondary }, // neutral gray
 };
 
 function TypeChip({ value }: { value: string }) {
@@ -23,7 +24,7 @@ function TypeChip({ value }: { value: string }) {
       style: {
         display: "inline-block", lineHeight: "18px",
         padding: "0 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
-        background: colors.bg, color: colors.fg, fontFamily: "Geist, sans-serif",
+        background: colors.bg, color: colors.fg, fontFamily: theme.font.sans,
         whiteSpace: "nowrap",
       },
     },

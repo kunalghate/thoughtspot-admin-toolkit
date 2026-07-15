@@ -5,6 +5,7 @@ import {
   LayoutDashboard, Users, UsersRound, FolderSearch,
   Archive, Trash2, Share2, GitFork, Briefcase, Settings,
 } from "lucide-react";
+import { theme } from "@/lib/theme";
 import type { Cluster } from "@/lib/types";
 
 const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
@@ -34,24 +35,25 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
   return (
     <aside style={{
       width: 220, flexShrink: 0, height: "100vh",
-      background: "#FAF8F4", borderRight: "1px solid #E8E1D5",
+      background: theme.color.surface, borderRight: `1px solid ${theme.color.border}`,
       display: "flex", flexDirection: "column",
     }}>
       {/* Logo */}
-      <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #E8E1D5" }}>
+      <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${theme.color.border}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{
             width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-            background: "linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)",
+            background: theme.gradient.accent,
+            boxShadow: theme.shadow.glowAccent,
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>
-            <span style={{ color: "white", fontSize: 12, fontWeight: 700 }}>TS</span>
+            <span style={{ color: theme.color.onAccent, fontSize: 12, fontWeight: 700 }}>TS</span>
           </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
               Admin Toolkit
             </div>
-            <div style={{ fontSize: 11, color: "#7A7068", fontFamily: "Geist, sans-serif" }}>
+            <div style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
               {activeCluster?.name ?? "Not connected"}
             </div>
           </div>
@@ -61,33 +63,33 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
       {/* Nav */}
       <nav style={{ flex: 1, padding: "10px 10px 0", overflowY: "auto" }}>
         <NavSection items={NAV_ITEMS} currentPath={router.pathname} />
-        <div style={{ margin: "10px 0", borderTop: "1px solid #F0EBE3" }} />
+        <div style={{ margin: "10px 0", borderTop: `1px solid ${theme.color.border}` }} />
         <NavSection items={BOTTOM_ITEMS} currentPath={router.pathname} />
       </nav>
 
       {/* Cluster switcher */}
-      <div style={{ padding: "12px 10px", borderTop: "1px solid #E8E1D5" }}>
+      <div style={{ padding: "12px 10px", borderTop: `1px solid ${theme.color.border}` }}>
         <button
           onClick={onSwitchCluster}
           style={{
             width: "100%", padding: "8px 10px",
-            border: "1px solid #E8E1D5", borderRadius: 6,
+            border: `1px solid ${theme.color.border}`, borderRadius: 6,
             background: "transparent", cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "space-between",
             textAlign: "left",
           }}
         >
           <div>
-            <div style={{ fontSize: 10, color: "#7A7068", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, fontFamily: "Geist, sans-serif" }}>
+            <div style={{ fontSize: 10, color: theme.color.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, fontFamily: theme.font.sans }}>
               Cluster
             </div>
-            <div style={{ fontSize: 12, fontWeight: 500, color: "#1A1714", fontFamily: "Geist, sans-serif" }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
               {activeCluster?.name ?? "—"}
             </div>
           </div>
-          <span style={{ color: "#7A7068", fontSize: 14 }}>⇅</span>
+          <span style={{ color: theme.color.textMuted, fontSize: 14 }}>⇅</span>
         </button>
-        <p style={{ fontSize: 10, color: "#A89E96", margin: "6px 2px 0", fontFamily: "Geist, sans-serif" }}>
+        <p style={{ fontSize: 10, color: theme.color.textMuted, margin: "6px 2px 0", fontFamily: theme.font.sans }}>
           Go to Settings to add or remove clusters.
         </p>
       </div>
@@ -108,13 +110,13 @@ function NavSection({ items, currentPath }: {
             <div style={{
               display: "flex", alignItems: "center", gap: 9,
               padding: "7px 10px", borderRadius: 6, marginBottom: 2, cursor: "pointer",
-              background: active ? "#EDE9FE" : "transparent",
+              background: active ? theme.color.accentSoft : "transparent",
             }}>
-              <Icon size={15} color={active ? "#6D28D9" : "#7A7068"} style={{ flexShrink: 0 }} />
+              <Icon size={15} color={active ? theme.color.accent2 : theme.color.textMuted} style={{ flexShrink: 0 }} />
               <span style={{
                 fontSize: 13, fontWeight: active ? 500 : 400,
-                color: active ? "#6D28D9" : "#1A1714",
-                fontFamily: "Geist, sans-serif",
+                color: active ? theme.color.accent2 : theme.color.textPrimary,
+                fontFamily: theme.font.sans,
               }}>
                 {label}
               </span>
