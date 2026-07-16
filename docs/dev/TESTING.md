@@ -52,8 +52,12 @@ and `tests/integration/`.
 
 ### New page or component (`frontend/...`)
 
-- Vitest is installed but not yet wired. When you wire it up, add component
-  tests to `frontend/__tests__/`.
+- Vitest is wired for local runs. Add component tests as co-located
+  `*.test.tsx` files next to the component (e.g.
+  [frontend/components/Relationships/Legend.test.tsx](../../frontend/components/Relationships/Legend.test.tsx))
+  and run them with `cd frontend && npm test` (jsdom + Testing Library). Note:
+  vitest is not yet a CI gate — that wiring touches `.github/workflows/` and is a
+  separate human-approved change.
 - For pages with a destructive action, add a Playwright spec under
   `frontend/tests/e2e/` modeled on
   [frontend/tests/e2e/archiver-dry-run.spec.ts](../../frontend/tests/e2e/archiver-dry-run.spec.ts).
@@ -65,7 +69,7 @@ and `tests/integration/`.
 make test               # everything
 make test-unit          # fast: unit only
 make test-integration   # in-memory SQLite + TestClient
-cd frontend && npm test         # vitest (when wired)
+cd frontend && npm test         # vitest (jsdom + Testing Library)
 cd frontend && npm run test:e2e # Playwright; one-time `npm run test:e2e:install` first
 ```
 
