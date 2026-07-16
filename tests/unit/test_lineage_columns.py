@@ -84,9 +84,12 @@ def test_resolve_model_columns_3_layer_chain():
 
     phys = _parse_physical_source(TABLE_EDOC["table"])
     rows = _resolve_model_columns(
-        guid="model-1", body=MODEL_EDOC["worksheet"],
-        physical_by_guid={"table-1": phys}, physical_by_name={"SALES": phys},
-        cluster_id=CLUSTER_ID, org_id=0,
+        guid="model-1",
+        body=MODEL_EDOC["worksheet"],
+        physical_by_guid={"table-1": phys},
+        physical_by_name={"SALES": phys},
+        cluster_id=CLUSTER_ID,
+        org_id=0,
     )
     by_col = {r.model_column_name: r for r in rows}
     rev = by_col["Total Revenue"]
@@ -124,7 +127,7 @@ def test_load_edoc_parses_json_string_and_flags_inaccessible():
     from ts_admin.services.lineage_service import _load_edoc
 
     assert _load_edoc({"edoc": json.dumps(TABLE_EDOC)})["guid"] == "table-1"
-    assert _load_edoc({"edoc": ""}) is None       # inaccessible stub
+    assert _load_edoc({"edoc": ""}) is None  # inaccessible stub
     assert _load_edoc({"info": {"name": "x"}}) is None
 
 
@@ -193,8 +196,14 @@ def _seed(engine, *, lb_modified: datetime | None = None):
         for guid, name, otype, modified in rows:
             session.add(
                 CachedMetadata(
-                    cluster_id=CLUSTER_ID, org_id=0, ts_guid=guid, name=name,
-                    object_type=otype, owner_name="Alice", modified_at=modified, synced_at=now,
+                    cluster_id=CLUSTER_ID,
+                    org_id=0,
+                    ts_guid=guid,
+                    name=name,
+                    object_type=otype,
+                    owner_name="Alice",
+                    modified_at=modified,
+                    synced_at=now,
                 )
             )
         session.commit()

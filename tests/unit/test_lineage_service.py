@@ -138,9 +138,7 @@ async def test_build_object_graph_creates_uses_edges(monkeypatch, in_memory_db, 
     fake = _FakeClient()
     monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
 
-    count = await lineage_service.build_object_graph(
-        cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job()
-    )
+    count = await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
     assert count == 2  # model→table, answer→model. lb→model is deferred to Phase 2.
 
     with Session(in_memory_db) as session:
@@ -179,8 +177,8 @@ def test_edges_from_dependents_types_by_group_key_and_drops_noncontent():
     by_src = {e.source_guid: e.source_type for e in edges}
 
     assert by_src == {"ans-x": "ANSWER", "ans-known": "ANSWER"}
-    assert "lb-x" not in by_src   # Liveboard deferred to Phase 2's TML pass
-    assert "fb-x" not in by_src   # FEEDBACK alert is not lineage content
+    assert "lb-x" not in by_src  # Liveboard deferred to Phase 2's TML pass
+    assert "fb-x" not in by_src  # FEEDBACK alert is not lineage content
     assert "unk-x" not in by_src  # unknown/untyped dependent dropped, not defaulted
     assert all(e.target_type == "MODEL" for e in edges)
 

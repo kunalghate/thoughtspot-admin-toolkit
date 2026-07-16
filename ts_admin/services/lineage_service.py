@@ -391,7 +391,7 @@ def _model_alias_map(body: dict) -> dict[str, tuple[str, str]]:
     """
     alias: dict[str, tuple[str, str]] = {}
     name_to_fqn: dict[str, str] = {}
-    for tbl in (body.get("tables") or body.get("model_tables") or []):
+    for tbl in body.get("tables") or body.get("model_tables") or []:
         name = tbl.get("name") or tbl.get("id")
         fqn = tbl.get("fqn", "") or ""
         if not name:
@@ -546,7 +546,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
     physical_by_guid: dict[str, dict] = {}
     physical_by_name: dict[str, dict] = {}
     model_specs: list[tuple[str, dict]] = []  # (guid, body)
-    connect_edges: dict[str, dict] = {}       # table_guid → edge fields
+    connect_edges: dict[str, dict] = {}  # table_guid → edge fields
     lineage_rows: list = []
     usage_rows: list = []
     lb_uses_edges: list = []
@@ -567,7 +567,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                 if edoc is None:
                     inaccessible += 1
                     continue
-                guid = (edoc.get("guid") or (item.get("info") or {}).get("id") or "")
+                guid = edoc.get("guid") or (item.get("info") or {}).get("id") or ""
                 kind, body = _classify_edoc(edoc)
                 if kind in _SOURCE_KINDS:
                     summary = _parse_physical_source(body)
@@ -595,9 +595,12 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
         for guid, body in model_specs:
             lineage_rows.extend(
                 _resolve_model_columns(
-                    guid=guid, body=body,
-                    physical_by_guid=physical_by_guid, physical_by_name=physical_by_name,
-                    cluster_id=cluster_id, org_id=org_id,
+                    guid=guid,
+                    body=body,
+                    physical_by_guid=physical_by_guid,
+                    physical_by_name=physical_by_name,
+                    cluster_id=cluster_id,
+                    org_id=org_id,
                 )
             )
 
@@ -609,7 +612,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                 if edoc is None:
                     inaccessible += 1
                     continue
-                guid = (edoc.get("guid") or (item.get("info") or {}).get("id") or "")
+                guid = edoc.get("guid") or (item.get("info") or {}).get("id") or ""
                 kind, body = _classify_edoc(edoc)
                 if kind != "liveboard" or not guid:
                     continue
@@ -623,9 +626,13 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                             m_name, m_type = meta_by_guid.get(model_guid, ("", ""))
                             lb_uses_edges.append(
                                 CachedDependency(
-                                    cluster_id=cluster_id, org_id=org_id,
-                                    source_guid=guid, source_type="LIVEBOARD", source_name=lb_name,
-                                    target_guid=model_guid, target_type=_node_type(m_type),
+                                    cluster_id=cluster_id,
+                                    org_id=org_id,
+                                    source_guid=guid,
+                                    source_type="LIVEBOARD",
+                                    source_name=lb_name,
+                                    target_guid=model_guid,
+                                    target_type=_node_type(m_type),
                                     target_name=m_name,
                                     relation="USES",
                                 )
@@ -633,9 +640,13 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                         for col in used_cols:
                             usage_rows.append(
                                 CachedColumnUsage(
-                                    cluster_id=cluster_id, org_id=org_id,
-                                    model_guid=model_guid, model_column_name=col,
-                                    consumer_guid=guid, consumer_type="LIVEBOARD", consumer_name=lb_name,
+                                    cluster_id=cluster_id,
+                                    org_id=org_id,
+                                    model_guid=model_guid,
+                                    model_column_name=col,
+                                    consumer_guid=guid,
+                                    consumer_type="LIVEBOARD",
+                                    consumer_name=lb_name,
                                 )
                             )
             progress += len(chunk)
@@ -644,9 +655,14 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
     # 3. Persist (delete-before-insert, scoped for incremental liveboards).
     now = datetime.now(timezone.utc)
     written = _persist_column_map(
-        cluster_id=cluster_id, org_id=org_id, now=now,
-        lineage_rows=lineage_rows, connect_edges=list(connect_edges.values()),
-        lb_guids=lb_guids, lb_uses_edges=lb_uses_edges, usage_rows=usage_rows,
+        cluster_id=cluster_id,
+        org_id=org_id,
+        now=now,
+        lineage_rows=lineage_rows,
+        connect_edges=list(connect_edges.values()),
+        lb_guids=lb_guids,
+        lb_uses_edges=lb_uses_edges,
+        usage_rows=usage_rows,
     )
     if inaccessible:
         logger.info("Column map: %d inaccessible TML stub(s) for cluster=%s org=%s", inaccessible, cluster_id, org_id)
@@ -733,9 +749,13 @@ def _usage_rows_from_answer(*, guid: str, name: str, body: dict, cluster_id: str
         for col_name in used_cols:
             rows.append(
                 CachedColumnUsage(
-                    cluster_id=cluster_id, org_id=org_id,
-                    model_guid=model_guid, model_column_name=col_name,
-                    consumer_guid=guid, consumer_type="ANSWER", consumer_name=name,
+                    cluster_id=cluster_id,
+                    org_id=org_id,
+                    model_guid=model_guid,
+                    model_column_name=col_name,
+                    consumer_guid=guid,
+                    consumer_type="ANSWER",
+                    consumer_name=name,
                 )
             )
     return rows
