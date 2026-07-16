@@ -97,14 +97,10 @@ def test_column_lineage_and_usage_round_trip(in_memory_db):
         )
         session.commit()
 
-        lin = session.exec(
-            select(CachedColumnLineage).where(CachedColumnLineage.model_guid == "model-1")
-        ).one()
+        lin = session.exec(select(CachedColumnLineage).where(CachedColumnLineage.model_guid == "model-1")).one()
         assert lin.db_column_name == "REVENUE"
         assert lin.connection_name == "Snowflake Prod"
 
-        use = session.exec(
-            select(CachedColumnUsage).where(CachedColumnUsage.consumer_guid == "answer-1")
-        ).one()
+        use = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_guid == "answer-1")).one()
         assert use.model_column_name == "Revenue"
         assert use.consumer_type == "ANSWER"

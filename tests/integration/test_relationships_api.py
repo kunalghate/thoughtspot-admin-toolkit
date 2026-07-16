@@ -77,18 +77,30 @@ def seeded(in_memory_db):
         # Lineage edges for c1 only: model→table, answer→model.
         session.add(
             CachedDependency(
-                cluster_id="c1", org_id=0,
-                source_guid="model-1", source_type="MODEL", source_name="Sales Model in c1",
-                target_guid="table-1", target_type="DB_TABLE", target_name="DB Table in c1",
-                relation="USES", synced_at=now,
+                cluster_id="c1",
+                org_id=0,
+                source_guid="model-1",
+                source_type="MODEL",
+                source_name="Sales Model in c1",
+                target_guid="table-1",
+                target_type="DB_TABLE",
+                target_name="DB Table in c1",
+                relation="USES",
+                synced_at=now,
             )
         )
         session.add(
             CachedDependency(
-                cluster_id="c1", org_id=0,
-                source_guid="answer-1", source_type="ANSWER", source_name="Sales Answer in c1",
-                target_guid="model-1", target_type="MODEL", target_name="Sales Model in c1",
-                relation="USES", synced_at=now,
+                cluster_id="c1",
+                org_id=0,
+                source_guid="answer-1",
+                source_type="ANSWER",
+                source_name="Sales Answer in c1",
+                target_guid="model-1",
+                target_type="MODEL",
+                target_name="Sales Model in c1",
+                relation="USES",
+                synced_at=now,
             )
         )
         session.commit()
