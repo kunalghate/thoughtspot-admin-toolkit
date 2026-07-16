@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    # `labeled`/`unlabeled` are included so the guard re-evaluates when a human
+    # toggles the `human-approved` label on a PR touching a protected path.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches: [main]
   push:
     branches: [main]
@@ -58,3 +61,45 @@ jobs:
 
       - name: Next.js build
         run: cd frontend && npm run build
+
+  # ── Governance guard ─────────────────────────────────────────────────────────
+  # Fails a PR that touches a protected path unless a human has added the
+  # `human-approved` label. Agents NEVER add that label. The protected-path list
+  # here must stay in sync with CLAUDE.md → "Protected paths" (BACKLOG M1).
+  guard:
+    name: Protected-path guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      HUMAN_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'human-approved') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check protected paths
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          CHANGED="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          echo "Changed files:"
+          echo "$CHANGED" | sed 's/^/  /'
+
+          # Protected paths (extended regex, anchored at repo root).
+          # Keep in sync with CLAUDE.md → Protected paths.
+          PROTECTED='^(CLAUDE\.md|\.github/workflows/|\.env|ts_admin/main\.py|ts_admin/config\.py|ts_admin/cli\.py|ts_admin/services/cluster_service\.py|tests/integration/test_dryrun_safety\.py|tests/integration/test_cluster_isolation\.py|tests/integration/test_audit_log_writes\.py|tests/unit/test_cluster_service\.py)'
+
+          HITS="$(echo "$CHANGED" | grep -E "$PROTECTED" || true)"
+
+          if [ -n "$HITS" ] && [ "$HUMAN_APPROVED" != "true" ]; then
+            echo ""
+            echo "::error::This PR modifies protected path(s) without the 'human-approved' label:"
+            echo "$HITS" | sed 's/^/  - /'
+            echo ""
+            echo "A human reviewer must add the 'human-approved' label to allow these changes."
+            echo "Agents must never add this label themselves."
+            exit 1
+          fi
+
+          echo ""
+          echo "Guard passed: no protected paths touched, or 'human-approved' label present."
