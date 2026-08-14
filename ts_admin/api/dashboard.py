@@ -18,7 +18,18 @@ class DashboardCounts(BaseModel):
     tags: int
     objects_total: int
     objects_by_type: dict[str, int]
-    stale_90d: int
+    archivable_total: int
+    stale_90d: int  # archivable objects last accessed 90+ days ago
+    never_accessed: int  # archivable objects with no access date at all
+
+
+class DashboardAttention(BaseModel):
+    """Cached signals that map to an action the toolkit already supports."""
+
+    inactive_users: int
+    users_without_group: int
+    empty_groups: int
+    orphaned_content: int
 
 
 class DashboardJob(BaseModel):
@@ -27,6 +38,15 @@ class DashboardJob(BaseModel):
     status: str
     created_at: datetime | None
     error: str | None
+    error_type: str | None
+
+
+class DashboardRunningJob(BaseModel):
+    id: str
+    job_type: str
+    status: str
+    progress: int
+    total: int
 
 
 class DashboardActivity(BaseModel):
@@ -34,11 +54,19 @@ class DashboardActivity(BaseModel):
     label: str
     status: str
     timestamp: datetime | None
+    count: int = 1  # identical adjacent entries folded into one row
 
 
 class DashboardResponse(BaseModel):
     counts: DashboardCounts
+    # Per-entity "has this ever synced?" — lets the UI distinguish a real zero
+    # from a number we simply do not have yet.
+    synced: dict[str, bool]
+    # Change in record_count since the previous successful sync of each entity.
+    deltas: dict[str, int]
+    attention: DashboardAttention
     recent_jobs: list[DashboardJob]
+    running_jobs: list[DashboardRunningJob]
     recent_activity: list[DashboardActivity]
     failed_jobs_7d: int
 

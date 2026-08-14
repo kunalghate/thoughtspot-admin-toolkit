@@ -178,3 +178,39 @@ class TestMetadataServiceStats:
         assert stats["by_type"]["LIVEBOARD"] == 2
         assert stats["by_type"]["ANSWER"] == 1
         assert stats["stale_90d"] == 1
+
+    def test_staleness_excludes_types_the_archiver_cannot_touch(self, session, cluster):
+        """
+        Tables and worksheets carry no access telemetry, so a null
+        `last_accessed_at` on them is missing data, not disuse. Counting them
+        as stale inflated the dashboard tile with objects the Archiver — which
+        that tile links to — can never act on.
+        """
+        _make_obj(session, guid="lb", name="LB", object_type="LIVEBOARD", last_accessed_days_ago=None)
+        for i in range(5):
+            _make_obj(
+                session,
+                guid=f"tbl-{i}",
+                name=f"T{i}",
+                object_type="ONE_TO_ONE_LOGICAL",
+                last_accessed_days_ago=None,
+            )
+        stats = MetadataService.stats(cluster_id="test-cluster", org_id=0)
+        assert stats["total"] == 6  # inventory still counts everything
+        assert stats["archivable_total"] == 1
+        assert stats["never_accessed"] == 1  # the liveboard only
+        assert stats["stale_90d"] == 0  # no object has an aged-out real date
+
+    def test_staleness_excludes_system_user_content(self, session, cluster):
+        """Mirrors the Archiver's own scope — system content is not actionable."""
+        _make_obj(
+            session,
+            guid="sys",
+            name="System LB",
+            owner_name="System User",
+            last_accessed_days_ago=200,
+        )
+        _make_obj(session, guid="mine", name="My LB", owner_name="Alice", last_accessed_days_ago=200)
+        stats = MetadataService.stats(cluster_id="test-cluster", org_id=0)
+        assert stats["stale_90d"] == 1
+        assert stats["archivable_total"] == 1

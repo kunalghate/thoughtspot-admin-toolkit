@@ -32,6 +32,11 @@ from ts_admin.models.sync_log import SyncLog
 
 logger = logging.getLogger(__name__)
 
+# The only object types the Archiver can act on. Staleness stats are scoped to
+# these so the dashboard never advertises cleanup the tooling cannot perform.
+# ArchiverService aliases this — keep it single-sourced.
+ARCHIVABLE_TYPES = ("LIVEBOARD", "ANSWER")
+
 
 class MetadataService:
     # ── Search / filter ────────────────────────────────────────────────────────
@@ -196,34 +201,66 @@ class MetadataService:
         """
         Return aggregate stats for the dashboard health card.
 
+        Staleness is deliberately narrower than the raw inventory. Tables,
+        worksheets, and SQL views carry no access telemetry, so counting them
+        as "unused" inflates the number with objects that were never going to
+        have a `last_accessed_at` — and the Archiver, which the dashboard tile
+        links to, can only act on `ARCHIVABLE_TYPES` anyway. The counts below
+        therefore use the Archiver's own scope (archivable types, System User
+        content excluded) so the tile promises exactly what the tool can do.
+
+        "Stale" and "never accessed" are also kept apart: the first is an
+        object with a real access date that has aged out, the second is an
+        object we have no evidence about. They call for different decisions.
+
         Returns:
-            total         — total cached objects
-            by_type       — count per object type
-            stale_90d     — objects not accessed in 90+ days
-            last_synced   — ISO timestamp of last successful metadata sync
+            total            — total cached objects (all types, raw inventory)
+            by_type          — count per object type (all types)
+            archivable_total — objects the Archiver can act on
+            stale_90d        — archivable objects last accessed 90+ days ago
+            never_accessed   — archivable objects with no access date at all
+            last_synced      — ISO timestamp of last successful metadata sync
         """
         # Use naive UTC datetime for comparison — SQLite stores datetimes without tzinfo
         cutoff_90d = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=90)
 
         with Session(_db.get_engine()) as session:
-            all_items = session.exec(
-                select(CachedMetadata).where(
-                    CachedMetadata.cluster_id == cluster_id,
-                    CachedMetadata.org_id == org_id,
-                )
-            ).all()
+            scope = [
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+            ]
 
-            by_type: dict[str, int] = {}
-            stale = 0
-            for item in all_items:
-                by_type[item.object_type] = by_type.get(item.object_type, 0) + 1
-                last = item.last_accessed_at
-                if (
-                    last is None
-                    or (last.tzinfo is None and last < cutoff_90d)
-                    or (last.tzinfo is not None and last.replace(tzinfo=None) < cutoff_90d)
-                ):
-                    stale += 1
+            # Inventory: one GROUP BY instead of loading every row into Python.
+            by_type: dict[str, int] = {
+                object_type: count
+                for object_type, count in session.exec(
+                    select(CachedMetadata.object_type, func.count())
+                    .where(*scope)
+                    .group_by(col(CachedMetadata.object_type))
+                ).all()
+            }
+
+            # Actionable scope — mirrors ArchiverService's own conditions.
+            archivable = [
+                *scope,
+                col(CachedMetadata.object_type).in_(ARCHIVABLE_TYPES),
+                col(CachedMetadata.owner_name) != "System User",
+            ]
+            archivable_total = session.exec(select(func.count()).select_from(CachedMetadata).where(*archivable)).one()
+            stale = session.exec(
+                select(func.count())
+                .select_from(CachedMetadata)
+                .where(
+                    *archivable,
+                    col(CachedMetadata.last_accessed_at).is_not(None),
+                    col(CachedMetadata.last_accessed_at) < cutoff_90d,
+                )
+            ).one()
+            never_accessed = session.exec(
+                select(func.count())
+                .select_from(CachedMetadata)
+                .where(*archivable, col(CachedMetadata.last_accessed_at).is_(None))
+            ).one()
 
             sync_log = session.exec(
                 select(SyncLog)
@@ -236,8 +273,10 @@ class MetadataService:
             ).first()
 
             return {
-                "total": len(all_items),
+                "total": sum(by_type.values()),
                 "by_type": by_type,
+                "archivable_total": archivable_total,
                 "stale_90d": stale,
+                "never_accessed": never_accessed,
                 "last_synced": sync_log.synced_at.isoformat() if sync_log and sync_log.synced_at else None,
             }

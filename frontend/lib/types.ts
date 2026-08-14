@@ -140,7 +140,9 @@ export interface ApiError {
 export interface MetadataStats {
   total: number;
   by_type: Record<string, number>;
+  archivable_total: number;
   stale_90d: number;
+  never_accessed: number;
   last_synced: string | null;
 }
 
@@ -512,7 +514,18 @@ export interface DashboardCounts {
   tags: number;
   objects_total: number;
   objects_by_type: Record<string, number>;
+  archivable_total: number;
+  /** Archivable objects last accessed 90+ days ago (real date, aged out). */
   stale_90d: number;
+  /** Archivable objects with no access date at all — unknown, not unused. */
+  never_accessed: number;
+}
+
+export interface DashboardAttention {
+  inactive_users: number;
+  users_without_group: number;
+  empty_groups: number;
+  orphaned_content: number;
 }
 
 export interface DashboardJob {
@@ -521,6 +534,15 @@ export interface DashboardJob {
   status: string;
   created_at: string | null;
   error: string | null;
+  error_type: string | null;
+}
+
+export interface DashboardRunningJob {
+  id: string;
+  job_type: string;
+  status: string;
+  progress: number;
+  total: number;
 }
 
 export interface DashboardActivity {
@@ -528,11 +550,19 @@ export interface DashboardActivity {
   label: string;
   status: string;
   timestamp: string | null;
+  /** Identical adjacent entries folded into one row. */
+  count: number;
 }
 
 export interface DashboardSummary {
   counts: DashboardCounts;
+  /** Per-entity "has this ever synced?" — tells a real zero from a missing number. */
+  synced: Partial<Record<EntityType, boolean>>;
+  /** Change in record count since the previous successful sync of each entity. */
+  deltas: Partial<Record<EntityType, number>>;
+  attention: DashboardAttention;
   recent_jobs: DashboardJob[];
+  running_jobs: DashboardRunningJob[];
   recent_activity: DashboardActivity[];
   failed_jobs_7d: number;
 }
