@@ -415,3 +415,42 @@ button { font-family: inherit; }
   font-weight: 500;
   box-shadow: inset 3px 0 0 var(--accent);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Dashboard layout
+ *
+ * Explicit column counts, not `auto-fit`. Auto-fit picks its track count from
+ * the container width alone, so a band of 3 items lands on a 4-up track with a
+ * ragged tail and the numbers stop lining up. Fixed tracks + breakpoints keep
+ * every row aligned at every width.
+ * ───────────────────────────────────────────────────────────────────────────*/
+.dash-tiles     { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.dash-attention { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 24px; }
+.dash-split     { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+
+@media (max-width: 1180px) {
+  .dash-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-split { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 820px) {
+  .dash-tiles, .dash-attention { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* One attention row: fixed number gutter so every count shares a right edge. */
+.dash-attn-row {
+  display: grid; grid-template-columns: 56px minmax(0, 1fr) 12px;
+  align-items: center; gap: 10px;
+  padding: 7px 8px; border-radius: var(--radius-control);
+  text-decoration: none; transition: background 120ms ease;
+}
+.dash-attn-row:hover { background: var(--surface-2); }
+.dash-attn-row .chev { opacity: 0; transition: opacity 120ms ease; }
+.dash-attn-row:hover .chev { opacity: 1; }
+
+/* One content-by-type row: label · bar track · count, all sharing a baseline.
+   The track is capped — a bar stretched across a full-width card reads as a
+   progress meter, not as a magnitude worth comparing to the row above it. */
+.dash-bar-row {
+  display: grid; grid-template-columns: 116px minmax(0, 420px) 48px;
+  justify-content: start; align-items: center; gap: 12px; padding: 4px 0;
+}

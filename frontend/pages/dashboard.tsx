@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  AlertTriangle, Archive, ArrowRight, Briefcase, CheckCircle2, FolderSearch,
+  AlertTriangle, Archive, ArrowRight, CheckCircle2, ChevronRight, FolderSearch,
   Loader2, RefreshCw, Users, UsersRound,
 } from "lucide-react";
 import AppShell, { useShell } from "@/components/Shell";
@@ -183,8 +183,10 @@ function DashboardContent() {
         neverSynced={neverSynced}
       />
 
-      {/* Inventory — reference counts, deliberately quieter than the band above. */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+      {/* Inventory — reference counts, deliberately quieter than the band above.
+          Failed jobs are NOT a tile: that number already leads the attention
+          band, and printing it twice makes the page read as two dashboards. */}
+      <div className="dash-tiles">
         <StatTile icon={Users} label="Users" value={counts.users} delta={deltas.users}
                   synced={synced.users} href="/users"
                   onSync={() => triggerSync("users")} syncing={syncing.has("users")} />
@@ -197,17 +199,18 @@ function DashboardContent() {
         <StatTile icon={Archive} label="Archivable content" value={counts.archivable_total}
                   synced={synced.metadata} href="/archiver"
                   hint="Liveboards + answers — the only types the Archiver can act on" />
-        <StatTile icon={Briefcase} label="Jobs (7d failed)" value={data.failed_jobs_7d}
-                  synced href="/jobs" tone={data.failed_jobs_7d > 0 ? "danger" : undefined} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <ContentByTypeCard byType={counts.objects_by_type} total={counts.objects_total} />
-          <RecentActivityCard activity={data.recent_activity} />
-        </div>
+      {/* Left = what's on the cluster, right = what the cluster has been doing.
+          Both cards are row lists of similar length, so the two columns end on
+          the same line; the audit feed spans below them, where its long labels
+          have room. */}
+      <div className="dash-split">
+        <ContentByTypeCard byType={counts.objects_by_type} total={counts.objects_total} />
         <RecentJobsCard jobs={data.recent_jobs} onRetry={triggerSync} syncing={syncing} />
       </div>
+
+      <RecentActivityCard activity={data.recent_activity} />
     </div>
   );
 }
@@ -248,15 +251,16 @@ function Banner({ children }: { children: React.ReactNode }) {
 function DashboardSkeleton() {
   return (
     <div style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20, maxWidth: 1320 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
-        {Array.from({ length: 6 }, (_, i) => (
+      <div style={{ height: 96, borderRadius: 9, background: theme.color.surface, border: `1px solid ${theme.color.border}` }} />
+      <div className="dash-tiles">
+        {Array.from({ length: 4 }, (_, i) => (
           <div key={i} style={{
             height: 74, borderRadius: 9, background: theme.color.surface,
             border: `1px solid ${theme.color.border}`,
           }} />
         ))}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 16 }}>
+      <div className="dash-split">
         {Array.from({ length: 2 }, (_, i) => (
           <div key={i} style={{
             height: 220, borderRadius: 9, background: theme.color.surface,
@@ -278,6 +282,8 @@ function AttentionBand({ attention, staleCount, failedJobs, neverSynced }: {
   failedJobs: number;
   neverSynced: boolean;
 }) {
+  // Danger before warn, then biggest first — the eye should land on the worst
+  // thing on the cluster, not on whatever happened to be declared first.
   const items = [
     { n: failedJobs, label: `job${failedJobs === 1 ? "" : "s"} failed in the last 7 days`, href: "/jobs", tone: "danger" as const },
     { n: attention.orphaned_content, label: "objects owned by a user who no longer exists", href: "/users", tone: "danger" as const },
@@ -285,7 +291,9 @@ function AttentionBand({ attention, staleCount, failedJobs, neverSynced }: {
     { n: attention.empty_groups, label: "groups with no members", href: "/groups", tone: "warn" as const },
     { n: attention.users_without_group, label: "users belong to no group", href: "/users", tone: "warn" as const },
     { n: staleCount, label: "liveboards/answers unused for 90+ days", href: "/archiver", tone: "warn" as const },
-  ].filter((i) => i.n > 0);
+  ]
+    .filter((i) => i.n > 0)
+    .sort((a, b) => (a.tone === b.tone ? b.n - a.n : a.tone === "danger" ? -1 : 1));
 
   if (neverSynced) return null;
 
@@ -304,21 +312,21 @@ function AttentionBand({ attention, staleCount, failedJobs, neverSynced }: {
   }
 
   return (
-    <Card title="Needs attention">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 8 }}>
+    <Card title="Needs attention" meta={`${items.length} ${items.length === 1 ? "item" : "items"}`}>
+      <div className="dash-attention">
         {items.map((item) => (
-          <Link key={item.label} href={item.href} style={{ textDecoration: "none" }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "6px 2px" }}>
-              <span style={{
-                fontSize: 17, fontWeight: 700, fontFamily: theme.font.mono, lineHeight: 1,
-                color: item.tone === "danger" ? theme.color.danger : theme.color.warn,
-              }}>
-                {item.n.toLocaleString()}
-              </span>
-              <span style={{ fontSize: 12.5, color: theme.color.textSecondary, fontFamily: theme.font.sans }}>
-                {item.label}
-              </span>
-            </div>
+          <Link key={item.label} href={item.href} className="dash-attn-row">
+            <span style={{
+              fontSize: 17, fontWeight: 700, fontFamily: theme.font.mono, lineHeight: 1,
+              textAlign: "right", fontVariantNumeric: "tabular-nums",
+              color: item.tone === "danger" ? theme.color.danger : theme.color.warn,
+            }}>
+              {item.n.toLocaleString()}
+            </span>
+            <span style={{ fontSize: 12.5, color: theme.color.textSecondary, fontFamily: theme.font.sans }}>
+              {item.label}
+            </span>
+            <ChevronRight className="chev" size={12} style={{ color: theme.color.textMuted }} />
           </Link>
         ))}
       </div>
@@ -430,8 +438,10 @@ function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, o
   );
 }
 
-function Card({ title, action, children }: {
+function Card({ title, meta, action, children }: {
   title: string;
+  /** Quiet count that sits with the title (e.g. "89 objects"). */
+  meta?: string;
   action?: { label: string; href: string };
   children: React.ReactNode;
 }) {
@@ -440,9 +450,17 @@ function Card({ title, action, children }: {
       background: theme.color.surface, border: `1px solid ${theme.color.border}`,
       borderRadius: 9, padding: 18,
     }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <h3 style={{
+          margin: 0, display: "flex", alignItems: "baseline", gap: 8,
+          fontSize: 13, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans,
+        }}>
           {title}
+          {meta && (
+            <span style={{ fontSize: 11.5, fontWeight: 400, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
+              {meta}
+            </span>
+          )}
         </h3>
         {action && (
           <Link href={action.href} style={{
@@ -458,37 +476,55 @@ function Card({ title, action, children }: {
   );
 }
 
-/** Compact two-column list — a sorted count table, not a chart pretending to be one. */
+/**
+ * Ranked single-hue bar list. The job here is magnitude comparison, so the bars
+ * are scaled to the largest type (not to the total) — that's the comparison the
+ * admin is actually making. One hue, direct labels, counts in a fixed right
+ * gutter so they share an edge. Two API types collapse onto one label
+ * ("Worksheets"), so rows are merged by label rather than keyed by raw type.
+ */
 function ContentByTypeCard({ byType, total }: { byType: Record<string, number>; total: number }) {
-  const rows = Object.entries(byType)
-    .map(([type, count]) => ({ label: TYPE_LABELS[type] ?? type, count }))
-    .sort((a, b) => b.count - a.count);
+  const merged = new Map<string, number>();
+  for (const [type, count] of Object.entries(byType)) {
+    const label = TYPE_LABELS[type] ?? type;
+    merged.set(label, (merged.get(label) ?? 0) + count);
+  }
+  const rows = [...merged].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+  const max = rows.length > 0 ? rows[0].count : 0;
 
   return (
-    <Card title="Content by type" action={{ label: "Explore", href: "/metadata" }}>
+    <Card
+      title="Content by type"
+      meta={rows.length > 0 ? `${total.toLocaleString()} objects` : undefined}
+      action={{ label: "Explore", href: "/metadata" }}
+    >
       {rows.length === 0 ? (
         <EmptyLine text="No content synced yet." />
       ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", columnGap: 20 }}>
-            {rows.map((r) => (
-              <div key={r.label} style={{
-                display: "flex", alignItems: "baseline", justifyContent: "space-between",
-                gap: 10, padding: "5px 0",
+        <div>
+          {rows.map((r) => (
+            <div key={r.label} className="dash-bar-row">
+              <span style={{
+                fontSize: 12, color: theme.color.textSecondary, fontFamily: theme.font.sans,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
               }}>
-                <span style={{ fontSize: 12, color: theme.color.textSecondary, fontFamily: theme.font.sans }}>
-                  {r.label}
-                </span>
-                <span style={{ fontSize: 12, color: theme.color.textPrimary, fontFamily: theme.font.mono }}>
-                  {r.count.toLocaleString()}
-                </span>
+                {r.label}
+              </span>
+              <div style={{ height: 8, borderRadius: 4, background: theme.color.surface3, overflow: "hidden" }}>
+                <div style={{
+                  width: `${max > 0 ? Math.max((r.count / max) * 100, 2) : 0}%`,
+                  height: "100%", borderRadius: "0 4px 4px 0", background: theme.gradient.accent,
+                }} />
               </div>
-            ))}
-          </div>
-          <div style={{ marginTop: 8, fontSize: 11.5, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
-            {total.toLocaleString()} objects total
-          </div>
-        </>
+              <span style={{
+                fontSize: 12, color: theme.color.textPrimary, fontFamily: theme.font.mono,
+                textAlign: "right", fontVariantNumeric: "tabular-nums",
+              }}>
+                {r.count.toLocaleString()}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </Card>
   );
