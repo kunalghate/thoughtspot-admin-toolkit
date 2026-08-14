@@ -95,3 +95,41 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   spec (`.spec.ts`, imports `@playwright/test`); vitest must use `.test.` include +
   exclude `tests/e2e/**` so it never loads it. `ts_admin/static/` is gitignored, so
   `npm run build` produces no tracked git churn.
+- 2026-08-14 (S3/S4/M2): **`col(X).not_in(<empty collection>)` deletes every row.**
+  Verified on the installed SQLAlchemy 2.0.x — it compiles to
+  `X NOT IN (NULL) OR (1 = 1)`, i.e. unconditionally true. Any purge built from a
+  "seen this sweep" collection needs an explicit empty guard, because an empty
+  upstream response is indistinguishable from "everything was deleted upstream."
+  Guarded in `sync_service._sync_groups` (an empty `groups/search` page would
+  otherwise wipe the org's whole group + membership cache while reporting
+  SUCCESS). Deliberately NOT guarded in `lineage_service._persist_column_map`,
+  where an empty `all_lb_guids` genuinely means "no liveboards exist, so every
+  cached liveboard edge is orphaned" — `build_column_map` early-returns before
+  that line when metadata is simply unsynced. The distinction is which empty set
+  is ambiguous, not the construct itself.
+- 2026-08-14 (S3): `ts_admin/database.py::_REBUILDABLE_SENTINELS` maps
+  `{table: (sentinel column, sync_log entity_type)}` and is the drop-and-rebuild
+  mechanism for cache tables (`create_all` is additive-only and never ALTERs).
+  **Any new column on a rebuildable cache table must bump its sentinel**, or
+  `create_all` silently skips it and queries fail with "no such column". The drop
+  now also deletes the paired `sync_log` rows (table is `sync_log`, singular) —
+  without that the UI reported a recent successful sync over an empty table.
+- 2026-08-14 (S3): `UserGroupMembership` had **no writer at all** before this
+  change, so `user_management_service._is_admin()` silently returned `False` for
+  everyone and the admin-target guards in `preview_transfer_sharing` /
+  `execute_transfer_sharing` were dead code. Now that `_sync_groups` populates it,
+  those guards fire for the first time — a transfer targeting an admin that used
+  to succeed now returns 422. Behaviour flips on the first *groups sync*, not on
+  an explicit action. `_is_admin` still joins on `cluster_id` only (no `org_id`).
+- 2026-08-14 (S3): `ThoughtSpotClient.principal_permissions` and
+  `fetch_permissions` have **no wire-shape tests** — every caller is stubbed.
+  Both parsers degrade to `[]` on a key mismatch rather than raising, and
+  `execute_transfer_sharing` treats an empty list as SUCCESS with an audit-log
+  row. The v2 shape is `principal_permission_details[].metadata_permission_info[]
+  .metadata_permissions[].permission`, and the endpoint is `principals/`
+  (plural) — the pre-2026-08 code had all three wrong and returned `[]` silently.
+- 2026-08-14 (S3): Lineage delete scoping is split across two phases:
+  `build_object_graph` owns `USES` where `source_type != "LIVEBOARD"`;
+  `_persist_column_map` owns `CONNECTS` + `LIVEBOARD`-sourced `USES`. There is no
+  purge keyed on **target** GUID, so an edge whose target is deleted while its
+  source liveboard is unchanged outlives it (ghost node in the graph) — filed as S6.

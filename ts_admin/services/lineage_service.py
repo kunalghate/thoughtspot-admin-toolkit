@@ -723,6 +723,14 @@ def _persist_column_map(
         # Liveboards deleted in TS since the last build: nothing rebuilds their
         # rows (the object-tier delete no longer touches liveboard edges), so
         # purge everything attributed to a liveboard outside today's universe.
+        #
+        # An empty all_lb_guids is intentionally NOT guarded here. `not_in(<empty>)`
+        # compiles to `NOT IN (NULL) OR (1 = 1)` — always true — which is exactly
+        # right in this spot: zero liveboards in the metadata cache means every
+        # cached liveboard edge is orphaned. The unsynced-metadata case can't
+        # reach here; build_column_map early-returns when there are no tables
+        # and no liveboards. (Contrast _sync_groups, where an empty sweep is
+        # ambiguous and the same construct would be data loss.)
         session.exec(
             sql_delete(CachedDependency).where(
                 CachedDependency.cluster_id == cluster_id,

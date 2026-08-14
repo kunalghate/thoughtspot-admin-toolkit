@@ -38,25 +38,50 @@ def get_engine():
 # Rebuildable cache tables use drop-and-rebuild via re-sync instead of Alembic
 # (see the model docstrings). create_all never alters existing tables, so when a
 # model gains a column, drop the outdated table here and let create_all recreate
-# it — the next lineage sync repopulates it. {table_name: sentinel column}.
-_REBUILDABLE_SENTINELS: dict[str, str] = {
-    "ts_column_lineage": "is_formula",
+# it — the next lineage sync repopulates it.
+#
+# {table_name: (sentinel column, sync_log entity_type that rebuilds it)}. The
+# entity_type matters: dropping the table without clearing its sync_log rows
+# leaves the UI reporting a recent, successful sync over an empty table, so the
+# admin sees a blank grid with nothing telling them to re-sync.
+#
+# NOTE: any new column on a rebuildable cache table must bump its sentinel here,
+# or create_all silently skips it and queries fail with "no such column".
+_REBUILDABLE_SENTINELS: dict[str, tuple[str, str]] = {
+    "ts_column_lineage": ("is_formula", "dependencies"),
 }
 
 
 def _drop_outdated_rebuildable_tables() -> None:
+    """Drop rebuildable cache tables whose schema predates their sentinel column."""
+    import logging
+
     from sqlalchemy import inspect, text
 
     engine = get_engine()
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    for table, sentinel in _REBUILDABLE_SENTINELS.items():
+    for table, (sentinel, entity_type) in _REBUILDABLE_SENTINELS.items():
         if table not in existing_tables:
             continue
         columns = {c["name"] for c in inspector.get_columns(table)}
-        if sentinel not in columns:
-            with engine.begin() as conn:
-                conn.execute(text(f'DROP TABLE "{table}"'))
+        if sentinel in columns:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f'DROP TABLE "{table}"'))
+            # Invalidate the freshness record in the same transaction, so the
+            # entity reads as "never synced" instead of stale-but-green.
+            if "sync_log" in existing_tables:
+                conn.execute(
+                    text("DELETE FROM sync_log WHERE entity_type = :entity_type"),
+                    {"entity_type": entity_type},
+                )
+        logging.getLogger(__name__).info(
+            "Dropped outdated cache table %r (missing %r); re-run the %s sync to rebuild it",
+            table,
+            sentinel,
+            entity_type,
+        )
 
 
 def init_db() -> None:

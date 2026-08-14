@@ -253,22 +253,35 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
 
     # Success path only: purge groups (and their memberships) that no longer
     # exist upstream, so deleted groups don't linger in the cache.
-    with get_session() as session:
-        session.exec(
-            sql_delete(CachedGroup).where(
-                CachedGroup.cluster_id == cluster_id,
-                CachedGroup.org_id == org_id,
-                col(CachedGroup.ts_guid).not_in(seen_guids),
-            )
+    #
+    # Skipped when the sweep saw nothing: SQLAlchemy renders `not_in(<empty>)`
+    # as `NOT IN (NULL) OR (1 = 1)` — always true — so an empty page would
+    # delete every group and membership for the org. A zero-result response is
+    # indistinguishable from "the org really has no groups", and the wrong
+    # guess here is unrecoverable without a re-sync, so we keep the cache.
+    if not seen_guids:
+        logger.warning(
+            "Groups sync for cluster=%s org=%s returned no groups; skipping purge to protect the cache",
+            cluster_id,
+            org_id,
         )
-        session.exec(
-            sql_delete(UserGroupMembership).where(
-                UserGroupMembership.cluster_id == cluster_id,
-                UserGroupMembership.org_id == org_id,
-                col(UserGroupMembership.group_guid).not_in(seen_guids),
+    else:
+        with get_session() as session:
+            session.exec(
+                sql_delete(CachedGroup).where(
+                    CachedGroup.cluster_id == cluster_id,
+                    CachedGroup.org_id == org_id,
+                    col(CachedGroup.ts_guid).not_in(seen_guids),
+                )
             )
-        )
-        session.commit()
+            session.exec(
+                sql_delete(UserGroupMembership).where(
+                    UserGroupMembership.cluster_id == cluster_id,
+                    UserGroupMembership.org_id == org_id,
+                    col(UserGroupMembership.group_guid).not_in(seen_guids),
+                )
+            )
+            session.commit()
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("groups", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)

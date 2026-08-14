@@ -178,6 +178,7 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
         <GroupDetailDrawer
           clusterId={activeCluster.id}
           tsGuid={selectedGroup.ts_guid}
+          orgId={selectedGroup.org_id}
           groupName={selectedGroup.display_name || selectedGroup.name}
           onClose={() => setSelectedGroup(null)}
         />

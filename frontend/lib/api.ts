@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -664,11 +664,13 @@ export const groupsApi = {
     if (params.sort_order)              q.set("sort_order", params.sort_order);
     if (params.record_offset != null)  q.set("record_offset", String(params.record_offset));
     if (params.page_size)               q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<GroupListItem>>(`/groups?${q}`);
+    return request<OffsetPaginatedResponse<GroupListItem>>(`/groups?${q}`);
   },
 
-  get: (ts_guid: string, cluster_id: string) =>
-    request<GroupDetail>(`/groups/${ts_guid}?cluster_id=${cluster_id}`),
+  get: (ts_guid: string, cluster_id: string, org_id?: number) =>
+    request<GroupDetail>(
+      `/groups/${ts_guid}?cluster_id=${cluster_id}` + (org_id != null ? `&org_id=${org_id}` : ""),
+    ),
 };
 
 // ── Bulk Sharing ──────────────────────────────────────────────────────────────

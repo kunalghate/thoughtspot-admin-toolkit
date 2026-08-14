@@ -341,6 +341,21 @@ async def test_group_sync_populates_memberships_and_purges_stale(monkeypatch, in
         guids = session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all()
     assert list(guids) == ["g1"]
 
+    # A sweep that returns NOTHING must not purge. SQLAlchemy renders
+    # `not_in(<empty>)` as `NOT IN (NULL) OR (1 = 1)` — always true — so an
+    # unguarded purge here would delete every group and membership for the org
+    # on any empty response (wrong org context, transient upstream blip).
+    pages[:] = []
+    job_id = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=job_id)
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+    assert _memberships() == {("u1", "g1")}
+    with get_session() as session:
+        guids = session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all()
+    assert list(guids) == ["g1"]
+
 
 @pytest.mark.anyio
 async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_db, patched_config):

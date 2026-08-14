@@ -13,11 +13,13 @@ import type { GroupDetail } from "@/lib/types";
 interface Props {
   clusterId: string;
   tsGuid: string;
+  /** The clicked row's own org — membership counts are per (group, org). */
+  orgId: number;
   groupName: string;
   onClose: () => void;
 }
 
-export default function GroupDetailDrawer({ clusterId, tsGuid, groupName, onClose }: Props) {
+export default function GroupDetailDrawer({ clusterId, tsGuid, orgId, groupName, onClose }: Props) {
   const [detail, setDetail] = useState<GroupDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,11 +34,11 @@ export default function GroupDetailDrawer({ clusterId, tsGuid, groupName, onClos
     setDetail(null);
     setError(null);
     setLoading(true);
-    groupsApi.get(tsGuid, clusterId)
+    groupsApi.get(tsGuid, clusterId, orgId)
       .then(setDetail)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load group"))
       .finally(() => setLoading(false));
-  }, [tsGuid, clusterId]);
+  }, [tsGuid, clusterId, orgId]);
 
   return (
     <>

@@ -151,6 +151,14 @@ export interface PaginatedResponse<T> {
   page_size: number;
 }
 
+/** Offset-paginated envelope (AG Grid infinite model) — no `page` field. */
+export interface OffsetPaginatedResponse<T> {
+  items: T[];
+  total: number;
+  record_offset: number;
+  page_size: number;
+}
+
 // ── Archiver ──────────────────────────────────────────────────────────────────
 
 export interface ArchiverItem {

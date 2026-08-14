@@ -178,3 +178,71 @@ class TestGetGroupDetail:
         detail = group_service.get_group_detail(cluster_id=CLUSTER_ID, ts_guid="g-empty")
         assert detail["member_count"] == 1
         assert detail["members"] == []  # user row absent from cache
+
+
+class TestGetGroupDetailOrgScoping:
+    """
+    The grid counts members per (group, org). The drawer must agree with the
+    row the admin clicked — an unscoped count would show the cross-org union.
+    """
+
+    @pytest.fixture
+    def multi_org(self, seeded, in_memory_db):
+        """Cache g-admins in org 1 too, with a different member (carol)."""
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as session:
+            session.add(
+                CachedGroup(
+                    cluster_id=CLUSTER_ID,
+                    org_id=1,
+                    ts_guid="g-admins",
+                    name="Administrator",
+                    display_name="Admins (org 1)",
+                    description="Cluster admins",
+                    privileges=json.dumps(["ADMINISTRATION"]),
+                    synced_at=now,
+                )
+            )
+            session.add(
+                CachedUser(
+                    cluster_id=CLUSTER_ID,
+                    ts_guid="u-carol",
+                    username="carol",
+                    display_name="Carol",
+                    email="carol@co.com",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            session.add(
+                UserGroupMembership(
+                    cluster_id=CLUSTER_ID,
+                    org_id=1,
+                    user_guid="u-carol",
+                    group_guid="g-admins",
+                    synced_at=now,
+                )
+            )
+            session.commit()
+
+    def test_detail_matches_the_grid_row_for_each_org(self, multi_org):
+        """Without per-org scoping both orgs reported 3 (the union)."""
+        for org_id, expected_members in [(0, ["alice", "bob"]), (1, ["carol"])]:
+            items, _ = group_service.list_groups(cluster_id=CLUSTER_ID, org_id=org_id)
+            grid_row = next(i for i in items if i["ts_guid"] == "g-admins")
+            detail = group_service.get_group_detail(cluster_id=CLUSTER_ID, ts_guid="g-admins", org_id=org_id)
+            assert detail is not None
+            assert detail["org_id"] == org_id
+            assert detail["member_count"] == grid_row["member_count"]
+            assert [m["username"] for m in detail["members"]] == expected_members
+
+    def test_omitted_org_id_is_deterministic(self, multi_org):
+        """No org_id → lowest org wins, and membership still scopes to it."""
+        detail = group_service.get_group_detail(cluster_id=CLUSTER_ID, ts_guid="g-admins")
+        assert detail is not None
+        assert detail["org_id"] == 0
+        assert detail["member_count"] == 2
+        assert [m["username"] for m in detail["members"]] == ["alice", "bob"]
+
+    def test_unknown_org_returns_none(self, multi_org):
+        assert group_service.get_group_detail(cluster_id=CLUSTER_ID, ts_guid="g-admins", org_id=99) is None

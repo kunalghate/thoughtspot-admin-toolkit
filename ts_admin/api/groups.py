@@ -102,9 +102,14 @@ def list_groups(
 def get_group(
     ts_guid: str,
     cluster_id: str | None = Query(default=None),
+    org_id: int | None = Query(default=None, description="Disambiguates a GUID cached in several orgs."),
 ) -> GroupDetail:
     """Single group detail — feeds the detail drawer on the Groups page."""
-    detail = svc.get_group_detail(cluster_id=_resolve_cluster_id(cluster_id), ts_guid=ts_guid)
+    detail = svc.get_group_detail(
+        cluster_id=_resolve_cluster_id(cluster_id),
+        ts_guid=ts_guid,
+        org_id=org_id,
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Group {ts_guid!r} not found in cache")
     return GroupDetail(**detail)

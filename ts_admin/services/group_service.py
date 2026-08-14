@@ -101,15 +101,23 @@ def list_groups(
         return [_group_row_to_dict(g, count) for g, count in rows], total
 
 
-def get_group_detail(*, cluster_id: str, ts_guid: str) -> dict | None:
-    """Single group + its member users (from the membership junction table)."""
+def get_group_detail(*, cluster_id: str, ts_guid: str, org_id: int | None = None) -> dict | None:
+    """
+    Single group + its member users (from the membership junction table).
+
+    Membership is always scoped to the group row's own org — the grid counts
+    per (group, org), so an unscoped count here would disagree with the row the
+    user clicked. Pass org_id to disambiguate when the same GUID is cached in
+    more than one org; without it the lowest org_id wins, deterministically.
+    """
     with Session(_db.get_engine()) as session:
-        group = session.exec(
-            select(CachedGroup).where(
-                CachedGroup.cluster_id == cluster_id,
-                CachedGroup.ts_guid == ts_guid,
-            )
-        ).first()
+        group_q = select(CachedGroup).where(
+            CachedGroup.cluster_id == cluster_id,
+            CachedGroup.ts_guid == ts_guid,
+        )
+        if org_id is not None:
+            group_q = group_q.where(CachedGroup.org_id == org_id)
+        group = session.exec(group_q.order_by(col(CachedGroup.org_id).asc())).first()
         if group is None:
             return None
 
@@ -121,6 +129,7 @@ def get_group_detail(*, cluster_id: str, ts_guid: str) -> dict | None:
             .where(
                 UserGroupMembership.cluster_id == cluster_id,
                 UserGroupMembership.group_guid == ts_guid,
+                UserGroupMembership.org_id == group.org_id,
             )
         ).one()
 
@@ -134,6 +143,7 @@ def get_group_detail(*, cluster_id: str, ts_guid: str) -> dict | None:
             .where(
                 UserGroupMembership.cluster_id == cluster_id,
                 UserGroupMembership.group_guid == ts_guid,
+                UserGroupMembership.org_id == group.org_id,
             )
             .order_by(col(CachedUser.username).asc())
         ).all()

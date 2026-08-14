@@ -6,7 +6,7 @@
  * count, and a lazily loaded live "Access" section ("what they can see").
  * The access fetch hits the ThoughtSpot API, so it only runs on demand.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X, ShieldCheck, UsersRound, Eye, Pencil, Shield } from "lucide-react";
 import { usersApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
@@ -28,31 +28,46 @@ export default function UserDetailDrawer({ clusterId, orgId, user, onClose }: Pr
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
 
+  // Which user the drawer is currently showing — the access fetch is manual,
+  // so it can outlive the row it was started from.
+  const userGuidRef = useRef(user.ts_guid);
+  userGuidRef.current = user.ts_guid;
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
+  // One drawer instance is reused across rows, so a slow fetch for user A can
+  // land after the admin has already clicked user B. On an audit surface that
+  // would show A's groups and privileges under B's name — drop stale responses.
   useEffect(() => {
+    let cancelled = false;
     setDetail(null);
     setError(null);
     setAccess(null);
     setAccessError(null);
     setLoading(true);
     usersApi.get(user.ts_guid, clusterId)
-      .then(setDetail)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load user"))
-      .finally(() => setLoading(false));
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load user"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [user.ts_guid, clusterId]);
 
   const loadAccess = () => {
+    const requestedGuid = user.ts_guid;
     setAccessError(null);
     setAccessLoading(true);
-    usersApi.access(user.ts_guid, clusterId, orgId)
-      .then(setAccess)
-      .catch((e) => setAccessError(e instanceof Error ? e.message : "Failed to load access"))
-      .finally(() => setAccessLoading(false));
+    usersApi.access(requestedGuid, clusterId, orgId)
+      .then((a) => { if (requestedGuid === userGuidRef.current) setAccess(a); })
+      .catch((e) => {
+        if (requestedGuid === userGuidRef.current) {
+          setAccessError(e instanceof Error ? e.message : "Failed to load access");
+        }
+      })
+      .finally(() => { if (requestedGuid === userGuidRef.current) setAccessLoading(false); });
   };
 
   return (

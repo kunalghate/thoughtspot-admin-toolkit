@@ -144,16 +144,26 @@ def test_bundle_truncates_log_to_tail(client, tmp_path, monkeypatch):
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "app.log"
     log_file.write_text("\n".join(f"line {i}" for i in range(10_000)), encoding="utf-8")
-    (log_dir / "app.log.1").write_text("old rotated log\n", encoding="utf-8")
+    (log_dir / "app.log.1").write_text("\n".join(f"old {i}" for i in range(10_000)), encoding="utf-8")
+    (log_dir / "app.log.2").write_text("much older rotated log\n", encoding="utf-8")
     monkeypatch.setattr("ts_admin.logging_config.get_log_file", lambda: log_file)
     monkeypatch.setattr("ts_admin.logging_config.get_log_dir", lambda: log_dir)
 
     zf = zipfile.ZipFile(io.BytesIO(client.get("/api/v1/diagnostics/bundle").content))
-    assert "app.log.1" not in zf.namelist()  # rotated logs excluded by default
     lines = zf.read("app.log").decode().splitlines()
     assert len(lines) == diagnostics._TAIL_LINES + 1  # + the truncation notice
     assert "truncated" in lines[0]
     assert lines[-1] == "line 9999"
+
+    # The newest rotation rides along, also tailed: app.log rotates at 5 MB, so
+    # a failure from minutes ago can already have moved out of app.log.
+    prev = zf.read("app.log.1").decode().splitlines()
+    assert len(prev) == diagnostics._TAIL_LINES + 1
+    assert prev[-1] == "old 9999"
+
+    # Everything older stays out, and the bundle says so rather than going quiet.
+    assert "app.log.2" not in zf.namelist()
+    assert "app.log.2" in zf.read("omitted_logs.txt").decode()
 
 
 def test_bundle_full_includes_rotated_logs(client, tmp_path, monkeypatch):

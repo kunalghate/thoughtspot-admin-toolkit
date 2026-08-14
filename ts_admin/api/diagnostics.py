@@ -261,3 +261,22 @@ def _add_log_files(zf: zipfile.ZipFile, *, full: bool) -> None:
     if len(lines) > len(tail):
         tail.insert(0, f"(truncated — showing the last {len(tail)} of {len(lines)} lines; use ?full=true for all)")
     zf.writestr("app.log", "\n".join(tail))
+
+    # app.log rotates at 5 MB, so a failure from minutes ago can already have
+    # moved into app.log.1 — including the newest rotation keeps the traceback
+    # in the bundle across a rotation boundary, which is the whole point of it.
+    rotations = sorted(log_dir.glob("app.log.*"))
+    if rotations:
+        newest = rotations[0]
+        try:
+            prev = newest.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            zf.writestr(newest.name, f"(could not read rotated log: {exc})")
+            return
+        prev_tail = prev[-_TAIL_LINES:]
+        if len(prev) > len(prev_tail):
+            prev_tail.insert(0, f"(truncated — last {len(prev_tail)} of {len(prev)} lines; use ?full=true for all)")
+        zf.writestr(newest.name, "\n".join(prev_tail))
+        if len(rotations) > 1:
+            omitted = ", ".join(p.name for p in rotations[1:])
+            zf.writestr("omitted_logs.txt", f"Not included (use ?full=true to get them):\n{omitted}\n")
