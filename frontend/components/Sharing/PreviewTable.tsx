@@ -12,6 +12,7 @@ import type { SharingPreviewRow } from "@/lib/types";
 const TYPE_LABELS: Record<string, string> = {
   LIVEBOARD: "Liveboard", ANSWER: "Answer", WORKSHEET: "Worksheet",
   LOGICAL_TABLE: "Table", ONE_TO_ONE_LOGICAL: "Table",
+  AGGR_WORKSHEET: "Agg WS", SQL_VIEW: "SQL View", USER_DEFINED: "User Def.",
 };
 
 const MODE_COLORS: Record<string, { bg: string; fg: string }> = {
@@ -55,6 +56,7 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
       <div style={{
         display: "grid",
         gridTemplateColumns: "2fr 80px 1.5fr 100px 30px 100px",
+        columnGap: 8,
         padding: "8px 12px", background: theme.color.surface,
         borderBottom: `1px solid ${theme.color.border}`, fontSize: 10, fontWeight: 600,
         color: theme.color.textMuted, textTransform: "uppercase", letterSpacing: "0.04em",
@@ -84,6 +86,7 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
             <div key={`${r.object_guid}:${r.principal_guid}:${idx}`} style={{
               display: "grid",
               gridTemplateColumns: "2fr 80px 1.5fr 100px 30px 100px",
+              columnGap: 8,
               alignItems: "center", padding: "6px 12px", fontSize: 12,
               borderBottom: `1px solid ${theme.color.border}`,
               opacity: r.will_change ? 1 : 0.55,

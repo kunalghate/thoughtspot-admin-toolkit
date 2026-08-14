@@ -247,6 +247,7 @@ def _register_routers(app: FastAPI) -> None:
     from ts_admin.api import (
         archiver,
         clusters,
+        dashboard,
         deleter,
         diagnostics,
         health,
@@ -269,6 +270,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(users.router, prefix="/api/v1")
     app.include_router(sharing.router, prefix="/api/v1")
     app.include_router(relationships.router, prefix="/api/v1")
+    app.include_router(dashboard.router, prefix="/api/v1")
 
 
 # Module-level app instance for uvicorn: uvicorn ts_admin.main:app

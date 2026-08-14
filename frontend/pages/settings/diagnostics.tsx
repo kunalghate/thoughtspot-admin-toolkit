@@ -9,6 +9,11 @@ export default function DiagnosticsPage() {
   const [logs, setLogs] = useState<string>("");
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
+  // Resolved on mount: the API base differs between server render and the dev
+  // browser (relative vs http://localhost:8000), which trips React hydration
+  // if baked into the initial markup.
+  const [bundleHref, setBundleHref] = useState("#");
+  useEffect(() => { setBundleHref(diagnosticsApi.bundleUrl()); }, []);
 
   const loadLogs = async () => {
     setLoadingLogs(true);
@@ -46,7 +51,7 @@ export default function DiagnosticsPage() {
             you'd like to verify.
           </p>
           <a
-            href={diagnosticsApi.bundleUrl()}
+            href={bundleHref}
             style={{
               display: "inline-flex", alignItems: "center", gap: 8,
               padding: "8px 14px", fontSize: 13, fontWeight: 500,

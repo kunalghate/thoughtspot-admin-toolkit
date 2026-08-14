@@ -1,206 +1,162 @@
-# Design System
+# Design Direction — ThoughtSpot Admin Toolkit
 
-Visual language for the ThoughtSpot Admin Toolkit frontend.
-Reference this when building new pages or components.
+The visual and interaction contract for this app. New UI must follow it; changes
+to it happen here first, then in code. The token implementation lives in
+`frontend/styles/theme.css` + `frontend/lib/theme/tokens.ts` (Compendium Light /
+Dark). Colors come from tokens only — a hardcoded hex in a component is a
+review-blocking defect.
 
----
+> This doc replaces the earlier cream/purple "Geist" spec, which described the
+> pre-Compendium design. HTML wireframes in `wireframes/` predate the current
+> theme too: still useful for *layout and flow*, not for colors or type.
 
-## Color Palette
+## Who this is for
 
-### Base (Anthropic-inspired)
+A ThoughtSpot **administrator** doing consequential work: auditing content,
+deleting in bulk, transferring ownership. This is a professional data tool, not
+a marketing surface. Research on enterprise/admin UX (Nielsen Norman Group's
+usability heuristics and complex-application studies; the density and restraint
+conventions of IBM Carbon, Atlassian, and Linear-class tools) converges on the
+same priorities, which we adopt:
 
-| Role | Token | Hex | Usage |
-|---|---|---|---|
-| Background | `--bg` | `#F2EDE3` | Page background, sidebar footer, inputs |
-| Surface | `--surface` | `#FAF8F4` | Cards, sidebar, topbar, panels |
-| Border | `--border` | `#E8E1D5` | All borders, dividers |
-| Border light | `--border-light` | `#F0EBE3` | Subtle row dividers inside cards |
+1. **Visibility of system status** — the admin must always know what data
+   they're looking at (which cluster, which org, how fresh) and what the app is
+   doing (sync progress, job state).
+2. **Error prevention over error recovery** — destructive work gets previews
+   and forcing functions, not just "Are you sure?" dialogs.
+3. **Recognition over recall** — filters, criteria, and counts are spelled out
+   in words, never encoded ("unused 90d AND unmodified 90d", not "90d AND 90d").
+4. **Density with hierarchy** — admins scan tables of thousands of rows;
+   compact type and tight rows are correct here. Hierarchy comes from weight
+   and spacing, not decoration.
 
-### Text
+## Visual language
 
-| Role | Token | Hex | Usage |
-|---|---|---|---|
-| Primary | `--text` | `#1A1714` | Headings, body, table cells |
-| Muted | `--muted` | `#7A7068` | Labels, secondary info |
-| Faint | `--faint` | `#A89E96` | Placeholders, timestamps, column headers |
+**No decorative styling. Color always means something.**
 
-### Accent (Apple Intelligence-inspired)
+- **No gradients, no glows, no signature stripes.** Filled controls use the
+  solid `--primary` fill. Shadows are neutral elevation only. (The legacy
+  `--gradient-*` / `--glow-accent` token names remain but resolve to solid
+  values — never reintroduce actual gradients through them.)
+- **One primary, one accent.** `--primary` (indigo) fills primary buttons,
+  the logo tile, and progress bars. `--accent` (cyan) is reserved for *state*:
+  focus rings, active filters, selection, links, live dots. If an element is
+  neither interactive nor stateful, it gets a neutral.
+- **Status colors are semantic triples** (`solid / soft / border` for success,
+  warn, danger) and are used *only* for status. Danger red appears exclusively
+  on destructive actions and failures — never as decoration, so it never
+  loses its meaning.
+- **Contrast is non-negotiable:** all text ≥ 4.5:1 (WCAG AA) in both themes.
+  `--text-muted` is the floor — do not lighten past it. Filled controls pair
+  `--primary` with `--on-accent`, which meets AA in both themes.
+- **Both themes always.** Every new surface is checked in Compendium Light and
+  Dark before it ships.
 
-| Role | Token | Hex | Usage |
-|---|---|---|---|
-| Accent | `--accent` | `#8B5CF6` | Buttons, links, focus rings, active indicators |
-| Accent dark | `--accent-dark` | `#6D28D9` | Text on light accent bg, hover states |
-| Accent light | `--accent-light` | `#EDE9FE` | Active nav bg, selected row bg, chip bg |
-| Accent border | `--accent-border` | `#C4B5FD` | Borders on accent-tinted elements |
-| Logo gradient | — | `#8B5CF6 → #6D28D9` | Logo mark only |
+**Type:** Inter for UI, JetBrains Mono for data identity (GUIDs, counts, log
+text). UI sizes 11–15px; grid body 13px; page titles 15px/600; micro labels
+10–11px uppercase letter-spaced. Sentence case everywhere else.
 
-### Semantic
+**Motion:** 100–200ms ease transitions on hover/open only. Indeterminate
+progress and status pulses are the only looping animations. Nothing moves for
+decoration.
 
-| Role | Hex | Usage |
-|---|---|---|
-| Success | `#059669` | Connected dot, success badges, positive states |
-| Success bg | `#D1FAE5` | Success badge background |
-| Danger | `#DC2626` | Destructive actions, error states |
-| Danger bg | `#FEE2E2` | Error badge background |
-| Warning | `#D97706` | Stale data indicators, caution states |
-| Warning bg | `#FEF3C7` | Warning badge background |
+### Spacing and shape
 
----
-
-## Typography
-
-**Font:** Geist (body, UI) · Geist Mono (numbers, code, logo mark)
-Load from Google Fonts:
-```html
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-```
-
-### Scale
-
-| Role | Font | Size | Weight | Usage |
-|---|---|---|---|---|
-| Page title | Geist | 15px | 600 | Topbar page name |
-| Section heading | Geist | 13px | 600 | Card titles, section labels |
-| Body | Geist | 13px | 400 | Table cells, descriptions |
-| Small | Geist | 12px | 400 | Metadata, sub-labels |
-| Micro label | Geist | 10–11px | 600 | Column headers (uppercase), tag labels |
-| Display numbers | Geist Mono | 26–30px | 700 | Stat card values |
-| Inline numbers | Geist Mono | 13px | 400 | Table numeric columns |
-| Code / URLs | Geist Mono | 12px | 400 | Cluster URLs, config values |
-
----
-
-## Spacing
-
-| Level | Value | Usage |
-|---|---|---|
-| Page padding | 28px | Outer content area inset |
-| Card padding | 20px | Inside cards and panels |
-| Section gap | 24px | Between major layout sections |
-| Group gap | 14–16px | Between related elements |
-| Element gap | 8–10px | Between tightly related items |
-| Inline gap | 6px | Icon + label, dot + text |
-
----
-
-## Layout
-
-### Shell
-```
-┌─────────────────────────────────────────────────────┐
-│  Sidebar (220px)  │  Topbar (52px height)            │
-│  ─────────────────┤  ─────────────────────────────── │
-│  Logo (52px)      │  Page content (scrollable)        │
-│  Nav items        │                                   │
-│  ─────────────────│                                   │
-│  Cluster pill     │                                   │
-└─────────────────────────────────────────────────────┘
-```
-
-- **Sidebar:** 220px fixed, `#FAF8F4`, `border-right: 1px solid #E8E1D5`
-- **Topbar:** 52px, `#FAF8F4`, `border-bottom: 1px solid #E8E1D5`
-- **Content:** `padding: 28px`, scrollable, background `#F2EDE3`
-
-### Org selector (topbar, always top-right)
-Two-part pill showing cluster (static) and org (interactive):
-```
-[ ● Production | Finance ▾ ]
-  └─ static    └─ dropdown trigger
-```
-- Cluster name: non-clickable context. Switching cluster requires Settings → Connections.
-- Org name: opens dropdown listing all orgs on the current cluster.
-
-### Cluster indicator (sidebar footer)
-Static pill showing active cluster with a connection status dot and a "Switch →" link that navigates to Settings → Connections.
-
----
-
-## Border Radius
-
-| Element | Radius |
+| Level | Value |
 |---|---|
-| Cards, panels | 9–12px |
-| Buttons, inputs, chips | 6–7px |
-| Badges, pills | 99px (fully rounded) |
-| Avatars | 50% (circle) |
-| Logo mark | 7px |
+| Page padding | 24–28px |
+| Card padding | 18–20px |
+| Section gap | 24px |
+| Group gap | 12–16px |
+| Inline gap (icon + label) | 5–8px |
 
----
+Radius ladder (tokens exist): cards 9px, controls 6–8px, pills 999px.
+Shell dimensions: sidebar 220px fixed; topbar 52px.
 
-## Component Patterns
+## Interaction patterns (the app's grammar)
 
-### Buttons
+New features compose these; don't invent parallel patterns.
 
-```
-Primary:  bg #8B5CF6, text white, radius 6px, padding 6px 13px
-Ghost:    bg transparent, border #E8E1D5, text #7A7068
-Danger:   bg #FEE2E2, border #FECACA, text #DC2626
-```
-- Font: Geist 12px weight 500 for topbar buttons, 13px weight 600 for modal/panel actions
-- Disable after first click on destructive actions until operation completes
+- **Shell:** left sidebar = places, topbar = context (cluster · org) + data
+  freshness + the page's sync action. Pages without a syncable entity show no
+  sync UI. Switching clusters is deliberate (Settings → Connections); switching
+  orgs is lightweight (topbar dropdown). Offline badges the topbar and falls
+  back to cache reads.
+- **Tables are the primary surface.** AG Grid, infinite row model, server-side
+  filter/sort. Toolbar = search + type pills + count + Export CSV. Column
+  filters via header funnels. Counts always visible ("2,552 objects").
+- **Selection → contextual action bar.** Checkbox column (pinned left, 40px)
+  is the only selection mechanism; row clicks never toggle selection (a stray
+  click must not arm a bulk action). Selecting rows reveals an action bar with
+  the selection count and available operations; destructive ones are
+  danger-styled and carry the count in the label ("Delete 3 users…").
+- **Drawer = inspect, modal = commit, popover = criteria.** Right-hand drawers
+  show detail (permissions, dependents) without losing table context. Modals
+  are for operations that change things. Small criteria live in popovers off
+  their pill (stale criteria) with Reset/Apply.
+- **Destructive flow is always: select → preview (dry run) → confirm →
+  audit.** The primary confirm button stays disabled until the preview has
+  run (ShareModal's "Preview changes" gate is the reference implementation).
+  Previews state consequences in numbers. Destructive buttons disable after
+  first click until the operation settles. Every execution lands in
+  History/Jobs with a restorable record where possible.
+- **Every live write gets at least a count-confirm.** Lightweight reversible
+  writes (tag/untag) don't need the full dry-run ceremony, but they never fire
+  straight off a button click — a dialog states the action and the count
+  ("Tag 3 objects as 'Stale'?") before anything reaches the cluster. Buttons
+  that open such a step carry a trailing ellipsis.
+- **In modals, suggestion lists render in-flow, not as overlays.** An absolute
+  dropdown inside a modal covers the footer and eats the user's next click;
+  push content down instead (PrincipalPicker is the reference).
+- **Empty states teach the next step** (Relationships' 1-2-3 explainer is the
+  reference), and error states say what happened *and* what to do, escalating
+  auth failures to the reconnect banner.
 
-### Bulk action bar
-Appears when rows are selected in any data grid. Dark background (`#1A1714`), white text. Contains selected count, action buttons, and a clear selection link.
+## Freshness is explicit
 
-### Badges / Status chips
+Per-entity sync status in the topbar; dot color ages with the data:
 
-```
-Active:   bg #D1FAE5, text #065F46
-Inactive: bg #F0EBE3, text #7A7068
-Fresh:    bg #D1FAE5, text #065F46
-Stale:    bg #FEF3C7, text #92400E
-Error:    bg #FEE2E2, text #991B1B
-Group:    bg #EDE9FE, text #6D28D9
-```
-
-### Data grids (AG Grid)
-- Column headers: `#F2EDE3` background, `#A89E96` text, 10px uppercase
-- Row hover: `#F2EDE3`
-- Selected row: `#EDE9FE` (accent light)
-- Row divider: `1px solid #F0EBE3`
-- Checkbox accent: `#8B5CF6`
-
-### Input focus state
-```css
-border-color: #8B5CF6;
-box-shadow: 0 0 0 3px #EDE9FE;
-background: #FAF8F4;
-```
-
-### Cards
-```css
-background: #FAF8F4;
-border: 1px solid #E8E1D5;
-border-radius: 9px;
-padding: 20px;
-```
-
----
-
-## Sync status indicators
-
-Shown per-entity on each page and on the Settings → Sync page.
-
-| State | Color | Label format |
+| State | Dot | Label |
 |---|---|---|
-| < 1 hour | `#A89E96` (gray) | "Synced 23 min ago" |
-| 1–6 hours | `#D97706` (amber) | "Synced 3h ago" |
-| > 6 hours | `#D97706` + ⚠ | "Synced 8h ago ⚠" |
-| Never | `#DC2626` (red) | "Never synced" |
-| In progress | — | "Syncing... 847 / 2,400" |
+| Syncing | accent | "Syncing 847 / 2,400" (or running count) |
+| < 1h | success | "Synced just now / 23m ago" |
+| 1–6h | muted | "Synced 3h ago" |
+| > 6h | warn | "Synced 8h ago" |
+| Never / failed | danger | "Never synced" / "Sync failed" |
 
----
+Never show live-fetched and cached data without labeling which is which.
 
-## Wireframes
+## Performance rules that shape UX
 
-HTML wireframes for all key screens are in `wireframes/`:
+- Browsing reads SQLite; first paint must never block on a live ThoughtSpot
+  roundtrip. Live checks run in the background, throttled, and refine the UI
+  when they land.
+- Grids stay on the infinite row model so 10k-object clusters scroll flat.
 
-| File | Screen |
-|---|---|
-| `dashboard.html` | Instance health, sync status, activity feed |
-| `users.html` | User table with bulk action bar |
-| `archiver.html` | 4-step wizard + dry-run modal |
-| `settings-connections.html` | Cluster management + edit panel |
-| `org-switcher.html` | Org dropdown interaction |
+## Copy
 
-Open any wireframe in a browser — they link to each other via the navigation in the bottom-right corner.
+- Buttons are verbs with objects: "Sync Users", "Delete 3 users…", "Apply Tag".
+- Trailing ellipsis on actions that open another step.
+- Numbers over adjectives: "831 stale objects", not "many objects".
+- No jargon the TS admin doesn't already use (Liveboard, Worksheet, org).
+
+## Dashboard
+
+The landing page answers, in order: *is my data fresh? what's on this cluster?
+is anything failing? what did we change recently?* One aggregate SQLite read
+(`GET /api/v1/dashboard`) + the sync log. Stat tiles (mono numbers; warn/danger
+tones only when the number demands attention), a single-hue "content by type"
+bar list with direct labels, per-entity freshness rows (aged dots), recent
+jobs, and the merged audit feed (deletions grouped per session). Everything
+links to the page where the admin acts on it. No live cluster calls.
+
+## Known debts (accepted, tracked)
+
+- "Deleted Items" (restore) lives under Jobs; the Bulk Delete page links to it
+  (`/jobs?tab=deleted`). Consider promoting it when the deleter is next touched.
+- AG Grid selection uses the deprecated v32 string API (works, warns).
+  Migrate all grids to the object `rowSelection` API in one pass.
+- Groups is a "coming soon" placeholder.
+
+Resolved: Settings tabs unified to underline style; fonts self-hosted via
+@fontsource (no CDN); Dashboard built.

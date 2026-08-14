@@ -8,6 +8,7 @@ const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
   users: "Users",
   groups: "Groups",
   tags: "Tags",
+  dependencies: "Lineage",
 };
 
 interface TopbarProps {
@@ -66,35 +67,40 @@ export default function Topbar({
         )}
       </div>
 
-      {/* Sync indicator */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 96 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
-          <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
-            {syncLabel}
-          </span>
-        </div>
-        {isSyncing && <SyncProgressBar progress={syncProgress} />}
-      </div>
+      {/* Sync indicator + button — only on pages with a syncable entity.
+          Pages like Jobs or Settings have nothing to sync; showing a red
+          "Never synced" pill and a dead button there is just misleading. */}
+      {entityType && (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 96 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
+              <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
+                {syncLabel}
+              </span>
+            </div>
+            {isSyncing && <SyncProgressBar progress={syncProgress} />}
+          </div>
 
-      {/* Sync button */}
-      <button
-        onClick={onSync}
-        disabled={syncDisabled}
-        title={isOffline ? "Cannot sync — cluster is offline" : undefined}
-        style={{
-          display: "flex", alignItems: "center", gap: 5,
-          padding: "5px 11px", borderRadius: 6, border: "none",
-          background: theme.gradient.accent, color: theme.color.onAccent,
-          boxShadow: syncDisabled ? "none" : theme.shadow.glowAccent,
-          cursor: syncDisabled ? "default" : "pointer",
-          fontSize: 12, fontWeight: 600, fontFamily: theme.font.sans,
-          opacity: syncDisabled ? 0.5 : 1,
-        }}
-      >
-        <RefreshCw size={12} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />
-        {syncButtonLabel}
-      </button>
+          <button
+            onClick={onSync}
+            disabled={syncDisabled}
+            title={isOffline ? "Cannot sync — cluster is offline" : undefined}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "5px 11px", borderRadius: 6, border: "none",
+              background: theme.gradient.accent, color: theme.color.onAccent,
+              boxShadow: syncDisabled ? "none" : theme.shadow.glowAccent,
+              cursor: syncDisabled ? "default" : "pointer",
+              fontSize: 12, fontWeight: 600, fontFamily: theme.font.sans,
+              opacity: syncDisabled ? 0.5 : 1,
+            }}
+          >
+            <RefreshCw size={12} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />
+            {syncButtonLabel}
+          </button>
+        </>
+      )}
 
       {/* Org selector */}
       <div style={{ position: "relative" }}>

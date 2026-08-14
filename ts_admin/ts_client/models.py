@@ -8,15 +8,33 @@ leave the ts_client layer.
 Only fields we actively use are declared. Extra fields are ignored (model_config).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TSBaseModel(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+
+def _map_epoch_ms_times(data: dict) -> dict:
+    """
+    Map TS v2 epoch-ms time fields onto created/modified.
+
+    users/search and groups/search return `creation_time_in_millis` /
+    `modification_time_in_millis` (epoch ms) rather than `created`/`modified`.
+    """
+    out = dict(data)
+    for target, source in (
+        ("created", "creation_time_in_millis"),
+        ("modified", "modification_time_in_millis"),
+    ):
+        ms = out.get(source)
+        if out.get(target) is None and ms:
+            out[target] = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return out
 
 
 # ── Enums ──────────────────────────────────────────────────────────────────────
@@ -57,6 +75,11 @@ class TSUser(TSBaseModel):
     modified: datetime | None = None
     group_identifiers: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _epoch_times(cls, data: Any) -> Any:
+        return _map_epoch_ms_times(data) if isinstance(data, dict) else data
+
     @property
     def is_active(self) -> bool:
         return self.status == UserStatus.ACTIVE
@@ -79,6 +102,11 @@ class TSGroup(TSBaseModel):
     sub_groups: list[str] = Field(default_factory=list)
     created: datetime | None = None
     modified: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _epoch_times(cls, data: Any) -> Any:
+        return _map_epoch_ms_times(data) if isinstance(data, dict) else data
 
 
 class TSGroupsResponse(TSBaseModel):

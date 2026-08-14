@@ -122,6 +122,18 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
   }, []);
 
   const columns = useMemo<ColDef<UserListItem>[]>(() => [
+    // Checkbox is the only way to select — row clicks are suppressed so a
+    // stray click can't arm the destructive action bar. Same pattern as the
+    // archiver/sharing/deleter grids (see Deleter/columns.ts).
+    {
+      colId: "checkbox",
+      checkboxSelection: true,
+      width: 40,
+      sortable: false,
+      resizable: false,
+      pinned: "left",
+      suppressSizeToFit: true,
+    },
     { field: "username", headerName: "Username", flex: 1, minWidth: 160 },
     { field: "display_name", headerName: "Display name", flex: 1, minWidth: 160 },
     { field: "email", headerName: "Email", flex: 2, minWidth: 220 },

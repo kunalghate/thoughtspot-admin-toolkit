@@ -74,7 +74,9 @@ export const OBJECT_COLUMNS: ColDef[] = [
   {
     colId: "checkbox",
     checkboxSelection: true,
-    headerCheckboxSelection: true,
+    // No headerCheckboxSelection: select-all is unsupported with the infinite
+    // row model (AG Grid ignores it and logs an error) — rows are checked
+    // individually, as the instruction bar above each grid says.
     width: 40,
     sortable: false,
     resizable: false,

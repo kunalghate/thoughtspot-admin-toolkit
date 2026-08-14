@@ -119,6 +119,8 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
                         existing.display_name = user.display_name
                         existing.email = user.email
                         existing.status = user.status.value
+                        existing.created_at = user.created
+                        existing.modified_at = user.modified
                         existing.synced_at = datetime.now(timezone.utc)
                         session.add(existing)
                     else:
@@ -201,6 +203,8 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
                         existing.display_name = group.display_name
                         existing.description = group.description
                         existing.privileges = json.dumps(group.privileges)
+                        existing.created_at = group.created
+                        existing.modified_at = group.modified
                         existing.synced_at = datetime.now(timezone.utc)
                         session.add(existing)
                     else:

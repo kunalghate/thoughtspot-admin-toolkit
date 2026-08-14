@@ -80,6 +80,32 @@ function _saveOrg(org: Org | null, clusterId: string): void {
   } catch { /* localStorage unavailable */ }
 }
 
+// ── Connection-test throttle ───────────────────────────────────────────────────
+// AppShell remounts on every page navigation; without a throttle each nav fires
+// a live roundtrip to the ThoughtSpot cluster just to re-answer "still online?".
+// Cache the last verdict per cluster for a short window instead.
+
+const _CONN_TTL_MS = 60_000;
+const _CONN_KEY = (clusterId: string) => `ts_admin_conn_${clusterId}`;
+
+interface ConnVerdict { online: boolean; authError: boolean; }
+
+function _readConnCache(clusterId: string): ConnVerdict | null {
+  try {
+    const raw = sessionStorage.getItem(_CONN_KEY(clusterId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ConnVerdict & { ts: number };
+    if (Date.now() - parsed.ts < _CONN_TTL_MS) return parsed;
+  } catch { /* sessionStorage unavailable or corrupt */ }
+  return null;
+}
+
+function _saveConnCache(clusterId: string, verdict: ConnVerdict): void {
+  try {
+    sessionStorage.setItem(_CONN_KEY(clusterId), JSON.stringify({ ...verdict, ts: Date.now() }));
+  } catch { /* sessionStorage unavailable */ }
+}
+
 interface AppShellProps {
   pageTitle: string;
   entityType?: EntityType;      // determines which sync log entry to show in topbar
@@ -118,47 +144,68 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     });
   }, [router.pathname]);
 
-  // When active cluster changes: check connectivity, then load orgs appropriately
+  // When active cluster changes: paint orgs from the local cache immediately,
+  // then (throttled) test connectivity and refresh orgs live. Pages gate their
+  // data fetches on activeOrg, so it must never wait on a live TS roundtrip —
+  // browsing reads from SQLite by design.
   useEffect(() => {
     if (!activeCluster) return;
+    const clusterId = activeCluster.id;
+    let cancelled = false;
+    let liveOrgsLoaded = false;
 
-    setClusterOnline(null);  // reset to "checking"
     setSessionExpired(false);
 
     // Restore saved org immediately from cache so there is no flash of the
     // primary org while the async org-list fetch is in flight.
-    const cached = _readCachedOrg(activeCluster.id);
+    const cached = _readCachedOrg(clusterId);
     if (cached) setActiveOrg(cached);
 
-    // Non-blocking: test connectivity first, then load orgs
-    clustersApi.testConnection(activeCluster.id).then((result) => {
+    // Fast path: org list from SQLite — resolves in milliseconds and unblocks
+    // every page that needs an org context.
+    clustersApi.listCachedOrgs(clusterId).then((list) => {
+      if (cancelled || liveOrgsLoaded || list.length === 0) return;
+      setOrgs(list);
+      setActiveOrg(_restoreOrg(list, clusterId));
+    }).catch(() => { /* cache empty or unreadable — live path below still runs */ });
+
+    const applyLiveOrgs = () =>
+      clustersApi.listOrgs(clusterId).then((list) => {
+        if (cancelled) return;
+        liveOrgsLoaded = true;
+        setOrgs(list);
+        setActiveOrg(_restoreOrg(list, clusterId));
+      });
+
+    // Throttled connectivity check: reuse a recent verdict instead of hitting
+    // the live cluster on every page navigation.
+    const recent = _readConnCache(clusterId);
+    if (recent) {
+      setClusterOnline(recent.online);
+      setSessionExpired(!recent.online && recent.authError);
+      if (recent.online) applyLiveOrgs().catch(() => {});
+      return () => { cancelled = true; };
+    }
+
+    setClusterOnline(null);  // "checking"
+    clustersApi.testConnection(clusterId).then((result) => {
+      if (cancelled) return;
       const online = result.success;
-      setClusterOnline(online);
       // A failed test that reads like an auth rejection means the session is
       // dead even though the cluster is configured — surface the reconnect path.
-      setSessionExpired(!online && looksLikeAuthError(result.error));
-
-      if (online) {
-        // Cluster is reachable — fetch orgs live
-        return clustersApi.listOrgs(activeCluster.id).then((list) => {
-          setOrgs(list);
-          setActiveOrg(_restoreOrg(list, activeCluster.id));
-        });
-      } else {
-        // Cluster offline — fall back to SQLite cache
-        return clustersApi.listCachedOrgs(activeCluster.id).then((list) => {
-          setOrgs(list);
-          setActiveOrg(_restoreOrg(list, activeCluster.id));
-        });
-      }
+      const authError = !online && looksLikeAuthError(result.error);
+      setClusterOnline(online);
+      setSessionExpired(authError);
+      _saveConnCache(clusterId, { online, authError });
+      if (online) return applyLiveOrgs();
+      // Offline — the cached-org paint above already covered the fallback.
     }).catch(() => {
-      // Connection test itself failed (network error) — try cache
-      setClusterOnline(false);
-      clustersApi.listCachedOrgs(activeCluster.id).then((list) => {
-        setOrgs(list);
-        setActiveOrg(_restoreOrg(list, activeCluster.id));
-      }).catch(() => {});
+      // Connection test itself failed (network error) — treat as offline but
+      // don't cache the verdict, so recovery is picked up on the next nav.
+      if (!cancelled) setClusterOnline(false);
     });
+
+    return () => { cancelled = true; };
   }, [activeCluster?.id]);
 
   // Load sync status when cluster + org changes

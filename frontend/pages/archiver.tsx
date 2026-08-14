@@ -115,7 +115,8 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
     };
   }, [open]);
 
-  const summary = `${props.staleActivityDays}d ${props.staleOperator} ${props.staleModifiedDays}d`;
+  // Spell out what each number means — "90d AND 90d" alone is unreadable.
+  const summary = `unused ${props.staleActivityDays}d ${props.staleOperator} unmodified ${props.staleModifiedDays}d`;
 
   const apply = () => { props.onApply(draft); setOpen(false); };
   const reset = () => { props.onReset(); setOpen(false); };
@@ -303,6 +304,11 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   const [tagPickerOpen, setTagPickerOpen] = useState(false);  // filter-by-tag dropdown
   const [availableTags, setAvailableTags] = useState<{ ts_guid: string; name: string }[]>([]);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  // Tag/untag are live writes — never fire them straight off a button click.
+  // The pending action is confirmed (with its count) in a small dialog first.
+  const [pendingTag, setPendingTag] = useState<
+    { action: "tag" | "untag"; guids: string[]; tag: string } | null
+  >(null);
 
   // Held in a ref so updating filters doesn't recreate the datasource (which
   // would close the open filter popup mid-typing). On filter change we purge
@@ -433,9 +439,9 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   };
 
   // Actions
-  const handleTag = async (action: "tag" | "untag", guids: string[], untagName?: string) => {
+  const handleTag = async (action: "tag" | "untag", guids: string[], explicitTag?: string) => {
     if (!activeCluster?.id || activeOrg?.org_id == null || !guids.length) return;
-    const tagForAction = action === "tag" ? resolvedTagName : (untagName ?? "");
+    const tagForAction = action === "tag" ? (explicitTag ?? resolvedTagName) : (explicitTag ?? "");
     if (action === "untag" && !tagForAction) return;
     try {
       const { job_id } = await archiverApi.execute({
@@ -450,7 +456,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         const result = (job as any).result;
         const verb = action === "tag" ? "tag" : "untag";
         const pastVerb = action === "tag" ? "Tagged" : "Removed";
-        const tagLabel = action === "tag" ? resolvedTagName : tagForAction;
+        const tagLabel = tagForAction;
 
         if (job.status === "COMPLETE") {
           const succeeded = result?.succeeded ?? guids.length;
@@ -811,8 +817,8 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             )}
           </div>
 
-          <ActionButton onClick={() => handleTag("tag", [...selectedGuids])}>
-            Apply Tag
+          <ActionButton onClick={() => setPendingTag({ action: "tag", guids: [...selectedGuids], tag: resolvedTagName })}>
+            Apply Tag…
           </ActionButton>
 
           {selectedTags.length > 0 && (
@@ -823,7 +829,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
               {selectedTags.map((t) => (
                 <button
                   key={t}
-                  onClick={() => handleTag("untag", [...selectedGuids], t)}
+                  onClick={() => setPendingTag({ action: "untag", guids: [...selectedGuids], tag: t })}
                   title={`Remove "${t}" from selected`}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
@@ -932,7 +938,72 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           onViewHistory={onViewHistory}
         />
       )}
+
+      {/* Tag/untag confirmation */}
+      {pendingTag && (
+        <ConfirmTagModal
+          pending={pendingTag}
+          onCancel={() => setPendingTag(null)}
+          onConfirm={() => {
+            handleTag(pendingTag.action, pendingTag.guids, pendingTag.tag);
+            setPendingTag(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function ConfirmTagModal({ pending, onCancel, onConfirm }: {
+  pending: { action: "tag" | "untag"; guids: string[]; tag: string };
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  const n = pending.guids.length;
+  const plural = n !== 1 ? "s" : "";
+  const message =
+    pending.action === "tag"
+      ? <>Tag <strong>{n} object{plural}</strong> as “{pending.tag}”?</>
+      : <>Remove “{pending.tag}” from <strong>{n} object{plural}</strong>?</>;
+
+  return (
+    <>
+      <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }} />
+      <div role="dialog" aria-modal="true" style={{
+        position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+        width: 380, background: theme.color.surface, borderRadius: 10, zIndex: 301,
+        boxShadow: theme.shadow.lg, padding: 20, fontFamily: theme.font.sans,
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: theme.color.textPrimary, marginBottom: 8 }}>
+          {pending.action === "tag" ? "Apply tag" : "Remove tag"}
+        </div>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: theme.color.textSecondary, lineHeight: 1.5 }}>
+          {message} This changes the objects on your ThoughtSpot cluster immediately.
+        </p>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onCancel} style={{
+            padding: "7px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+            border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+            color: theme.color.textMuted, fontFamily: theme.font.sans,
+          }}>
+            Cancel
+          </button>
+          <button autoFocus onClick={onConfirm} style={{
+            padding: "7px 14px", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer",
+            border: "none", background: theme.gradient.accent, color: theme.color.onAccent,
+            fontFamily: theme.font.sans,
+          }}>
+            {pending.action === "tag" ? `Tag ${n} object${plural}` : `Remove tag`}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

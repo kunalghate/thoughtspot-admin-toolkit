@@ -185,6 +185,86 @@ async def test_user_sync_reports_progress(monkeypatch, in_memory_db, patched_con
 
 
 @pytest.mark.anyio
+async def test_user_resync_updates_timestamps_on_existing_rows(monkeypatch, in_memory_db, patched_config):
+    """Re-syncing must refresh created_at/modified_at on rows that already exist.
+    Rows cached before timestamp parsing landed have NULLs — if the upsert's
+    update branch skips these fields, they stay NULL forever no matter how many
+    times the admin re-syncs."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    created = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    modified = datetime(2025, 2, 1, tzinfo=timezone.utc)
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_user import CachedUser
+
+    # Pre-existing cached row with NULL timestamps (pre-fix state).
+    with get_session() as session:
+        session.add(
+            CachedUser(
+                cluster_id=CLUSTER_ID,
+                ts_guid="guid-a",
+                username="stale-name",
+                display_name="Stale",
+                email="a@example.io",
+                status="ACTIVE",
+                created_at=None,
+                modified_at=None,
+                synced_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    fresh = SimpleNamespace(
+        id="guid-a",
+        name="user-a",
+        display_name="User A",
+        email="a@example.io",
+        status=SimpleNamespace(value="ACTIVE"),
+        created=created,
+        modified=modified,
+    )
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_users(self, *, org_id):
+            yield [fresh]
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    from sqlmodel import select
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+    with get_session() as session:
+        row = session.exec(
+            select(CachedUser).where(CachedUser.cluster_id == CLUSTER_ID, CachedUser.ts_guid == "guid-a")
+        ).one()
+    assert row.username == "user-a"
+    assert row.created_at == created.replace(tzinfo=None) or row.created_at == created
+    assert row.modified_at == modified.replace(tzinfo=None) or row.modified_at == modified
+
+
+@pytest.mark.anyio
 async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_db, patched_config):
     """run_sync('dependencies') must route to lineage_service.build_object_graph."""
     seen: dict = {}

@@ -8,15 +8,20 @@ import {
 import { theme } from "@/lib/theme";
 import type { Cluster } from "@/lib/types";
 
-const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
-  { href: "/dashboard",     label: "Dashboard",    icon: LayoutDashboard },
+// Grouped so browsing tools and bulk (destructive) operations read as
+// distinct zones — see docs/dev/DESIGN.md, "error prevention".
+const BROWSE_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
+  { href: "/dashboard",     label: "Dashboard",     icon: LayoutDashboard },
   { href: "/users",         label: "Users",         icon: Users },
   { href: "/groups",        label: "Groups",        icon: UsersRound },
   { href: "/metadata",      label: "Metadata",      icon: FolderSearch },
+  { href: "/relationships", label: "Relationships", icon: GitFork },
+];
+
+const OPERATE_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/archiver",      label: "Archiver",      icon: Archive },
   { href: "/deleter",       label: "Bulk Delete",   icon: Trash2 },
   { href: "/sharing",       label: "Bulk Sharing",  icon: Share2 },
-  { href: "/relationships", label: "Relationships", icon: GitFork },
 ];
 
 const BOTTOM_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
@@ -62,7 +67,9 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: "10px 10px 0", overflowY: "auto" }}>
-        <NavSection items={NAV_ITEMS} currentPath={router.pathname} />
+        <NavSection items={BROWSE_ITEMS} currentPath={router.pathname} />
+        <SectionLabel text="Bulk operations" />
+        <NavSection items={OPERATE_ITEMS} currentPath={router.pathname} />
         <div style={{ margin: "10px 0", borderTop: `1px solid ${theme.color.border}` }} />
         <NavSection items={BOTTOM_ITEMS} currentPath={router.pathname} />
       </nav>
@@ -94,6 +101,18 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
         </p>
       </div>
     </aside>
+  );
+}
+
+function SectionLabel({ text }: { text: string }) {
+  return (
+    <div style={{
+      padding: "12px 10px 4px", fontSize: 10, fontWeight: 600,
+      color: theme.color.textMuted, textTransform: "uppercase",
+      letterSpacing: "0.07em", fontFamily: theme.font.sans,
+    }}>
+      {text}
+    </div>
   );
 }
 

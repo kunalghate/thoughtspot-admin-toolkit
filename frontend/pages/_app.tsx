@@ -1,5 +1,17 @@
 import type { AppProps } from "next/app";
 import Head from "next/head";
+// Self-hosted fonts — bundled into the static export so the app renders
+// identically offline / air-gapped (no Google Fonts CDN dependency).
+import "@fontsource/inter/300.css";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/inter/800.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/600.css";
+import "@fontsource/jetbrains-mono/700.css";
 import "@/styles/theme.css";
 import { ThemeProvider } from "@/lib/theme";
 import { ErrorBoundary } from "../components/ErrorBoundary";
