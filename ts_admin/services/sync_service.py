@@ -172,10 +172,12 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
 async def _sync_groups(*, org_id: int, job_id: str) -> None:
     import json
 
-    from sqlmodel import select
+    from sqlmodel import col, select
+    from sqlmodel import delete as sql_delete
 
     from ts_admin.config import load_config
     from ts_admin.models.cache.ts_group import CachedGroup
+    from ts_admin.models.cache.ts_user import UserGroupMembership
     from ts_admin.ts_client import ThoughtSpotClient
 
     config = load_config()
@@ -185,11 +187,13 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
 
     mark_running(job_id, total=0)
     count = 0
+    seen_guids: set[str] = set()
 
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
         async for page in client.search_groups(org_id=org_id):
             with get_session() as session:
                 for group in page:
+                    seen_guids.add(group.id)
                     existing = session.exec(
                         select(CachedGroup).where(
                             CachedGroup.cluster_id == cluster_id,
@@ -223,9 +227,48 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
                             )
                         )
 
+                    # Rewrite this group's membership rows in the same commit,
+                    # so a mid-sync failure never leaves a group half-written.
+                    session.exec(
+                        sql_delete(UserGroupMembership).where(
+                            UserGroupMembership.cluster_id == cluster_id,
+                            UserGroupMembership.org_id == org_id,
+                            UserGroupMembership.group_guid == group.id,
+                        )
+                    )
+                    for user_guid in group.member_users:
+                        session.add(
+                            UserGroupMembership(
+                                cluster_id=cluster_id,
+                                org_id=org_id,
+                                user_guid=user_guid,
+                                group_guid=group.id,
+                                synced_at=datetime.now(timezone.utc),
+                            )
+                        )
+
                     session.commit()
                     count += 1
             update_progress(job_id, count)
+
+    # Success path only: purge groups (and their memberships) that no longer
+    # exist upstream, so deleted groups don't linger in the cache.
+    with get_session() as session:
+        session.exec(
+            sql_delete(CachedGroup).where(
+                CachedGroup.cluster_id == cluster_id,
+                CachedGroup.org_id == org_id,
+                col(CachedGroup.ts_guid).not_in(seen_guids),
+            )
+        )
+        session.exec(
+            sql_delete(UserGroupMembership).where(
+                UserGroupMembership.cluster_id == cluster_id,
+                UserGroupMembership.org_id == org_id,
+                col(UserGroupMembership.group_guid).not_in(seen_guids),
+            )
+        )
+        session.commit()
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log("groups", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)

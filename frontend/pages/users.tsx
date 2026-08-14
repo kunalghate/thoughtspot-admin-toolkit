@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, IDatasource, IGetRowsParams } from "ag-grid-community";
+import type { CellClickedEvent, ColDef, IDatasource, IGetRowsParams } from "ag-grid-community";
 import { Users, History, ShieldCheck, Trash2, ArrowRightLeft } from "lucide-react";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
@@ -20,6 +20,7 @@ import { TransferOwnershipModal } from "@/components/Users/TransferOwnershipModa
 import { TransferSharingModal } from "@/components/Users/TransferSharingModal";
 import { DeleteUsersModal } from "@/components/Users/DeleteUsersModal";
 import { UsersHistoryTab } from "@/components/Users/HistoryTab";
+import UserDetailDrawer from "@/components/Users/UserDetailDrawer";
 import { usersApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import type { UserListItem } from "@/lib/types";
@@ -54,6 +55,7 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
   const gridRef = useRef<AgGridReact<UserListItem>>(null);
   const [selected, setSelected] = useState<UserListItem[]>([]);
   const [action, setAction] = useState<ActionKind>(null);
+  const [detailUser, setDetailUser] = useState<UserListItem | null>(null);
 
   // Debounce typing → search so we don't refetch on every keystroke.
   useEffect(() => {
@@ -158,6 +160,13 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
   function handleSelectionChanged() {
     setSelected(gridRef.current?.api?.getSelectedRows() ?? []);
   }
+
+  // Row click (outside the checkbox column) opens the read-only audit drawer.
+  // Selection stays checkbox-only, so this can't arm the destructive action bar.
+  const handleCellClicked = useCallback((e: CellClickedEvent<UserListItem>) => {
+    if (e.colDef.colId === "checkbox" || !e.data) return;
+    setDetailUser(e.data);
+  }, []);
 
   if (!activeCluster) {
     return <EmptyState message="Select a cluster from the topbar to start." />;
@@ -285,9 +294,19 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
               onGridReady={handleGridReady}
               onSortChanged={handleSortChanged}
               onSelectionChanged={handleSelectionChanged}
+              onCellClicked={handleCellClicked}
               overlayNoRowsTemplate="No users. Sync users first."
             />
           </div>
+
+          {detailUser && (
+            <UserDetailDrawer
+              clusterId={activeCluster.id}
+              orgId={activeOrg?.org_id ?? 0}
+              user={detailUser}
+              onClose={() => setDetailUser(null)}
+            />
+          )}
 
           {action === "transfer" && selected.length === 1 && activeOrg != null && (
             <TransferOwnershipModal

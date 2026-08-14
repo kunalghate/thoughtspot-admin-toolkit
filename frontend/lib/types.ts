@@ -70,14 +70,29 @@ export interface User {
 
 // ── Groups ────────────────────────────────────────────────────────────────────
 
-export interface Group {
+export interface GroupListItem {
   ts_guid: string;
   name: string;
   display_name: string;
   description: string;
   org_id: number;
-  visibility: string;
+  privileges: string[];
   member_count: number;
+  created_at: string | null;
+  modified_at: string | null;
+  synced_at: string | null;
+}
+
+export interface GroupMember {
+  ts_guid: string;
+  username: string;
+  display_name: string;
+  email: string;
+  status: string;
+}
+
+export interface GroupDetail extends GroupListItem {
+  members: GroupMember[];
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
@@ -267,11 +282,26 @@ export interface UserListItem {
   synced_at: string | null;
 }
 
+export interface UserGroupInfo {
+  ts_guid: string;
+  name: string;
+  display_name: string;
+  privileges: string[];
+}
+
 export interface UserDetail extends UserListItem {
   owned_object_count: number;
   org_ids: number[];
   groups: string[];
+  group_details: UserGroupInfo[];
+  privileges: string[]; // effective: union of all group privileges
   is_admin: boolean;
+}
+
+export interface UserAccessResponse {
+  items: SharingPermissionItem[];
+  total: number;
+  by_type: Record<string, number>;
 }
 
 export interface TransferObjectItem {
@@ -436,6 +466,8 @@ export interface ColumnLineageRow {
   db_table: string;
   db_column_name: string;
   connection_name: string;
+  /** Computed column (TML formula) — no physical chain by design. */
+  is_formula: boolean;
   used_by: ColumnUsedBy[];
 }
 

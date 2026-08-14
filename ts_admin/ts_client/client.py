@@ -670,11 +670,12 @@ class ThoughtSpotClient:
         *,
         principal_identifier: str,
         metadata_types: list[str] | None = None,
+        permission_type: str = "DEFINED",
     ) -> list[dict]:
         """
         Return everything a principal (user or group) has access to.
 
-        POST /api/rest/2.0/security/principal/fetch-permissions
+        POST /api/rest/2.0/security/principals/fetch-permissions
 
         Used by the User Management transfer-sharing flow: discover everything
         the leaving user could see, so we can re-share each item with the
@@ -684,39 +685,49 @@ class ThoughtSpotClient:
           {metadata_id, metadata_name, metadata_type, share_mode}
         """
         body: dict = {
-            "principal": [{"identifier": principal_identifier}],
+            "principals": [{"identifier": principal_identifier}],
             "record_size": -1,
-            "permission_type": "DEFINED",
+            # DEFINED = direct shares only (transfer-sharing re-shares these);
+            # EFFECTIVE additionally resolves group-inherited access (audit view).
+            "permission_type": permission_type,
         }
         if metadata_types:
             body["metadata_type"] = metadata_types
 
         data = await self._request(
             "POST",
-            "/api/rest/2.0/security/principal/fetch-permissions",
+            "/api/rest/2.0/security/principals/fetch-permissions",
             json=body,
             context="principal_permissions",
         )
 
         out: list[dict] = []
-        # Response shape: {"principal_permissions": [{
-        #   "principal_id", "principal_name",
-        #   "metadata_permission_details": [{
-        #     "metadata_id", "metadata_name", "metadata_type",
-        #     "share_mode": "READ_ONLY" | "MODIFY"
+        # Response shape: {"principal_permission_details": [{
+        #   "principal_id", "principal_name", "principal_type",
+        #   "metadata_permission_info": [{
+        #     "metadata_type",
+        #     "metadata_permissions": [{
+        #       "metadata_id", "metadata_name",
+        #       "permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS"
+        #     }]
         #   }]
         # }]}
-        principals = data.get("principal_permissions") or [] if isinstance(data, dict) else []
+        principals = data.get("principal_permission_details") or [] if isinstance(data, dict) else []
         for p in principals:
-            for item in p.get("metadata_permission_details") or []:
-                out.append(
-                    {
-                        "metadata_id": item.get("metadata_id", ""),
-                        "metadata_name": item.get("metadata_name", ""),
-                        "metadata_type": item.get("metadata_type", ""),
-                        "share_mode": item.get("share_mode", "READ_ONLY"),
-                    }
-                )
+            for info in p.get("metadata_permission_info") or []:
+                metadata_type = info.get("metadata_type", "")
+                for item in info.get("metadata_permissions") or []:
+                    permission = item.get("permission", "NO_ACCESS")
+                    if permission == "NO_ACCESS":
+                        continue
+                    out.append(
+                        {
+                            "metadata_id": item.get("metadata_id", ""),
+                            "metadata_name": item.get("metadata_name", ""),
+                            "metadata_type": metadata_type,
+                            "share_mode": permission,
+                        }
+                    )
         return out
 
     async def delete_users(self, *, user_identifiers: list[str]) -> None:

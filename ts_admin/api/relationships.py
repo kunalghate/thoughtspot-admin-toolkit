@@ -85,6 +85,7 @@ class ColumnLineageRow(BaseModel):
     db_table: str = ""
     db_column_name: str = ""
     connection_name: str = ""
+    is_formula: bool = False
     used_by: list[dict] = []
 
 

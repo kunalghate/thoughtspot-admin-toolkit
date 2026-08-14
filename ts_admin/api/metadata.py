@@ -196,7 +196,9 @@ async def get_permissions(
         )
 
     cluster = config.active_cluster
-    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
+    # Org context comes from the auth token — without org_id, objects living in
+    # a non-default org 400 with "invalid parameters" on fetch-permissions.
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
         perms = await client.fetch_permissions(
             ts_guid=ts_guid,
             object_type=obj.object_type,

@@ -135,6 +135,41 @@ def test_bundle_returns_zip_with_expected_files(client, in_memory_db):
     assert "TSAuthenticationError" in failed[0]["error_traceback"]
 
 
+def test_bundle_truncates_log_to_tail(client, tmp_path, monkeypatch):
+    """The default bundle must stay small enough to email — a multi-MB log
+    gets tailed, not shipped whole."""
+    from ts_admin.api import diagnostics
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "app.log"
+    log_file.write_text("\n".join(f"line {i}" for i in range(10_000)), encoding="utf-8")
+    (log_dir / "app.log.1").write_text("old rotated log\n", encoding="utf-8")
+    monkeypatch.setattr("ts_admin.logging_config.get_log_file", lambda: log_file)
+    monkeypatch.setattr("ts_admin.logging_config.get_log_dir", lambda: log_dir)
+
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/v1/diagnostics/bundle").content))
+    assert "app.log.1" not in zf.namelist()  # rotated logs excluded by default
+    lines = zf.read("app.log").decode().splitlines()
+    assert len(lines) == diagnostics._TAIL_LINES + 1  # + the truncation notice
+    assert "truncated" in lines[0]
+    assert lines[-1] == "line 9999"
+
+
+def test_bundle_full_includes_rotated_logs(client, tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "app.log"
+    log_file.write_text("\n".join(f"line {i}" for i in range(10_000)), encoding="utf-8")
+    (log_dir / "app.log.1").write_text("old rotated log\n", encoding="utf-8")
+    monkeypatch.setattr("ts_admin.logging_config.get_log_file", lambda: log_file)
+    monkeypatch.setattr("ts_admin.logging_config.get_log_dir", lambda: log_dir)
+
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/v1/diagnostics/bundle?full=true").content))
+    assert "app.log.1" in zf.namelist()
+    assert len(zf.read("app.log").decode().splitlines()) == 10_000
+
+
 def test_bundle_with_job_id_includes_specific_job(client, in_memory_db):
     _seed_cluster(in_memory_db)
     _seed_failed_job(in_memory_db, job_id="abc123")

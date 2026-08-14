@@ -10,13 +10,46 @@ Only fields we actively use are declared. Extra fields are ignored (model_config
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TSBaseModel(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_explicit_nulls(cls, data: Any) -> Any:
+        """
+        Treat an explicit ``null`` as "field absent" so the declared default applies.
+
+        ThoughtSpot sends `null` (not an omitted key) for unset optional values —
+        e.g. a group with no description comes back as ``"description": null``.
+        Pydantic only falls back to a field's default when the key is *missing*,
+        so those nulls used to blow up parsing (`groups/search` on the primary
+        org, where the stock system groups have no description).
+
+        Only nulls for non-nullable fields that have a default are dropped. A
+        null on a required field still raises, so a genuinely broken response
+        is not silently swallowed.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        droppable = {
+            key
+            for name, field in cls.model_fields.items()
+            for key in (name, field.alias)
+            if key and not field.is_required() and not _allows_none(field.annotation)
+        }
+        nulls = droppable & {k for k, v in data.items() if v is None}
+        return {k: v for k, v in data.items() if k not in nulls} if nulls else data
+
+
+def _allows_none(annotation: Any) -> bool:
+    """True if the annotation accepts None (Optional[X], X | None, Any, bare None)."""
+    return annotation is None or annotation is Any or type(None) in get_args(annotation)
 
 
 def _map_epoch_ms_times(data: dict) -> dict:
@@ -107,6 +140,20 @@ class TSGroup(TSBaseModel):
     @classmethod
     def _epoch_times(cls, data: Any) -> Any:
         return _map_epoch_ms_times(data) if isinstance(data, dict) else data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_principal_lists(cls, data: Any) -> Any:
+        # The v2 groups/search response returns members under "users" and
+        # sub-groups under "sub_groups" as {"id": ..., "name": ...} objects;
+        # normalize both to GUID lists.
+        if not isinstance(data, dict):
+            return data
+        for field, source in (("member_users", "users"), ("sub_groups", "sub_groups")):
+            raw = data.get(field) or data.get(source) or []
+            guids = [(p.get("id") if isinstance(p, dict) else p) for p in raw]
+            data[field] = [g for g in guids if g]
+        return data
 
 
 class TSGroupsResponse(TSBaseModel):

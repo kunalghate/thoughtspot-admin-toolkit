@@ -35,8 +35,32 @@ def get_engine():
     return _engine
 
 
+# Rebuildable cache tables use drop-and-rebuild via re-sync instead of Alembic
+# (see the model docstrings). create_all never alters existing tables, so when a
+# model gains a column, drop the outdated table here and let create_all recreate
+# it — the next lineage sync repopulates it. {table_name: sentinel column}.
+_REBUILDABLE_SENTINELS: dict[str, str] = {
+    "ts_column_lineage": "is_formula",
+}
+
+
+def _drop_outdated_rebuildable_tables() -> None:
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table, sentinel in _REBUILDABLE_SENTINELS.items():
+        if table not in existing_tables:
+            continue
+        columns = {c["name"] for c in inspector.get_columns(table)}
+        if sentinel not in columns:
+            with engine.begin() as conn:
+                conn.execute(text(f'DROP TABLE "{table}"'))
+
+
 def init_db() -> None:
-    """Create all tables. Called once at app startup."""
+    """Create all tables (recreating outdated rebuildable caches). Called once at app startup."""
     # Import all models so SQLModel picks them up
     import ts_admin.models.archive_record  # noqa: F401
     import ts_admin.models.audit_log  # noqa: F401
@@ -55,6 +79,7 @@ def init_db() -> None:
     import ts_admin.models.sync_log  # noqa: F401
     import ts_admin.models.user_action_record  # noqa: F401
 
+    _drop_outdated_rebuildable_tables()
     SQLModel.metadata.create_all(get_engine())
 
 

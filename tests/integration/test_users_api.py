@@ -113,11 +113,43 @@ class TestUserDetail:
     def test_returns_owned_count(self, client, seeded):
         r = client.get("/api/v1/users/u-alice?cluster_id=c1")
         assert r.status_code == 200, r.text
-        assert r.json()["owned_object_count"] == 1
+        body = r.json()
+        assert body["owned_object_count"] == 1
+        # Audit enrichment fields are always present (empty without group sync).
+        assert body["privileges"] == []
+        assert body["group_details"] == []
 
     def test_404_for_unknown_guid(self, client, seeded):
         r = client.get("/api/v1/users/u-ghost?cluster_id=c1")
         assert r.status_code == 404
+
+
+class TestUserAccess:
+    def test_returns_live_access_shape(self, client, seeded, monkeypatch):
+        from ts_admin.services import user_management_service as svc
+
+        async def _fake_access(*, cluster_id, org_id, ts_guid):
+            assert (cluster_id, org_id, ts_guid) == ("c1", 0, "u-alice")
+            return {
+                "items": [
+                    {
+                        "metadata_id": "lb-1",
+                        "metadata_name": "Sales",
+                        "metadata_type": "LIVEBOARD",
+                        "share_mode": "READ_ONLY",
+                    }
+                ],
+                "total": 1,
+                "by_type": {"LIVEBOARD": 1},
+            }
+
+        monkeypatch.setattr(svc, "get_user_access", _fake_access)
+        r = client.get("/api/v1/users/u-alice/access?cluster_id=c1&org_id=0")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == 1
+        assert body["by_type"] == {"LIVEBOARD": 1}
+        assert body["items"][0]["share_mode"] == "READ_ONLY"
 
 
 # ── Transfer ownership ─────────────────────────────────────────────────────────

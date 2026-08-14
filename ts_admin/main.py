@@ -250,6 +250,7 @@ def _register_routers(app: FastAPI) -> None:
         dashboard,
         deleter,
         diagnostics,
+        groups,
         health,
         jobs,
         metadata,
@@ -268,6 +269,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(deleter.router, prefix="/api/v1")
     app.include_router(diagnostics.router, prefix="/api/v1")
     app.include_router(users.router, prefix="/api/v1")
+    app.include_router(groups.router, prefix="/api/v1")
     app.include_router(sharing.router, prefix="/api/v1")
     app.include_router(relationships.router, prefix="/api/v1")
     app.include_router(dashboard.router, prefix="/api/v1")
