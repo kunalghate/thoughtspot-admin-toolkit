@@ -19,7 +19,9 @@ the CS Tools CLI with a web UI. Admins install it with `pip install`, run
 
 ## Key architectural decisions
 
-Read [docs/dev/DECISIONS.md](docs/dev/DECISIONS.md) for full rationale. Short version:
+Read [docs/dev/DECISIONS.md](docs/dev/DECISIONS.md) for full rationale. All UI
+work follows [docs/dev/DESIGN.md](docs/dev/DESIGN.md) — no gradients/glows/decorative
+color, tokens only, both themes checked. Short version:
 
 - **No cs_tools dependency.** We call ThoughtSpot REST API v2 directly via `ts_client/`.
 - **Static export.** Next.js builds to `ts_admin/static/` at release time. End users

@@ -3,14 +3,22 @@
  * that surfaces the per-object deletion history (rows from
  * archive_records produced by Archiver and Bulk Deleter).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 import AppShell from "@/components/Shell";
 import { theme } from "@/lib/theme";
 import { JobsList } from "@/components/Jobs/JobsList";
 import { HistoryTab } from "@/components/Deleter/HistoryTab";
 
 export default function JobsPage() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<"jobs" | "deleted">("jobs");
+
+  // Deep-linkable: /jobs?tab=deleted opens the restore view directly (the
+  // Bulk Delete page links here).
+  useEffect(() => {
+    if (router.isReady && router.query.tab === "deleted") setActiveTab("deleted");
+  }, [router.isReady, router.query.tab]);
 
   return (
     <AppShell pageTitle="Jobs">

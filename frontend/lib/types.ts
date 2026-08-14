@@ -463,3 +463,36 @@ export interface ConsumersResponse {
   offset: number;
   limit: number;
 }
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+
+export interface DashboardCounts {
+  users: number;
+  groups: number;
+  tags: number;
+  objects_total: number;
+  objects_by_type: Record<string, number>;
+  stale_90d: number;
+}
+
+export interface DashboardJob {
+  id: string;
+  job_type: string;
+  status: string;
+  created_at: string | null;
+  error: string | null;
+}
+
+export interface DashboardActivity {
+  kind: "delete" | "share" | "user_action";
+  label: string;
+  status: string;
+  timestamp: string | null;
+}
+
+export interface DashboardSummary {
+  counts: DashboardCounts;
+  recent_jobs: DashboardJob[];
+  recent_activity: DashboardActivity[];
+  failed_jobs_7d: number;
+}

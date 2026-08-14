@@ -14,9 +14,10 @@
  * Phase 3 wires intake + grid + selection. Phase 4 hooks the modal.
  */
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { AgGridReact } from "ag-grid-react";
 import type { GridApi } from "ag-grid-community";
-import { GitBranch, Tag, ClipboardList, X } from "lucide-react";
+import { GitBranch, Tag, ClipboardList, History, X } from "lucide-react";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
@@ -254,6 +255,16 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
             <Icon size={14} /> {label}
           </button>
         ))}
+        <div style={{ flex: 1 }} />
+        {/* Deletions are restorable from TML backups — surface that here,
+            where the admin who just deleted something will look first. */}
+        <Link href="/jobs?tab=deleted" style={{
+          alignSelf: "center", marginRight: 20, display: "inline-flex", alignItems: "center", gap: 5,
+          fontSize: 12, color: theme.color.textMuted, textDecoration: "none",
+          fontFamily: theme.font.sans,
+        }}>
+          <History size={12} /> Restore deleted items
+        </Link>
       </div>
 
       {/* ── Body ────────────────────────────────────────────────────────── */}

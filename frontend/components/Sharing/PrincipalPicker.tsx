@@ -81,6 +81,7 @@ export function PrincipalPicker({
             placeholder="Search users or groups…"
             onFocus={() => { if (blurTimer.current) clearTimeout(blurTimer.current); setOpen(true); }}
             onBlur={() => { blurTimer.current = setTimeout(() => setOpen(false), 150); }}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}
             onChange={(e) => setQuery(e.target.value)}
             style={{
               flex: 1, fontSize: 13, fontFamily: theme.font.sans,
@@ -89,12 +90,14 @@ export function PrincipalPicker({
           />
         </div>
 
+        {/* In-flow (not an absolute overlay): an overlay here covers the modal's
+            footer, so the user's first click on "Preview changes" gets eaten by
+            a result row. Rendering in-flow pushes content down instead. */}
         {open && (
           <div style={{
-            position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30,
-            marginTop: 4, maxHeight: 280, overflowY: "auto",
+            marginTop: 4, maxHeight: 200, overflowY: "auto",
             background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
-            boxShadow: theme.shadow.md,
+            boxShadow: theme.shadow.sm,
           }}>
             {loading && <div style={{ padding: 10, fontSize: 12, color: theme.color.textMuted }}>Searching…</div>}
             {!loading && visibleResults.length === 0 && (

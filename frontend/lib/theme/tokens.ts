@@ -11,10 +11,12 @@
  * <ThemeProvider>, which flips `data-theme` on <html>) instantly re-skins the
  * whole app with no component re-render.
  *
- * RULES (see the Compendium spec):
+ * RULES (see docs/dev/DESIGN.md):
  *   - Never hardcode a hex in a component — always go through `theme.*`.
- *   - Filled brand elements use `theme.gradient.accent`; use the *solid*
- *     `theme.color.accent` only for text, borders, and dots.
+ *   - Filled controls (primary buttons, logo tile, progress bars) use
+ *     `theme.gradient.accent` — despite the legacy name it resolves to the
+ *     SOLID `--primary` fill. Gradients and glows are retired.
+ *   - `theme.color.accent` (cyan) is for text, borders, focus, and dots only.
  *   - Every focusable control gets `theme.focus.ring` on :focus / :focus-visible.
  */
 
@@ -65,9 +67,9 @@ export const theme = {
   },
 
   gradient: {
-    /** 135° cyan→violet — the primary brand fill. */
+    /** Solid primary fill for filled controls (legacy name, no gradient). */
     accent: "var(--gradient-accent)",
-    /** 180° cyan→violet — the left signature stripe. */
+    /** Same solid fill (legacy name, kept for compatibility). */
     accentVertical: "var(--gradient-accent-vertical)",
   },
 
@@ -76,7 +78,7 @@ export const theme = {
     sm: "var(--shadow-sm)",
     md: "var(--shadow-md)",
     lg: "var(--shadow-lg)",
-    /** Cyan glow for primary/brand buttons. */
+    /** Subtle elevation for primary buttons (legacy name — glows are retired). */
     glowAccent: "var(--glow-accent)",
   },
 

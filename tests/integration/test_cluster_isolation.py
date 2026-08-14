@@ -76,6 +76,13 @@ READ_ENDPOINTS = [
         lambda body: body["logical_tables"] + body["answers"] + body["liveboards"],
         id="relationships-topology",
     ),
+    pytest.param(
+        "/api/v1/dashboard?cluster_id={cluster}&org_id=0",
+        # Aggregate read; the leak-sniffable rows are the jobs + activity feeds.
+        # (Count scoping is asserted directly in test_dashboard_api.py.)
+        lambda body: body["recent_jobs"] + body["recent_activity"],
+        id="dashboard-summary",
+    ),
 ]
 
 

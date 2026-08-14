@@ -9,11 +9,13 @@ const TABS: { key: SettingsTab; href: string; label: string }[] = [
   { key: "appearance", href: "/settings/appearance", label: "Appearance" },
 ];
 
+// Underline tabs — same pattern as Users/Sharing/Deleter/Jobs, so the whole
+// app has one tab style (see docs/dev/DESIGN.md, "Known debts").
 export function SettingsTabs({ current }: { current: SettingsTab }) {
   return (
     <div style={{
-      display: "flex", gap: 6, marginBottom: 22,
-      borderBottom: `1px solid ${theme.color.border}`, paddingBottom: 10,
+      display: "flex", marginBottom: 22,
+      borderBottom: `1px solid ${theme.color.border}`,
     }}>
       {TABS.map(({ key, href, label }) => {
         const active = current === key;
@@ -22,11 +24,11 @@ export function SettingsTabs({ current }: { current: SettingsTab }) {
             key={key}
             href={href}
             style={{
-              padding: "8px 14px",
-              fontSize: 13, fontWeight: active ? 600 : 500,
-              color: active ? theme.color.accent2 : theme.color.textSecondary,
-              background: active ? theme.color.accentSoft : "transparent",
-              borderRadius: 6, textDecoration: "none",
+              padding: "10px 18px",
+              fontSize: 13, fontWeight: active ? 600 : 400,
+              color: active ? theme.color.accent2 : theme.color.textMuted,
+              borderBottom: active ? `2px solid ${theme.color.accent2}` : "2px solid transparent",
+              marginBottom: -1, textDecoration: "none",
               fontFamily: theme.font.sans,
             }}
           >{label}</Link>

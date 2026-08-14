@@ -195,7 +195,10 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
   const resultText = () => {
     const r = ((executeJob?.result ?? {}) as Record<string, number>);
     const t = resultType();
-    if (t === "success") return `${r.succeeded ?? objectIds.length} objects deleted successfully.`;
+    if (t === "success") {
+      const n = r.succeeded ?? objectIds.length;
+      return `${n} object${n !== 1 ? "s" : ""} deleted successfully.`;
+    }
     if (t === "partial") return `${r.succeeded} deleted · ${(r.failed_tml_export ?? 0) + (r.failed_delete ?? 0)} skipped. View History for details.`;
     return `Delete completed but 0 objects deleted — ${r.failed_tml_export ?? 0} TML export${r.failed_tml_export !== 1 ? "s" : ""} failed.`;
   };
@@ -248,7 +251,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
         }}>
           <span style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, flex: 1 }}>
             {state === "polling"  && "Checking impact…"}
-            {state === "ready"    && `Delete ${objectIds.length.toLocaleString()} objects`}
+            {state === "ready"    && `Delete ${objectIds.length.toLocaleString()} object${objectIds.length !== 1 ? "s" : ""}`}
             {state === "running"  && "Deleting objects…"}
             {state === "complete" && "Delete complete"}
           </span>
@@ -470,7 +473,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
                 transition: "background 0.15s",
               }}
             >
-              Delete {objectIds.length.toLocaleString()} objects
+              Delete {objectIds.length.toLocaleString()} object{objectIds.length !== 1 ? "s" : ""}
             </button>
           </div>
         )}
