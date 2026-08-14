@@ -159,7 +159,11 @@ class TestMetadataStats:
         assert data["total"] == 3
         assert data["by_type"]["LIVEBOARD"] == 2
         assert data["by_type"]["ANSWER"] == 1
-        assert data["stale_90d"] == 2  # ans-1 (100d) + lb-2 (never)
+        # "Aged out" and "no evidence" are separate counts, not one blended
+        # number: ans-1 has a real access date 100d old, lb-2 has none at all.
+        assert data["stale_90d"] == 1
+        assert data["never_accessed"] == 1
+        assert data["archivable_total"] == 3
 
 
 class TestGetPermissions:

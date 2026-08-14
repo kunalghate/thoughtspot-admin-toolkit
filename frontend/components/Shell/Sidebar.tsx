@@ -55,8 +55,19 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
             <span style={{ color: theme.color.onAccent, fontSize: 12, fontWeight: 700 }}>TS</span>
           </div>
           <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6,
+              fontSize: 13, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans,
+            }}>
               Admin Toolkit
+              <span style={{
+                fontSize: 9, fontWeight: 600, letterSpacing: 0.4, textTransform: "uppercase",
+                padding: "1px 5px", borderRadius: 4,
+                border: `1px solid ${theme.color.border}`,
+                color: theme.color.textMuted,
+              }}>
+                Beta
+              </span>
             </div>
             <div style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
               {activeCluster?.name ?? "Not connected"}

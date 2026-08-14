@@ -10,15 +10,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from ts_admin import database as _db
 from ts_admin.models.archive_record import ArchiveRecord
 from ts_admin.models.cache.ts_group import CachedGroup
+from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_tag import CachedTag
-from ts_admin.models.cache.ts_user import UserOrgMembership
+from ts_admin.models.cache.ts_user import CachedUser, UserGroupMembership, UserOrgMembership
 from ts_admin.models.job import Job
 from ts_admin.models.share_record import ShareRecord
+from ts_admin.models.sync_log import SyncLog
 from ts_admin.models.user_action_record import UserActionRecord
 from ts_admin.services.metadata_service import MetadataService
 
@@ -28,6 +31,12 @@ RECENT_ACTIVITY_LIMIT = 8
 # Bulk operations write one row per object/principal, so grouping needs a
 # window of raw rows, not a LIMIT on the grouped result.
 _ACTIVITY_SCAN_ROWS = 300
+# Activity older than this is history, not news — the feed hides it so a
+# months-old bulk delete cannot masquerade as "recent".
+ACTIVITY_MAX_AGE_DAYS = 30
+# Entities whose freshness and record-count deltas the dashboard reports.
+_TRACKED_ENTITIES = ("metadata", "users", "groups", "tags", "dependencies")
+_IN_FLIGHT_STATUSES = ("QUEUED", "PENDING", "RUNNING")
 
 
 def _naive(dt: datetime | None) -> datetime | None:
@@ -68,14 +77,6 @@ class DashboardService:
                 ).all()
             )
 
-            jobs = session.exec(
-                select(Job).where(Job.cluster_id == cluster_id).order_by(col(Job.created_at).desc()).limit(200)
-            ).all()
-
-            week_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
-            failed_jobs_7d = sum(
-                1 for j in jobs if j.status == "FAILED" and (_naive(j.created_at) or week_ago) >= week_ago
-            )
             recent_jobs = [
                 {
                     "id": j.id,
@@ -83,11 +84,52 @@ class DashboardService:
                     "status": j.status,
                     "created_at": _naive(j.created_at),
                     "error": j.error,
+                    "error_type": j.error_type,
                 }
-                for j in jobs[:RECENT_JOBS_LIMIT]
+                for j in session.exec(
+                    select(Job)
+                    .where(Job.cluster_id == cluster_id)
+                    .order_by(col(Job.created_at).desc())
+                    .limit(RECENT_JOBS_LIMIT)
+                ).all()
+            ]
+
+            # COUNT over the whole window, not a slice of the newest N jobs —
+            # a busy cluster can push failures out of any fixed-size page.
+            week_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+            failed_jobs_7d = session.exec(
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.cluster_id == cluster_id,
+                    Job.status == "FAILED",
+                    col(Job.created_at).is_not(None),
+                    col(Job.created_at) >= week_ago,
+                )
+            ).one()
+
+            running_jobs = [
+                {
+                    "id": j.id,
+                    "job_type": j.job_type,
+                    "status": j.status,
+                    "progress": j.progress,
+                    "total": j.total,
+                }
+                for j in session.exec(
+                    select(Job)
+                    .where(
+                        Job.cluster_id == cluster_id,
+                        col(Job.status).in_(_IN_FLIGHT_STATUSES),
+                    )
+                    .order_by(col(Job.created_at).desc())
+                    .limit(RECENT_JOBS_LIMIT)
+                ).all()
             ]
 
             activity = DashboardService._recent_activity(session, cluster_id=cluster_id, org_id=org_id)
+            synced, deltas = DashboardService._sync_state(session, cluster_id=cluster_id, org_id=org_id)
+            attention = DashboardService._attention(session, cluster_id=cluster_id, org_id=org_id, synced=synced)
 
         return {
             "counts": {
@@ -96,16 +138,157 @@ class DashboardService:
                 "tags": tags,
                 "objects_total": meta["total"],
                 "objects_by_type": meta["by_type"],
+                "archivable_total": meta["archivable_total"],
                 "stale_90d": meta["stale_90d"],
+                "never_accessed": meta["never_accessed"],
             },
+            "synced": synced,
+            "deltas": deltas,
+            "attention": attention,
             "recent_jobs": recent_jobs,
+            "running_jobs": running_jobs,
             "recent_activity": activity,
             "failed_jobs_7d": failed_jobs_7d,
         }
 
     @staticmethod
+    def _sync_state(session: Session, *, cluster_id: str, org_id: int) -> tuple[dict[str, bool], dict[str, int]]:
+        """
+        Per-entity "has this ever synced?" flags and record-count deltas.
+
+        The flags exist so the UI can tell a real zero apart from a number we
+        simply do not have yet — rendering "0 tags" for a cluster that has
+        never run a tag sync is a lie, not a measurement.
+
+        The delta is the change in `record_count` between the two most recent
+        successful syncs of an entity (0 when there is no prior sync to compare
+        against), which is the only true time series the cache keeps.
+        """
+        synced: dict[str, bool] = {}
+        deltas: dict[str, int] = {}
+        for entity in _TRACKED_ENTITIES:
+            recent = session.exec(
+                select(SyncLog)
+                .where(
+                    SyncLog.cluster_id == cluster_id,
+                    SyncLog.org_id == org_id,
+                    SyncLog.entity_type == entity,
+                    SyncLog.status == "SUCCESS",
+                )
+                .order_by(col(SyncLog.synced_at).desc())
+                .limit(2)
+            ).all()
+            synced[entity] = bool(recent)
+            deltas[entity] = recent[0].record_count - recent[1].record_count if len(recent) == 2 else 0
+        return synced, deltas
+
+    @staticmethod
+    def _attention(session: Session, *, cluster_id: str, org_id: int, synced: dict[str, bool]) -> dict[str, int]:
+        """
+        Counts of things an admin probably needs to act on.
+
+        Every one of these is already in the cache — they are cheap aggregate
+        queries, not live calls — and each maps to a tool the toolkit already
+        ships (deactivate/delete users, group management, transfer ownership).
+
+        Each signal is a join across two entities, so it is only meaningful
+        once BOTH have synced: without a user sync every object looks orphaned,
+        and without a group sync every user looks ungrouped. Unmet
+        prerequisites report 0 rather than a fabricated alarm.
+        """
+        users_ready = synced.get("users", False)
+        groups_ready = synced.get("groups", False)
+        metadata_ready = synced.get("metadata", False)
+
+        if not users_ready:
+            return {
+                "inactive_users": 0,
+                "users_without_group": 0,
+                "empty_groups": 0,
+                "orphaned_content": 0,
+            }
+
+        org_user_guids = select(UserOrgMembership.ts_guid).where(
+            UserOrgMembership.cluster_id == cluster_id,
+            UserOrgMembership.org_id == org_id,
+        )
+
+        inactive_users = session.exec(
+            select(func.count())
+            .select_from(CachedUser)
+            .where(
+                CachedUser.cluster_id == cluster_id,
+                CachedUser.status != "ACTIVE",
+                col(CachedUser.ts_guid).in_(org_user_guids),
+            )
+        ).one()
+
+        users_without_group = 0
+        empty_groups = 0
+        if groups_ready:
+            grouped_users = select(UserGroupMembership.user_guid).where(
+                UserGroupMembership.cluster_id == cluster_id,
+                UserGroupMembership.org_id == org_id,
+            )
+            users_without_group = session.exec(
+                select(func.count())
+                .select_from(UserOrgMembership)
+                .where(
+                    UserOrgMembership.cluster_id == cluster_id,
+                    UserOrgMembership.org_id == org_id,
+                    col(UserOrgMembership.ts_guid).not_in(grouped_users),
+                )
+            ).one()
+
+            populated_groups = select(UserGroupMembership.group_guid).where(
+                UserGroupMembership.cluster_id == cluster_id,
+                UserGroupMembership.org_id == org_id,
+            )
+            empty_groups = session.exec(
+                select(func.count())
+                .select_from(CachedGroup)
+                .where(
+                    CachedGroup.cluster_id == cluster_id,
+                    CachedGroup.org_id == org_id,
+                    col(CachedGroup.ts_guid).not_in(populated_groups),
+                )
+            ).one()
+
+        # Content whose owner is no longer a known user on this cluster — the
+        # trigger for Users → Transfer ownership.
+        orphaned_content = 0
+        if metadata_ready:
+            known_owners = select(CachedUser.ts_guid).where(CachedUser.cluster_id == cluster_id)
+            orphaned_content = session.exec(
+                select(func.count())
+                .select_from(CachedMetadata)
+                .where(
+                    CachedMetadata.cluster_id == cluster_id,
+                    CachedMetadata.org_id == org_id,
+                    CachedMetadata.owner_guid != "",
+                    col(CachedMetadata.owner_name) != "System User",
+                    col(CachedMetadata.owner_guid).not_in(known_owners),
+                )
+            ).one()
+
+        return {
+            "inactive_users": inactive_users,
+            "users_without_group": users_without_group,
+            "empty_groups": empty_groups,
+            "orphaned_content": orphaned_content,
+        }
+
+    @staticmethod
     def _recent_activity(session: Session, *, cluster_id: str, org_id: int) -> list[dict]:
-        """Merge the three audit trails into one feed, newest first."""
+        """
+        Merge the three audit trails into one feed, newest first.
+
+        Bounded by `ACTIVITY_MAX_AGE_DAYS` — a card titled "recent" that shows
+        months-old rows reads as current activity when it is really an empty
+        state — and identical adjacent entries are collapsed, so four
+        single-object deletes become one "×4" line instead of four.
+        """
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVITY_MAX_AGE_DAYS)
         items: list[dict] = []
 
         # Content deletions (Archiver / Bulk Delete) — one row per object;
@@ -113,7 +296,11 @@ class DashboardService:
         deletions: dict[str, dict] = {}
         for rec in session.exec(
             select(ArchiveRecord)
-            .where(ArchiveRecord.cluster_id == cluster_id, ArchiveRecord.org_id == org_id)
+            .where(
+                ArchiveRecord.cluster_id == cluster_id,
+                ArchiveRecord.org_id == org_id,
+                col(ArchiveRecord.archived_at) >= cutoff,
+            )
             .order_by(col(ArchiveRecord.archived_at).desc())
             .limit(_ACTIVITY_SCAN_ROWS)
         ).all():
@@ -142,7 +329,11 @@ class DashboardService:
         shares: dict[str, dict] = {}
         for rec in session.exec(
             select(ShareRecord)
-            .where(ShareRecord.cluster_id == cluster_id, ShareRecord.org_id == org_id)
+            .where(
+                ShareRecord.cluster_id == cluster_id,
+                ShareRecord.org_id == org_id,
+                col(ShareRecord.executed_at) >= cutoff,
+            )
             .order_by(col(ShareRecord.executed_at).desc())
             .limit(_ACTIVITY_SCAN_ROWS)
         ).all():
@@ -186,6 +377,7 @@ class DashboardService:
             .where(
                 UserActionRecord.cluster_id == cluster_id,
                 UserActionRecord.org_id == org_id,
+                col(UserActionRecord.executed_at) >= cutoff,
             )
             .order_by(col(UserActionRecord.executed_at).desc())
             .limit(_ACTIVITY_SCAN_ROWS)
@@ -205,4 +397,18 @@ class DashboardService:
             )
 
         items.sort(key=lambda x: x["timestamp"] or datetime.min, reverse=True)
-        return items[:RECENT_ACTIVITY_LIMIT]
+        return DashboardService._collapse(items)[:RECENT_ACTIVITY_LIMIT]
+
+    @staticmethod
+    def _collapse(items: list[dict]) -> list[dict]:
+        """Fold runs of identical adjacent entries into one row with a count."""
+        collapsed: list[dict] = []
+        for item in items:
+            prev = collapsed[-1] if collapsed else None
+            if prev and prev["kind"] == item["kind"] and prev["label"] == item["label"]:
+                prev["count"] += 1
+                if prev["status"] == "SUCCESS" and item["status"] != "SUCCESS":
+                    prev["status"] = item["status"]
+                continue
+            collapsed.append({**item, "count": 1})
+        return collapsed

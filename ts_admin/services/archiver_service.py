@@ -27,6 +27,7 @@ from ts_admin.services.deletion_service import (
     _chunks,
     _fetch_objects_by_guids,
 )
+from ts_admin.services.metadata_service import ARCHIVABLE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,9 @@ def _has_tag(tag_names_json: str, tag: str) -> bool:
 
 # ── Stale-query helpers ────────────────────────────────────────────────────────
 
-# Archiver only targets these two object types.
-_ARCHIVABLE_TYPES = ("LIVEBOARD", "ANSWER")
+# Archiver only targets these two object types. Defined in MetadataService so
+# the dashboard's staleness stats and this module cannot drift apart.
+_ARCHIVABLE_TYPES = ARCHIVABLE_TYPES
 
 
 def _parse_iso_date(s: str | None) -> datetime | None:

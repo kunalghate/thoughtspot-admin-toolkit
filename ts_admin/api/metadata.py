@@ -68,7 +68,9 @@ class MetadataListResponse(BaseModel):
 class MetadataStatsResponse(BaseModel):
     total: int
     by_type: dict[str, int]
-    stale_90d: int
+    archivable_total: int
+    stale_90d: int  # archivable objects last accessed 90+ days ago
+    never_accessed: int  # archivable objects with no access date at all
     last_synced: str | None
 
 
