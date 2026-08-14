@@ -13,11 +13,16 @@ CLI, with a full web UI that any admin can use without needing Python or termina
 
 | Feature | Status | Description |
 |---|---|---|
+| **Dashboard** | ✅ Available | Landing view — cache freshness per entity, content totals, and the shortcuts into every other screen. |
 | **Metadata Explorer** | ✅ Available | Searchable, filterable grid of all content — owner, tags, last accessed, views. Every column funnel sends real server-side filters (name / owner / tag substring, date ranges, numeric ranges). |
 | **Content Archiver** | ✅ Available | Find stale content, tag or delete with mandatory TML backup, dry-run impact check, restore from History. Archive + History grids share the same full-column filter model. |
-| **User Management** | 🔜 Coming soon | Search, filter, bulk group updates, ownership transfer, deactivation |
-| **Bulk Sharing** | 🔜 Coming soon | Share content to users/groups in bulk with impact preview |
-| **Relationship Visualizer** | 🔜 Coming soon | Graph view of content dependencies and user-group membership |
+| **User Management** | ✅ Available | Search and filter users, transfer ownership, transfer sharing, bulk delete — every destructive action behind a dry-run preview. Click any row for a read-only audit drawer: group membership, effective privileges ("can do"), and a live on-demand permissions fetch ("can see"). |
+| **Group Management** | ✅ Available | Read-only group browser — privileges and member users per group, cluster- and org-scoped. Writes stay in the ThoughtSpot UI for now. |
+| **Bulk Sharing** | ✅ Available | Share content to users/groups in bulk, with an impact preview before anything is applied and a History tab of past runs. |
+| **Relationship Visualizer** | ✅ Available | Graph view of content dependencies plus a column-level lineage explorer — trace a model column back to its physical DB table/column and forward to everything that consumes it. |
+| **Content Deleter** | ✅ Available | Targeted deletion by GUID or search, with dependency resolution and the same dry-run + TML-backup guarantees as the Archiver. |
+| **Jobs** | ✅ Available | Every sync and bulk operation runs as a tracked background job with live progress and failure detail. |
+| **Diagnostics** | ✅ Available | Tail the application log in-app and download a support bundle (logs + recent failed jobs + app info, no credentials) to send to support. |
 | **Multi-cluster** | ✅ Available | Manage multiple ThoughtSpot instances from one app |
 
 All data is cached locally — the app is fast, no waiting on ThoughtSpot API calls
@@ -80,6 +85,65 @@ The Content Archiver helps admins identify, tag, and safely delete stale Liveboa
 5. **History** — browse all past archive sessions; download individual TML backups for any deleted object. Same column-filter model as the Archive tab.
 
 The TML backup means every deletion is reversible — backups are stored locally at `~/.ts-admin/tml-exports/`.
+
+---
+
+## User & Group Management
+
+**Users** — search and filter the user grid, then act on a selection:
+
+- **Transfer ownership** — move every object a leaving user owns to another user.
+- **Transfer sharing** — re-share everything the leaving user could see with a
+  replacement, at the same access level.
+- **Delete users** — bulk removal with a snapshot of what each user owned.
+
+Every one of these previews its full impact before you confirm, and each run is
+recorded in the History tab.
+
+Click any row (outside the checkbox) to open the read-only **audit drawer**:
+group membership, effective privileges — the union of every group's privileges,
+which is how ThoughtSpot actually grants them — and an on-demand **Load access
+from ThoughtSpot** button that fetches, live, every object the user can see
+(directly or inherited through a group).
+
+**Groups** — a read-only browser for the groups themselves: privileges and
+member users per group, scoped to the selected cluster and org. Group writes
+stay in the ThoughtSpot UI in this version.
+
+Both screens read from the local cache — run a **users** and a **groups** sync
+to populate them. Group membership is written by the *groups* sync, so effective
+privileges and the admin badge only appear once groups have been synced.
+
+---
+
+## Relationship Visualizer
+
+Two views over the same dependency cache:
+
+- **Graph** — how content connects: liveboards and answers to the models they
+  read, models to their tables, tables to their connections.
+- **Columns** — column-level lineage for a model: each column traced back to its
+  physical DB table and column, and forward to every liveboard/answer that uses
+  it. Computed columns are labelled **ƒ Formula** rather than shown as a missing
+  chain, since they are defined by a formula and have no physical source.
+
+Run a **dependencies** sync to build it. The build is incremental — unchanged
+liveboards are skipped on re-runs.
+
+---
+
+## Troubleshooting
+
+**Settings → Diagnostics** has the two things support will ask for:
+
+- **Recent logs** — tail the application log without leaving the app.
+- **Download support bundle** — a small zip with the log tail, the most recent
+  failed jobs (with tracebacks), and version/OS info. It contains **no**
+  passwords, API tokens, or ThoughtSpot data — open it before sending if you
+  want to verify. If support asks for more, use the **Download full logs** link
+  beside it.
+
+When a sync fails, the failure toast links straight here.
 
 ---
 

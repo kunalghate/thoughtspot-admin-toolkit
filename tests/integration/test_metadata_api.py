@@ -160,3 +160,95 @@ class TestMetadataStats:
         assert data["by_type"]["LIVEBOARD"] == 2
         assert data["by_type"]["ANSWER"] == 1
         assert data["stale_90d"] == 2  # ans-1 (100d) + lb-2 (never)
+
+
+class TestGetPermissions:
+    """GET /{ts_guid}/permissions — live call, so the TS client is faked."""
+
+    @pytest.fixture
+    def fake_ts(self, in_memory_db, monkeypatch):
+        """Patch load_config + ThoughtSpotClient; record the org_id the auth was built for."""
+        from types import SimpleNamespace
+
+        calls = SimpleNamespace(auth_org_ids=[], fetch_kwargs=[])
+
+        class FakeCluster:
+            id = "c1"
+            url = "https://prod.thoughtspot.cloud"
+
+            def build_auth_strategy(self, org_id=None):
+                calls.auth_org_ids.append(org_id)
+                return object()
+
+        class FakeClient:
+            def __init__(self, *, url, auth):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def fetch_permissions(self, **kwargs):
+                calls.fetch_kwargs.append(kwargs)
+                return [
+                    SimpleNamespace(
+                        principal_id="u1",
+                        principal_name="Alice",
+                        principal_type="USER",
+                        share_mode="MODIFY",
+                    )
+                ]
+
+        import ts_admin.config as config_module
+        import ts_admin.ts_client as ts_client_module
+
+        monkeypatch.setattr(config_module, "load_config", lambda: SimpleNamespace(active_cluster=FakeCluster()))
+        monkeypatch.setattr(ts_client_module, "ThoughtSpotClient", FakeClient)
+        return calls
+
+    @pytest.fixture
+    def seeded_org_table(self, in_memory_db):
+        """A table living in a non-default org."""
+        with Session(in_memory_db) as session:
+            session.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=42,
+                    ts_guid="tbl-42",
+                    name="DIM_PRODUCTS",
+                    object_type="ONE_TO_ONE_LOGICAL",
+                    owner_guid="u1",
+                    owner_name="Alice",
+                    tag_names=json.dumps([]),
+                    last_accessed_at=None,
+                    synced_at=datetime.now(tz=timezone.utc),
+                )
+            )
+            session.commit()
+
+    def test_returns_permissions(self, client, seeded, fake_ts):
+        r = client.get("/api/v1/metadata/lb-1/permissions?cluster_id=c1&org_id=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["object_name"] == "Sales Dashboard"
+        assert data["permissions"] == [
+            {
+                "principal_id": "u1",
+                "principal_name": "Alice",
+                "principal_type": "USER",
+                "share_mode": "MODIFY",
+            }
+        ]
+
+    def test_auth_scoped_to_requested_org(self, client, seeded_org_table, fake_ts):
+        # Regression: objects in a non-default org 400 on fetch-permissions
+        # unless the auth token is built for that org's context.
+        r = client.get("/api/v1/metadata/tbl-42/permissions?cluster_id=c1&org_id=42")
+        assert r.status_code == 200
+        assert fake_ts.auth_org_ids == [42]
+
+    def test_404_if_not_in_cache(self, client, seeded, fake_ts):
+        r = client.get("/api/v1/metadata/nope/permissions?cluster_id=c1&org_id=0")
+        assert r.status_code == 404

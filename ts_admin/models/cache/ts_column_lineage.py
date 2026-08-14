@@ -39,4 +39,7 @@ class CachedColumnLineage(SQLModel, table=True):
     db_column_name: str = ""
 
     connection_name: str = ""  # denormalized connection name (from TML)
+    # True for computed columns (TML `formula_id`, no `column_id`) — they have no
+    # physical table/db chain by design, not because resolution failed.
+    is_formula: bool = False
     synced_at: datetime | None = None

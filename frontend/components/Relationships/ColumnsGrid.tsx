@@ -45,6 +45,27 @@ function UsedByChips(params: { value: ColumnUsedBy[]; context: { onJump: (guid: 
 
 const dash = (p: { value: unknown }) => (p.value ? String(p.value) : "—");
 
+/** Table Column cell: formula columns get a labelled pill instead of a bare dash. */
+function TableColumnCell(params: { value: string; data?: ColumnLineageRow }) {
+  if (params.data?.is_formula) {
+    return (
+      <span
+        title="Computed column — defined by a formula in the model, so it has no source table or DB column"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 5, padding: "1px 8px",
+          borderRadius: theme.radius.pill, border: `1px solid ${theme.color.border}`,
+          background: theme.color.surface2, color: theme.color.textSecondary,
+          fontSize: 11, fontFamily: theme.font.sans, lineHeight: 1.6,
+        }}
+      >
+        <span style={{ fontFamily: theme.font.mono, fontStyle: "italic" }}>ƒ</span>
+        Formula
+      </span>
+    );
+  }
+  return <span>{params.value || "—"}</span>;
+}
+
 export function ColumnsGrid({
   columns,
   onJump,
@@ -55,7 +76,7 @@ export function ColumnsGrid({
   const colDefs = useMemo<ColDef<ColumnLineageRow>[]>(() => [
     { field: "db_table", headerName: "DB Table", flex: 1, minWidth: 120, valueFormatter: dash },
     { field: "db_column_name", headerName: "DB Column", flex: 1, minWidth: 120, valueFormatter: dash },
-    { field: "table_column_name", headerName: "Table Column", flex: 1, minWidth: 120, valueFormatter: dash },
+    { field: "table_column_name", headerName: "Table Column", flex: 1, minWidth: 120, cellRenderer: TableColumnCell },
     { field: "model_column_name", headerName: "Model Column", flex: 1, minWidth: 130 },
     {
       field: "used_by", headerName: "Used by", flex: 2, minWidth: 200,

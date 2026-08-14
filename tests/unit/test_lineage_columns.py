@@ -40,9 +40,11 @@ MODEL_EDOC = {
         "name": "Sales Model",
         "tables": [{"name": "SALES", "fqn": "table-1"}],
         "table_paths": [{"id": "SALES_1", "table": "SALES", "join_path": [{"join": []}]}],
+        "formulas": [{"id": "Formula_1", "name": "Margin %", "expr": "[Revenue] / 100"}],
         "worksheet_columns": [
             {"name": "Total Revenue", "column_id": "SALES_1::Revenue"},
             {"name": "Region", "column_id": "SALES_1::Region"},
+            {"name": "Margin %", "formula_id": "Formula_1"},
         ],
     },
 }
@@ -98,7 +100,12 @@ def test_resolve_model_columns_3_layer_chain():
     assert rev.db_table == "FACT_SALES"
     assert rev.db_column_name == "REVENUE"
     assert rev.connection_name == "Snowflake Prod"
+    assert rev.is_formula is False
     assert by_col["Region"].db_column_name == "REGION"
+    # Formula column: flagged, with an intentionally empty physical chain.
+    margin = by_col["Margin %"]
+    assert margin.is_formula is True
+    assert (margin.table_column_name, margin.db_table, margin.db_column_name) == ("", "", "")
 
 
 def test_resolve_model_columns_tolerates_missing_source():
@@ -112,6 +119,8 @@ def test_resolve_model_columns_tolerates_missing_source():
     assert len(rows) == 1
     assert rows[0].model_column_name == "Margin"
     assert rows[0].db_column_name == ""
+    # An unresolved column_id is NOT a formula — only formula_id marks one.
+    assert rows[0].is_formula is False
 
 
 def test_extract_col_usage_unions_three_sources():
@@ -179,6 +188,10 @@ class _FakeTMLClient:
                 out.append({"info": {"id": guid, "name": edoc.get("guid")}, "edoc": edoc})
         return out
 
+    async def search_dependents(self, *, object_ids, object_type, batch_size=100):
+        # Object-tier sweep: the model depends on the table (model USES table).
+        return {"table-1": [{"id": "model-1", "name": "Sales Model", "type": "WORKSHEET"}]}
+
 
 def _seed(engine, *, lb_modified: datetime | None = None):
     from ts_admin.models.cache.ts_metadata import CachedMetadata
@@ -240,10 +253,12 @@ async def test_build_column_map_end_to_end(monkeypatch, in_memory_db, patched_co
         edges = session.exec(select(CachedDependency)).all()
         usage = session.exec(select(CachedColumnUsage)).all()
 
-    # 3-layer lineage for the model.
-    assert {r.model_column_name for r in lineage} == {"Total Revenue", "Region"}
+    # 3-layer lineage for the model (including the flagged formula column).
+    assert {r.model_column_name for r in lineage} == {"Total Revenue", "Region", "Margin %"}
     rev = next(r for r in lineage if r.model_column_name == "Total Revenue")
     assert (rev.db_table, rev.db_column_name, rev.connection_name) == ("FACT_SALES", "REVENUE", "Snowflake Prod")
+    margin = next(r for r in lineage if r.model_column_name == "Margin %")
+    assert margin.is_formula is True and margin.db_column_name == ""
 
     # CONNECTS edge (table→connection) and liveboard USES edge (lb→model).
     connects = [e for e in edges if e.relation == "CONNECTS"]
@@ -276,6 +291,86 @@ async def test_build_column_map_incremental_skips_unchanged_liveboards(monkeypat
     assert "model-1" in fake.exported and "table-1" in fake.exported
 
 
+async def test_object_graph_rebuild_preserves_phase2_edges(monkeypatch, in_memory_db, patched_config):
+    """
+    Regression: Phase 1's delete-before-insert must not wipe the edges only
+    Phase 2 produces (liveboard USES + CONNECTS) — the incremental liveboard
+    pass skips unchanged liveboards and would never re-create them.
+    """
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        edges = session.exec(select(CachedDependency)).all()
+    lb_uses = [e for e in edges if e.relation == "USES" and e.source_type == "LIVEBOARD"]
+    connects = [e for e in edges if e.relation == "CONNECTS"]
+    assert lb_uses and lb_uses[0].source_guid == "lb-1"
+    assert connects and connects[0].target_guid == "conn-1"
+    # And the object tier itself landed (model USES table from the sweep).
+    assert any(e.source_guid == "model-1" and e.target_guid == "table-1" for e in edges)
+
+
+async def test_column_map_self_heals_missing_liveboard_edges(monkeypatch, in_memory_db, patched_config):
+    """
+    Regression: a DB whose liveboard edges were wiped (pre-fix object-tier
+    build) recovers on the next column build even when no liveboard changed.
+    """
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    with Session(in_memory_db) as session:
+        session.exec(sql_delete(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD"))
+        session.commit()
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported  # unchanged, but re-exported to heal
+    with Session(in_memory_db) as session:
+        lb_uses = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
+    assert lb_uses and lb_uses[0].target_guid == "model-1"
+
+
+async def test_column_map_purges_deleted_liveboards(monkeypatch, in_memory_db, patched_config):
+    """A liveboard deleted in TS loses its USES edges + usage rows on the next build."""
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        session.exec(sql_delete(CachedMetadata).where(CachedMetadata.ts_guid == "lb-1"))
+        session.commit()
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    with Session(in_memory_db) as session:
+        lb_edges = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
+        lb_usage = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_type == "LIVEBOARD")).all()
+    assert lb_edges == []
+    assert lb_usage == []
+
+
 async def test_graph_columns_populated_after_build(monkeypatch, in_memory_db, patched_config):
     from ts_admin.services import lineage_service
 
@@ -287,9 +382,11 @@ async def test_graph_columns_populated_after_build(monkeypatch, in_memory_db, pa
     # Model root: columns carry the 3-layer chain + "used by" consumers.
     graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="model-1", root_kind="model")
     cols = {c["model_column_name"]: c for c in graph["columns"]}
-    assert set(cols) == {"Total Revenue", "Region"}
+    assert set(cols) == {"Total Revenue", "Region", "Margin %"}
     assert cols["Total Revenue"]["db_column_name"] == "REVENUE"
+    assert cols["Total Revenue"]["is_formula"] is False
     assert cols["Total Revenue"]["used_by"][0]["guid"] == "lb-1"
+    assert cols["Margin %"]["is_formula"] is True
 
     # Liveboard root: the columns IT uses, resolved through the model.
     lb_graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="lb-1", root_kind="liveboard")

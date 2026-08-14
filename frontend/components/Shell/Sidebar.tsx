@@ -100,6 +100,13 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
           Go to Settings to add or remove clusters.
         </p>
       </div>
+
+      {/* Credit */}
+      <div style={{ padding: "8px 12px", borderTop: `1px solid ${theme.color.border}` }}>
+        <p style={{ fontSize: 10, color: theme.color.textMuted, margin: 0, fontFamily: theme.font.sans }}>
+          Built by Bibek Shrestha &amp; Kunal Ghate
+        </p>
+      </div>
     </aside>
   );
 }

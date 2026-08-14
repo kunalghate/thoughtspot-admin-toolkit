@@ -72,7 +72,7 @@ _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
     (
         TSResponseParseError,
         "Unexpected response from ThoughtSpot",
-        "Possibly a version mismatch. Download the support bundle and send it to support.",
+        "Possibly a version mismatch. Download the support bundle from Settings → Diagnostics and send it to support.",
     ),
     (
         TSObjectNotFoundError,

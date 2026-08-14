@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -248,10 +248,16 @@ export const diagnosticsApi = {
     return res.text();
   },
 
-  /** Absolute URL to download the support bundle as a zip. */
-  bundleUrl: (jobId?: string): string => {
-    const q = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
-    return `${BASE}/diagnostics/bundle${q}`;
+  /**
+   * Absolute URL to download the support bundle as a zip. Small by default
+   * (log tail + last few failed jobs); `full` includes every rotated log.
+   */
+  bundleUrl: (jobId?: string, opts?: { full?: boolean }): string => {
+    const params = new URLSearchParams();
+    if (jobId) params.set("job_id", jobId);
+    if (opts?.full) params.set("full", "true");
+    const q = params.toString();
+    return `${BASE}/diagnostics/bundle${q ? `?${q}` : ""}`;
   },
 };
 
@@ -549,6 +555,9 @@ export const usersApi = {
   get: (ts_guid: string, cluster_id: string) =>
     request<UserDetail>(`/users/${ts_guid}?cluster_id=${cluster_id}`),
 
+  access: (ts_guid: string, cluster_id: string, org_id: number) =>
+    request<UserAccessResponse>(`/users/${ts_guid}/access?cluster_id=${cluster_id}&org_id=${org_id}`),
+
   transferPreview: (body: {
     cluster_id: string;
     org_id: number;
@@ -633,6 +642,35 @@ export const usersApi = {
     if (params.page_size)              q.set("page_size", String(params.page_size));
     return request<PaginatedResponse<UserHistoryItem>>(`/users/history?${q}`);
   },
+};
+
+// ── Group Management (read-only v1) ───────────────────────────────────────────
+
+export const groupsApi = {
+  list: (params: {
+    cluster_id: string;
+    org_id?: number;
+    search?: string;
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
+    record_offset?: number;
+    page_size?: number;
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    if (params.org_id != null)         q.set("org_id", String(params.org_id));
+    if (params.search)                  q.set("search", params.search);
+    if (params.sort_field)              q.set("sort_field", params.sort_field);
+    if (params.sort_order)              q.set("sort_order", params.sort_order);
+    if (params.record_offset != null)  q.set("record_offset", String(params.record_offset));
+    if (params.page_size)               q.set("page_size", String(params.page_size));
+    return request<OffsetPaginatedResponse<GroupListItem>>(`/groups?${q}`);
+  },
+
+  get: (ts_guid: string, cluster_id: string, org_id?: number) =>
+    request<GroupDetail>(
+      `/groups/${ts_guid}?cluster_id=${cluster_id}` + (org_id != null ? `&org_id=${org_id}` : ""),
+    ),
 };
 
 // ── Bulk Sharing ──────────────────────────────────────────────────────────────

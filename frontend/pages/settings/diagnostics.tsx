@@ -13,7 +13,11 @@ export default function DiagnosticsPage() {
   // browser (relative vs http://localhost:8000), which trips React hydration
   // if baked into the initial markup.
   const [bundleHref, setBundleHref] = useState("#");
-  useEffect(() => { setBundleHref(diagnosticsApi.bundleUrl()); }, []);
+  const [fullBundleHref, setFullBundleHref] = useState("#");
+  useEffect(() => {
+    setBundleHref(diagnosticsApi.bundleUrl());
+    setFullBundleHref(diagnosticsApi.bundleUrl(undefined, { full: true }));
+  }, []);
 
   const loadLogs = async () => {
     setLoadingLogs(true);
@@ -44,26 +48,37 @@ export default function DiagnosticsPage() {
             Hit a bug? Send us a support bundle.
           </h3>
           <p style={{ fontSize: 12, color: theme.color.textSecondary, lineHeight: 1.6, margin: "8px 0 14px", fontFamily: theme.font.sans }}>
-            Click the button to download a zip with recent application logs,
-            the most recent failed jobs (with full tracebacks), and the app
-            version. It does <strong>not</strong> include passwords, API
-            tokens, or your ThoughtSpot data — open it before sending if
-            you'd like to verify.
+            Click the button to download a small zip with the tail of the
+            application log, the most recent failed jobs (with tracebacks),
+            and the app version — small enough to email or upload. It does{" "}
+            <strong>not</strong> include passwords, API tokens, or your
+            ThoughtSpot data — open it before sending if you'd like to verify.
           </p>
-          <a
-            href={bundleHref}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 8,
-              padding: "8px 14px", fontSize: 13, fontWeight: 500,
-              background: theme.gradient.accent, boxShadow: theme.shadow.glowAccent,
-              border: `1px solid ${theme.color.accent}`, borderRadius: 6,
-              color: theme.color.onAccent, textDecoration: "none",
-              fontFamily: theme.font.sans,
-            }}
-          >
-            <Download size={14} />
-            Download support bundle
-          </a>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <a
+              href={bundleHref}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 8,
+                padding: "8px 14px", fontSize: 13, fontWeight: 500,
+                background: theme.gradient.accent, boxShadow: theme.shadow.glowAccent,
+                border: `1px solid ${theme.color.accent}`, borderRadius: 6,
+                color: theme.color.onAccent, textDecoration: "none",
+                fontFamily: theme.font.sans,
+              }}
+            >
+              <Download size={14} />
+              Download support bundle
+            </a>
+            <a
+              href={fullBundleHref}
+              style={{
+                fontSize: 12, color: theme.color.textSecondary,
+                textDecoration: "underline", fontFamily: theme.font.sans,
+              }}
+            >
+              Download full logs (large — only if support asks)
+            </a>
+          </div>
         </section>
 
         {/* Recent logs */}

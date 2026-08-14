@@ -265,6 +265,99 @@ async def test_user_resync_updates_timestamps_on_existing_rows(monkeypatch, in_m
 
 
 @pytest.mark.anyio
+async def test_group_sync_populates_memberships_and_purges_stale(monkeypatch, in_memory_db, patched_config):
+    """Group sync must write user_group_memberships rows (they power is_admin
+    and UserDetail.groups), rewrite them on re-sync, and purge groups that no
+    longer exist upstream — otherwise deleted groups linger forever."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_group import CachedGroup
+    from ts_admin.models.cache.ts_user import UserGroupMembership
+
+    now = datetime.now(timezone.utc)
+
+    def _group(guid: str, members: list[str]):
+        return SimpleNamespace(
+            id=guid,
+            name=f"group-{guid}",
+            display_name=f"Group {guid}",
+            description="",
+            privileges=["ADMINISTRATION"],
+            member_users=members,
+            created=now,
+            modified=now,
+        )
+
+    pages: list[list] = [[_group("g1", ["u1", "u2"]), _group("g2", ["u1"])]]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_groups(self, *, org_id):
+            for page in pages:
+                yield page
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=job_id)
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+    def _memberships() -> set[tuple[str, str]]:
+        with get_session() as session:
+            rows = session.exec(select(UserGroupMembership).where(UserGroupMembership.cluster_id == CLUSTER_ID)).all()
+        return {(r.user_guid, r.group_guid) for r in rows}
+
+    assert _memberships() == {("u1", "g1"), ("u2", "g1"), ("u1", "g2")}
+
+    # Re-sync: u2 left g1, and g2 was deleted upstream entirely.
+    pages[:] = [[_group("g1", ["u1"])]]
+    job_id = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=job_id)
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+    # Membership rewritten (no duplicates, no stale members), stale group purged.
+    assert _memberships() == {("u1", "g1")}
+    with get_session() as session:
+        guids = session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all()
+    assert list(guids) == ["g1"]
+
+    # A sweep that returns NOTHING must not purge. SQLAlchemy renders
+    # `not_in(<empty>)` as `NOT IN (NULL) OR (1 = 1)` — always true — so an
+    # unguarded purge here would delete every group and membership for the org
+    # on any empty response (wrong org context, transient upstream blip).
+    pages[:] = []
+    job_id = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=job_id)
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+    assert _memberships() == {("u1", "g1")}
+    with get_session() as session:
+        guids = session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all()
+    assert list(guids) == ["g1"]
+
+
+@pytest.mark.anyio
 async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_db, patched_config):
     """run_sync('dependencies') must route to lineage_service.build_object_graph."""
     seen: dict = {}

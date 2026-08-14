@@ -185,8 +185,8 @@ def get_user_detail(*, cluster_id: str, ts_guid: str) -> dict | None:
             )
         ).all()
 
-        group_names = session.exec(
-            select(CachedGroup.name)
+        group_rows = session.exec(
+            select(CachedGroup)
             .join(
                 UserGroupMembership,
                 (UserGroupMembership.group_guid == CachedGroup.ts_guid)
@@ -196,13 +196,26 @@ def get_user_detail(*, cluster_id: str, ts_guid: str) -> dict | None:
                 UserGroupMembership.cluster_id == cluster_id,
                 UserGroupMembership.user_guid == ts_guid,
             )
+            .order_by(col(CachedGroup.name).asc())
         ).all()
 
         out = _user_row_to_dict(user)
         out["owned_object_count"] = owned_count
         out["org_ids"] = list(org_ids)
-        out["groups"] = list(group_names)
-        out["is_admin"] = any(n in ADMIN_GROUP_NAMES for n in group_names)
+        out["groups"] = [g.name for g in group_rows]
+        out["group_details"] = [
+            {
+                "ts_guid": g.ts_guid,
+                "name": g.name,
+                "display_name": g.display_name,
+                "privileges": g.get_privileges(),
+            }
+            for g in group_rows
+        ]
+        # Effective privileges: union of every group's privileges — "what this
+        # user can do", since TS privileges are only granted through groups.
+        out["privileges"] = sorted({p for g in group_rows for p in g.get_privileges()})
+        out["is_admin"] = any(g.name in ADMIN_GROUP_NAMES for g in group_rows)
         return out
 
 
@@ -414,6 +427,38 @@ async def execute_transfer(
 
 
 # ── Transfer sharing (re-share what the source user can see) ──────────────────
+
+
+async def get_user_access(*, cluster_id: str, org_id: int, ts_guid: str) -> dict:
+    """
+    Live API call: everything the user can currently see (defined permissions).
+
+    Powers the audit section of the user detail drawer. Same fetch as the
+    transfer-sharing preview, without the target-user validation.
+    """
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    cluster = _get_cluster(cluster_id)
+    # fetch-permissions walks every ACL for the principal — routinely slower
+    # than the default 30s window on content-heavy orgs.
+    async with ThoughtSpotClient(
+        url=cluster.url,
+        auth=cluster.build_auth_strategy(org_id=org_id),
+        timeout=120.0,
+    ) as client:
+        # EFFECTIVE resolves group-inherited access too — the audit answer to
+        # "what can this user see", not just what was shared to them directly.
+        rows = await client.principal_permissions(
+            principal_identifier=ts_guid,
+            permission_type="EFFECTIVE",
+        )
+
+    by_type: dict[str, int] = {}
+    for r in rows:
+        t = r.get("metadata_type", "")
+        by_type[t] = by_type.get(t, 0) + 1
+
+    return {"items": rows, "total": len(rows), "by_type": by_type}
 
 
 async def preview_transfer_sharing(

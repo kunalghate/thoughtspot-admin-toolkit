@@ -26,3 +26,14 @@ One line per cycle on process friction. Format:
   Human chose W2-first, so S1 (PR #12) is STACKED on the W2 branch (PR #11) to keep
   S1's CI green pre-merge; base retargets to `main` when #11 merges. Stacked-PR flow
   worked cleanly since S1 (frontend/docs) and W2 (backend) touch disjoint files.
+- 2026-08-14 S3/S4/M2: Review-first cycle on an uncommitted 36-file feature tree.
+  Two `reviewer` lenses (correctness, regression) run in parallel **independently
+  converged** on the same three CONFIRMED findings (empty-`not_in` purge, stale
+  `sync_log` after a cache drop, support bundle losing the traceback across a
+  rotation) — duplicate lenses were not wasted; the agreement is what made them
+  safe to fix without a live cluster. Friction: one reviewer-suggested guard
+  (`if all_lb_guids:`) was **wrong** and an existing test caught it immediately —
+  a reminder that CONFIRMED-by-agent still has to clear the suite before it lands.
+  Process gap found outside the diff: PR #14 silently reverted PR #12's merged
+  vitest wiring and left `npm test` red on `main` with no gate to notice → M2.
+  Merged work is not durable while the suite that proves it isn't in CI.

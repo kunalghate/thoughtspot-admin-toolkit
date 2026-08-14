@@ -104,3 +104,36 @@ def test_column_lineage_and_usage_round_trip(in_memory_db):
         use = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_guid == "answer-1")).one()
         assert use.model_column_name == "Revenue"
         assert use.consumer_type == "ANSWER"
+
+
+def test_init_db_rebuilds_outdated_rebuildable_table(monkeypatch):
+    """
+    Schema-bump path: a pre-existing ts_column_lineage without the newest column
+    (is_formula) is dropped and recreated by init_db — the documented
+    drop-and-rebuild-via-re-sync contract for rebuildable cache tables.
+    """
+    from sqlalchemy import inspect, text
+    from sqlalchemy.pool import StaticPool
+    from sqlmodel import create_engine
+
+    import ts_admin.database as db_module
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    monkeypatch.setattr(db_module, "get_engine", lambda: engine)
+    # Old-schema table, as an install predating is_formula would have.
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE ts_column_lineage (id INTEGER PRIMARY KEY, cluster_id VARCHAR, "
+                "org_id INTEGER, model_guid VARCHAR, model_column_name VARCHAR)"
+            )
+        )
+
+    db_module.init_db()
+
+    columns = {c["name"] for c in inspect(engine).get_columns("ts_column_lineage")}
+    assert "is_formula" in columns

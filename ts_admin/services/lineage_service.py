@@ -189,13 +189,18 @@ async def build_object_graph(*, cluster_id: str, org_id: int, job_id: str, final
             dependents = await _sweep_dependents(client, table_guids, job_id)
         edges = _edges_from_dependents(dependents, meta_by_guid, cluster_id, org_id)
 
-    # 2. Delete-before-insert the whole edge set for this cluster+org.
+    # 2. Delete-before-insert, scoped to the edge tier THIS phase rebuilds.
+    # LIVEBOARD USES edges and CONNECTS edges belong to Phase 2 (TML): the
+    # incremental liveboard pass skips unchanged liveboards, so wiping their
+    # edges here would lose them permanently.
     now = datetime.now(timezone.utc)
     with get_session() as session:
         session.exec(
             sql_delete(CachedDependency).where(
                 CachedDependency.cluster_id == cluster_id,
                 CachedDependency.org_id == org_id,
+                CachedDependency.relation == "USES",
+                CachedDependency.source_type != "LIVEBOARD",
             )
         )
         for chunk in _chunks(edges, 500):
@@ -430,6 +435,9 @@ def _resolve_model_columns(
         if not model_col:
             continue
         column_id = c.get("column_id", "") or ""
+        # Formula (computed) columns carry a formula_id instead of a column_id —
+        # they intentionally have no physical chain.
+        is_formula = bool(c.get("formula_id")) and not column_id
         table_name = table_guid = table_col = ""
         if "::" in column_id:
             prefix, table_col = column_id.split("::", 1)
@@ -452,6 +460,7 @@ def _resolve_model_columns(
                 db_table=phys["db_table"] if phys else "",
                 db_column_name=(phys["columns"].get(table_col, "") if phys else ""),
                 connection_name=phys["connection_name"] if phys else "",
+                is_formula=is_formula,
             )
         )
     return rows
@@ -529,15 +538,33 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                 CachedColumnLineage.org_id == org_id,
             )
         ).first()
+        has_lb_edges = (
+            session.exec(
+                select(CachedDependency.id).where(
+                    CachedDependency.cluster_id == cluster_id,
+                    CachedDependency.org_id == org_id,
+                    CachedDependency.relation == "USES",
+                    CachedDependency.source_type == "LIVEBOARD",
+                )
+            ).first()
+            is not None
+        )
 
     meta_by_guid = {r[0]: (r[1], r[2]) for r in meta_rows}
     table_guids = [r[0] for r in meta_rows if (r[2] or "").upper() in LOGICAL_TABLE_TYPES]
     all_liveboards = [(r[0], r[3]) for r in meta_rows if _node_type(r[2]) == "LIVEBOARD"]
+    all_lb_guids = [guid for guid, _ in all_liveboards]
 
     def _changed(modified_at) -> bool:
         return not incremental or last_built is None or modified_at is None or modified_at > last_built
 
-    lb_guids = [guid for guid, modified_at in all_liveboards if _changed(modified_at)]
+    # Self-heal: with zero liveboard edges on record the incremental skip has
+    # nothing to preserve (e.g. a pre-fix object-tier build wiped them) —
+    # re-export every liveboard so the edges come back.
+    if not has_lb_edges:
+        lb_guids = list(all_lb_guids)
+    else:
+        lb_guids = [guid for guid, modified_at in all_liveboards if _changed(modified_at)]
 
     if not table_guids and not lb_guids:
         return 0
@@ -661,6 +688,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
         lineage_rows=lineage_rows,
         connect_edges=list(connect_edges.values()),
         lb_guids=lb_guids,
+        all_lb_guids=all_lb_guids,
         lb_uses_edges=lb_uses_edges,
         usage_rows=usage_rows,
     )
@@ -671,7 +699,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
 
 
 def _persist_column_map(
-    *, cluster_id, org_id, now, lineage_rows, connect_edges, lb_guids, lb_uses_edges, usage_rows
+    *, cluster_id, org_id, now, lineage_rows, connect_edges, lb_guids, all_lb_guids, lb_uses_edges, usage_rows
 ) -> int:
     from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
@@ -690,6 +718,34 @@ def _persist_column_map(
                 CachedDependency.cluster_id == cluster_id,
                 CachedDependency.org_id == org_id,
                 CachedDependency.relation == "CONNECTS",
+            )
+        )
+        # Liveboards deleted in TS since the last build: nothing rebuilds their
+        # rows (the object-tier delete no longer touches liveboard edges), so
+        # purge everything attributed to a liveboard outside today's universe.
+        #
+        # An empty all_lb_guids is intentionally NOT guarded here. `not_in(<empty>)`
+        # compiles to `NOT IN (NULL) OR (1 = 1)` — always true — which is exactly
+        # right in this spot: zero liveboards in the metadata cache means every
+        # cached liveboard edge is orphaned. The unsynced-metadata case can't
+        # reach here; build_column_map early-returns when there are no tables
+        # and no liveboards. (Contrast _sync_groups, where an empty sweep is
+        # ambiguous and the same construct would be data loss.)
+        session.exec(
+            sql_delete(CachedDependency).where(
+                CachedDependency.cluster_id == cluster_id,
+                CachedDependency.org_id == org_id,
+                CachedDependency.relation == "USES",
+                CachedDependency.source_type == "LIVEBOARD",
+                col(CachedDependency.source_guid).not_in(all_lb_guids),
+            )
+        )
+        session.exec(
+            sql_delete(CachedColumnUsage).where(
+                CachedColumnUsage.cluster_id == cluster_id,
+                CachedColumnUsage.org_id == org_id,
+                CachedColumnUsage.consumer_type == "LIVEBOARD",
+                col(CachedColumnUsage.consumer_guid).not_in(all_lb_guids),
             )
         )
         # Liveboard USES edges + usage rows: scoped to the (re-exported) liveboards.
@@ -932,6 +988,7 @@ async def debug_tml(*, cluster_id: str, org_id: int, guid: str) -> dict:
                 "model_column_name": r.model_column_name,
                 "table_column_name": r.table_column_name,
                 "table_guid": r.table_guid,
+                "is_formula": r.is_formula,
             }
             for r in rows
         ]
@@ -1228,6 +1285,7 @@ def _column_row(r, model_guid: str, model_column_name: str, used_by: list[dict])
         "db_table": r.db_table if r else "",
         "db_column_name": r.db_column_name if r else "",
         "connection_name": r.connection_name if r else "",
+        "is_formula": r.is_formula if r else False,
         "used_by": used_by,
     }
 

@@ -265,7 +265,12 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
                 action: { label: "Reconnect", onClick: () => router.push("/settings/connections") },
               });
             } else {
-              toast.error("Sync failed", { hint: updated.error ?? "Open Jobs for details." });
+              // The error copy tells people to send a support bundle — give
+              // them the door to it instead of making them hunt for Settings.
+              toast.error("Sync failed", {
+                hint: updated.error ?? "Open Jobs for details.",
+                action: { label: "Open Diagnostics", onClick: () => router.push("/settings/diagnostics") },
+              });
             }
           }
 

@@ -60,7 +60,7 @@ class _FakeClient:
     async def share_objects(self, *, object_ids, principal_ids, permission):
         _FakeClient.share_calls.append((list(object_ids), list(principal_ids), str(permission)))
 
-    async def principal_permissions(self, *, principal_identifier, metadata_types=None):
+    async def principal_permissions(self, *, principal_identifier, metadata_types=None, permission_type="DEFINED"):
         return list(_FakeClient.principal_perm_results)
 
     async def search_users(self, *, org_id=None):
@@ -173,6 +173,7 @@ def seeded(in_memory_db):
                 ts_guid="g-admin",
                 name="Administrator",
                 display_name="Administrator",
+                privileges=json.dumps(["ADMINISTRATION"]),
                 synced_at=now,
             )
         )
@@ -185,6 +186,31 @@ def seeded(in_memory_db):
                 synced_at=now,
             )
         )
+        # Two overlapping-privilege groups for alice (effective-privileges union)
+        for guid, name, privs in [
+            ("g-analysts", "analysts", ["DATADOWNLOADING", "USERDATAUPLOADING"]),
+            ("g-viewers", "viewers", ["DATADOWNLOADING"]),
+        ]:
+            session.add(
+                CachedGroup(
+                    cluster_id="c1",
+                    org_id=0,
+                    ts_guid=guid,
+                    name=name,
+                    display_name=name.title(),
+                    privileges=json.dumps(privs),
+                    synced_at=now,
+                )
+            )
+            session.add(
+                UserGroupMembership(
+                    cluster_id="c1",
+                    org_id=0,
+                    user_guid="u-alice",
+                    group_guid=guid,
+                    synced_at=now,
+                )
+            )
         # Two metadata objects owned by alice
         session.add(
             CachedMetadata(
@@ -266,11 +292,43 @@ class TestGetUserDetail:
         assert detail is not None
         assert detail["owned_object_count"] == 2
         assert detail["is_admin"] is False
-        assert detail["groups"] == []
+        assert detail["groups"] == ["analysts", "viewers"]
 
         admin = svc.get_user_detail(cluster_id="c1", ts_guid="u-admin")
         assert admin["is_admin"] is True
         assert "Administrator" in admin["groups"]
+
+    def test_effective_privileges_are_deduped_union_of_groups(self, in_memory_db, seeded):
+        from ts_admin.services import user_management_service as svc
+
+        detail = svc.get_user_detail(cluster_id="c1", ts_guid="u-alice")
+        # DATADOWNLOADING appears in both groups — union, not concat.
+        assert detail["privileges"] == ["DATADOWNLOADING", "USERDATAUPLOADING"]
+        assert [g["name"] for g in detail["group_details"]] == ["analysts", "viewers"]
+        assert detail["group_details"][0]["privileges"] == ["DATADOWNLOADING", "USERDATAUPLOADING"]
+
+    def test_no_groups_means_no_privileges(self, in_memory_db, seeded):
+        from ts_admin.services import user_management_service as svc
+
+        detail = svc.get_user_detail(cluster_id="c1", ts_guid="u-bob")
+        assert detail["groups"] == []
+        assert detail["group_details"] == []
+        assert detail["privileges"] == []
+
+
+class TestGetUserAccess:
+    def test_returns_live_permissions_with_type_breakdown(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services import user_management_service as svc
+
+        _FakeClient.principal_perm_results = [
+            {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"},
+            {"metadata_id": "ans-1", "metadata_name": "Rev", "metadata_type": "ANSWER", "share_mode": "MODIFY"},
+            {"metadata_id": "lb-2", "metadata_name": "Ops", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"},
+        ]
+        result = asyncio.run(svc.get_user_access(cluster_id="c1", org_id=0, ts_guid="u-alice"))
+        assert result["total"] == 3
+        assert result["by_type"] == {"LIVEBOARD": 2, "ANSWER": 1}
+        assert result["items"][1]["share_mode"] == "MODIFY"
 
 
 class TestPreviewTransfer:

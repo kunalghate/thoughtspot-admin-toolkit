@@ -34,6 +34,7 @@ from ts_admin.ts_client.exceptions import (
     TSObjectNotFoundError,
     TSResponseParseError,
     TSServerError,
+    TSTimeoutError,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,10 +62,19 @@ class UserListResponse(BaseModel):
     page_size: int
 
 
+class UserGroupInfo(BaseModel):
+    ts_guid: str
+    name: str
+    display_name: str
+    privileges: list[str]
+
+
 class UserDetail(UserListItem):
     owned_object_count: int
     org_ids: list[int]
     groups: list[str]
+    group_details: list[UserGroupInfo]
+    privileges: list[str]  # effective: union of all group privileges
     is_admin: bool
 
 
@@ -267,6 +277,46 @@ def get_user(
     return UserDetail(**detail)
 
 
+class UserAccessResponse(BaseModel):
+    items: list[SharingPermissionItem]
+    total: int
+    by_type: dict[str, int]
+
+
+@router.get("/{ts_guid}/access", response_model=UserAccessResponse)
+async def get_user_access(
+    ts_guid: str,
+    cluster_id: str | None = Query(default=None),
+    org_id: int = Query(default=0),
+) -> UserAccessResponse:
+    """Live API call — everything the user can currently see (audit view)."""
+    try:
+        result = await svc.get_user_access(
+            cluster_id=_resolve_cluster_id(cluster_id),
+            org_id=org_id,
+            ts_guid=ts_guid,
+        )
+    except TSAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except TSInsufficientPrivilegesError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (
+        TSConnectionError,
+        TSTimeoutError,
+        TSServerError,
+        TSResponseParseError,
+        TSInvalidParametersError,
+        TSObjectNotFoundError,
+    ) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return UserAccessResponse(
+        items=[SharingPermissionItem(**i) for i in result["items"]],
+        total=result["total"],
+        by_type=result["by_type"],
+    )
+
+
 # ── Transfer ownership ─────────────────────────────────────────────────────────
 
 
@@ -349,6 +399,7 @@ async def transfer_sharing_preview(body: TransferSharingPreviewRequest) -> Trans
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (
         TSConnectionError,
+        TSTimeoutError,
         TSServerError,
         TSResponseParseError,
         TSInvalidParametersError,

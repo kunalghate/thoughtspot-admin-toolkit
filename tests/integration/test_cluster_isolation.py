@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, create_engine
 
+from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 
@@ -54,6 +55,11 @@ READ_ENDPOINTS = [
         "/api/v1/users?cluster_id={cluster}",
         lambda body: body["items"],
         id="users-list",
+    ),
+    pytest.param(
+        "/api/v1/groups?cluster_id={cluster}",
+        lambda body: body["items"],
+        id="groups-list",
     ),
     pytest.param(
         "/api/v1/users/history?cluster_id={cluster}",
@@ -149,6 +155,22 @@ def two_clusters(in_memory_db):
                     tag_names=json.dumps([]),
                     last_accessed_at=long_ago,  # stale, so archiver sees it
                     modified_at=long_ago,
+                    synced_at=now,
+                )
+            )
+
+        # Same group guid in both clusters; the sniffable sentinel goes in the
+        # description so the /groups check isn't vacuous on empty tables.
+        for cid, owner in [("c1", "Alice (c1)"), ("c2", "Bob (c2)")]:
+            session.add(
+                CachedGroup(
+                    cluster_id=cid,
+                    org_id=0,
+                    ts_guid="shared-group-1",
+                    name=f"Group in {cid}",
+                    display_name=f"Group in {cid}",
+                    description=f"Owned by {owner}",
+                    privileges=json.dumps([]),
                     synced_at=now,
                 )
             )

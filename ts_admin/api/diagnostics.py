@@ -6,6 +6,12 @@ GET /api/v1/diagnostics/logs?lines=N      — tail of app.log
 GET /api/v1/diagnostics/bundle?job_id=X   — zip with logs + recent failed
                                             jobs + app info, for emailing
                                             to support.
+GET /api/v1/diagnostics/bundle?full=true  — same, but every rotated log in
+                                            full (big; only when support asks).
+
+The default bundle is deliberately small — the log tail only, and the last
+few failed jobs — so it can be emailed or pasted into a support thread
+without hitting an attachment/upload limit.
 
 The bundle never contains keychain values, passwords, bearer tokens, or
 the SQLite DB itself. Cluster names and URLs are included (the admin
@@ -37,11 +43,13 @@ downloaded. Email it to support along with a short description of what
 you were doing when the issue occurred.
 
 What's in here:
-  - app.log, app.log.1..app.log.N — application logs (most recent rotation
-    last). Includes tracebacks for any failed jobs.
+  - app.log — the tail of the application log (the most recent {log_lines}
+    lines), which is where the failure that sent you here will be. Add
+    `?full=true` to the download URL to get every rotated log in full —
+    only needed if support asks for it.
   - app_info.json — version, Python version, OS, cluster summary.
-  - failed_jobs.json — the most recent failed jobs (id, type, error
-    message, exception type, full traceback, timing).
+  - failed_jobs.json — the most recent {job_limit} failed jobs (id, type,
+    error message, exception type, traceback, timing).
   - job_<id>.json (when downloaded from a specific job) — that job's full
     record + any related archive records.
 
@@ -75,16 +83,29 @@ async def tail_logs(lines: int = Query(default=500, ge=1, le=5000)) -> str:
     return "\n".join(tail)
 
 
+# Defaults sized so the bundle stays small enough to email or upload: the log
+# tail carries the failure and its traceback, the older rotations almost never
+# matter. `?full=true` restores the everything-in-full behaviour.
+_TAIL_LINES = 2000
+_FAILED_JOB_LIMIT = 10
+
+
 @router.get("/bundle")
-async def download_bundle(job_id: str | None = Query(default=None)) -> StreamingResponse:
+async def download_bundle(
+    job_id: str | None = Query(default=None),
+    full: bool = Query(default=False, description="Include every rotated log in full (large)."),
+) -> StreamingResponse:
     """Build a zip with logs, recent failed jobs, and (optionally) one
     specific job's full record. Streams the zip back as a download."""
+    job_limit = 50 if full else _FAILED_JOB_LIMIT
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("README.txt", _README)
+        zf.writestr("README.txt", _README.format(log_lines="all" if full else _TAIL_LINES, job_limit=job_limit))
         zf.writestr("app_info.json", json.dumps(_app_info(), indent=2))
-        zf.writestr("failed_jobs.json", json.dumps(_recent_failed_jobs(limit=50), indent=2, default=_json_default))
-        _add_log_files(zf)
+        zf.writestr(
+            "failed_jobs.json", json.dumps(_recent_failed_jobs(limit=job_limit), indent=2, default=_json_default)
+        )
+        _add_log_files(zf, full=full)
 
         if job_id:
             try:
@@ -213,15 +234,49 @@ def _safe_json_loads(value: str | None) -> dict | list | str | None:
         return value
 
 
-def _add_log_files(zf: zipfile.ZipFile) -> None:
-    """Add app.log and any rotated copies (app.log.1, app.log.2, ...) to zf."""
+def _add_log_files(zf: zipfile.ZipFile, *, full: bool) -> None:
+    """Add the log tail — or, with full=True, app.log plus every rotated copy."""
     from ts_admin.logging_config import get_log_dir, get_log_file
 
     log_file = get_log_file()
     log_dir = get_log_dir()
 
-    if log_file.exists():
-        zf.write(log_file, arcname="app.log")
+    if full:
+        if log_file.exists():
+            zf.write(log_file, arcname="app.log")
+        for rotated in sorted(log_dir.glob("app.log.*")):
+            zf.write(rotated, arcname=rotated.name)
+        return
 
-    for rotated in sorted(log_dir.glob("app.log.*")):
-        zf.write(rotated, arcname=rotated.name)
+    if not log_file.exists():
+        return
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        zf.writestr("app.log", f"(could not read log file: {exc})")
+        return
+
+    lines = text.splitlines()
+    tail = lines[-_TAIL_LINES:]
+    if len(lines) > len(tail):
+        tail.insert(0, f"(truncated — showing the last {len(tail)} of {len(lines)} lines; use ?full=true for all)")
+    zf.writestr("app.log", "\n".join(tail))
+
+    # app.log rotates at 5 MB, so a failure from minutes ago can already have
+    # moved into app.log.1 — including the newest rotation keeps the traceback
+    # in the bundle across a rotation boundary, which is the whole point of it.
+    rotations = sorted(log_dir.glob("app.log.*"))
+    if rotations:
+        newest = rotations[0]
+        try:
+            prev = newest.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            zf.writestr(newest.name, f"(could not read rotated log: {exc})")
+            return
+        prev_tail = prev[-_TAIL_LINES:]
+        if len(prev) > len(prev_tail):
+            prev_tail.insert(0, f"(truncated — last {len(prev_tail)} of {len(prev)} lines; use ?full=true for all)")
+        zf.writestr(newest.name, "\n".join(prev_tail))
+        if len(rotations) > 1:
+            omitted = ", ".join(p.name for p in rotations[1:])
+            zf.writestr("omitted_logs.txt", f"Not included (use ?full=true to get them):\n{omitted}\n")
