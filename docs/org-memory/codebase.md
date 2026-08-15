@@ -183,6 +183,36 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
 - 2026-08-14 (S6): `api/sync.py:85-138` creates sync jobs **unconditionally — no
   concurrency guard**, so a metadata sync and a dependencies build interleave with
   the cache mid-repopulation. Filed as S24.
+- 2026-08-14 (S6, performance): **`CachedMetadata` has NO composite index** — only
+  single-column `cluster_id`, `org_id`, `ts_guid` (`models/cache/ts_metadata.py:22-25`).
+  A correlated subquery or join keyed on `(cluster_id, org_id, ts_guid)` therefore
+  binds `cluster_id=?` ONLY and post-filters the rest: `EXPLAIN QUERY PLAN` shows
+  `SEARCH ts_metadata USING INDEX ix_ts_metadata_cluster_id (cluster_id=?)`. In a
+  single-cluster install that selects every row — O(outer × metadata). Measured on
+  a 32k-row scratch DB: **50,589 ms vs 72.6 ms** with a `(cluster_id, org_id,
+  ts_guid)` composite (≈697×), plan flipping to a covering index. The app never
+  runs `ANALYZE` and sets no pragmas (`database.py:30-34`), so SQLite's no-stats
+  heuristic picks the least selective index. **Add the composite index before any
+  new `NOT EXISTS`/join against `ts_metadata`** — filed as S25 (blocks S22).
+- 2026-08-14 (S6, performance): **`metadata.create_all` does NOT add a new index to
+  an already-existing table** (verified: a second `create_all` with an added
+  `Index` produced zero new indexes). This is DISTINCT from the known "new column
+  needs a `_REBUILDABLE_SENTINELS` bump" gotcha. Adding an index to a
+  non-rebuildable cache model requires explicit `CREATE INDEX IF NOT EXISTS` DDL
+  in `init_db()`, or existing user DBs silently keep the old plan.
+- 2026-08-14 (S6, performance): **Sync background tasks run ON the event loop, not
+  a threadpool.** `api/sync.py:113` is `background_tasks.add_task(run_sync, ...)`
+  with an `async def` target, which Starlette awaits inline; `_persist_column_map`
+  (`lineage_service.py:701`) is a plain `def` called synchronously. Nothing uses
+  `to_thread`/`run_in_executor`. Any slow blocking DB work in a sync freezes ALL
+  HTTP handling — including the job-status polling the UI uses to render sync
+  progress, and `/health`. The engine also sets no `journal_mode` (rollback
+  journal, not WAL), so a long write transaction holds the write lock. Filed as S26.
+- 2026-08-14 (S6, process): The unit suite is **structurally incapable of catching
+  a quadratic query plan** — the lineage tests run a handful of rows against an
+  in-memory DB and pass in milliseconds. A green bar says nothing about plan
+  quality; use `EXPLAIN QUERY PLAN` on a realistically-sized scratch DB when
+  adding any correlated subquery or join.
 - 2026-08-14 (S6): A `NOT IN`-style purge **cannot be chunked** with `_chunks`
   (`lineage_service.py:129-131`) — chunk A deletes every row whose key lives in
   chunk B. Correlated `NOT EXISTS` is the only correct formulation, and it does

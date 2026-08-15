@@ -52,4 +52,9 @@ One line per cycle on process friction. Format:
   append (bullet deleted this cycle). Also: parallel agents wrote scratch
   `tests/unit/test_zz_*.py` into the shared tree and reddened another agent's
   `ruff check`; QA's fix — run the bar in a detached worktree of the branch HEAD —
-  should become the default.
+  should become the default. Third lesson: **don't discard a slow lens's report
+  once the decision is made.** The performance lens landed after S6 was already
+  rejected and looked moot, but two of its findings (no composite index on
+  `ts_metadata`; sync tasks blocking the event loop) are latent on `main`,
+  independent of the rejected diff — and one of them *blocks the replacement*
+  this cycle recommended. Read late reports; file what outlives the diff.
