@@ -84,6 +84,31 @@ def _drop_outdated_rebuildable_tables() -> None:
         )
 
 
+# Indexes that must exist on tables which may predate them. `create_all` only
+# builds indexes for tables it creates, so an index added to an existing model
+# never lands on an already-installed DB. These are additive and idempotent —
+# unlike the rebuildable-cache sentinels above, no data is dropped.
+#
+# {index_name: (table, [columns])}
+_BACKFILL_INDEXES: dict[str, tuple[str, list[str]]] = {
+    "ix_ts_metadata_cluster_org_guid": ("ts_metadata", ["cluster_id", "org_id", "ts_guid"]),
+}
+
+
+def _create_missing_indexes() -> None:
+    """Add indexes declared on models that `create_all` skipped on existing tables."""
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    existing_tables = set(inspect(engine).get_table_names())
+    with engine.begin() as conn:
+        for index_name, (table, columns) in _BACKFILL_INDEXES.items():
+            if table not in existing_tables:
+                continue  # create_all will build it with the table
+            cols = ", ".join(f'"{c}"' for c in columns)
+            conn.execute(text(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table}" ({cols})'))
+
+
 def init_db() -> None:
     """Create all tables (recreating outdated rebuildable caches). Called once at app startup."""
     # Import all models so SQLModel picks them up
@@ -106,6 +131,7 @@ def init_db() -> None:
 
     _drop_outdated_rebuildable_tables()
     SQLModel.metadata.create_all(get_engine())
+    _create_missing_indexes()
 
 
 def get_session() -> Session:

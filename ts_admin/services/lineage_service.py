@@ -1148,8 +1148,8 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
                     nodes[e.source_guid] = _node_from_edge_endpoint(e.source_guid, e.source_name, e.source_type)
                 _add_edge(e)
 
-        # Enrich owner_name for consumer/root nodes that live in CachedMetadata.
-        _enrich_owner_names(session, cluster_id, org_id, nodes)
+        # Fill owner_name and flag endpoints that no longer exist in the cache.
+        _enrich_from_metadata(session, cluster_id, org_id, nodes)
 
         # ── Impact: transitive downstream closure size (bounded) ──
         downstream_count = _downstream_closure_count(session, cluster_id, org_id, guid)
@@ -1170,11 +1170,26 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
     }
 
 
-def _enrich_owner_names(session, cluster_id: str, org_id: int, nodes: dict[str, dict]) -> None:
-    guids = [g for g, n in nodes.items() if not n.get("owner_name")]
-    if not guids:
+def _enrich_from_metadata(session, cluster_id: str, org_id: int, nodes: dict[str, dict]) -> None:
+    """
+    Fill `owner_name` and resolve `accessible` for every node, from CachedMetadata.
+
+    A node whose GUID has no CachedMetadata row for this (cluster, org) is an
+    edge endpoint that outlived its object — deleted in TS, or never synced. It
+    renders dashed/dimmed via the existing "Inaccessible" legend key rather than
+    being deleted from the cache: `ts_dependency` documents inaccessible stubs as
+    a supported endpoint, and the builder itself writes edges whose target is not
+    yet in the metadata cache, so purging them loses edges no re-run can rebuild.
+
+    CONNECTIONs are exempt — they come from TML connection references and are
+    never metadata rows, so absence says nothing about their accessibility.
+    """
+    checkable = [g for g, n in nodes.items() if n.get("node_type") != "CONNECTION"]
+    if not checkable:
         return
-    for chunk in _chunks(guids, 500):
+    present: set[str] = set()
+    # One set-membership query per chunk, served by ix_ts_metadata_cluster_org_guid.
+    for chunk in _chunks(checkable, 500):
         rows = session.exec(
             select(CachedMetadata.ts_guid, CachedMetadata.owner_name).where(
                 CachedMetadata.cluster_id == cluster_id,
@@ -1183,8 +1198,11 @@ def _enrich_owner_names(session, cluster_id: str, org_id: int, nodes: dict[str, 
             )
         ).all()
         for g, owner in rows:
-            if g in nodes and owner:
+            present.add(g)
+            if g in nodes and owner and not nodes[g].get("owner_name"):
                 nodes[g]["owner_name"] = owner
+    for g in checkable:
+        nodes[g]["accessible"] = g in present
 
 
 def _downstream_closure_count(session, cluster_id: str, org_id: int, guid: str) -> int:
@@ -1326,5 +1344,5 @@ def get_consumers(
             }
             for e in page
         ]
-        _enrich_owner_names(session, cluster_id, org_id, {i["guid"]: i for i in items})
+        _enrich_from_metadata(session, cluster_id, org_id, {i["guid"]: i for i in items})
     return items, total
