@@ -15,13 +15,12 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
 - 2026-07-15 (S1): Frontend `vitest` is now WIRED locally (still not a CI gate —
   the ci.yml step is a deferred protected change). `cd frontend && npm test` =
   `vitest run` (non-watch, CI-safe); `npm run test:watch` for watch mode.
-- 2026-07-15 (S1): KNOWN RED on `main` — `ruff format --check ts_admin/ tests/`
-  fails on 5 PR-#10 files (`ts_admin/services/lineage_service.py`,
-  `tests/unit/test_lineage_{columns,models,service}.py`,
-  `tests/integration/test_relationships_api.py`) under local ruff `0.15.10`. Cause:
-  unbounded `ruff>=0.4.0` pin (`pyproject.toml`) lets a newer formatter reformat
-  them. Tracked as BACKLOG **W2**. Any agent running the full bar sees this red —
-  it is NOT their change; do not reformat these files inside an unrelated PR.
+- 2026-08-14 (S6): **RESOLVED — the 2026-07-15 (S1) "KNOWN RED `ruff format
+  --check`" bullet is deleted.** W2 shipped in PR #11 (ruff pinned
+  `>=0.15.0,<0.16.0`, the 5 PR-#10 files reformatted). Verified on `main` @
+  `ef0172a` under ruff 0.15.10: "90 files already formatted", exit 0. Two agents
+  in this cycle still acted on the stale bullet — if the format gate is red for
+  you now, it IS your change.
 
 ## Security invariants
 
@@ -133,3 +132,65 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   `_persist_column_map` owns `CONNECTS` + `LIVEBOARD`-sourced `USES`. There is no
   purge keyed on **target** GUID, so an edge whose target is deleted while its
   source liveboard is unchanged outlives it (ghost node in the graph) — filed as S6.
+
+## Lineage cache — why a target-keyed purge is unsound (S6, rejected)
+
+- 2026-08-14 (S6): **Do not add a target-keyed delete to the lineage cache.** A
+  full implementation passed the entire verification bar and was still rejected
+  at review; it lives at `improve/S6-lineage-orphan-purge` @ `b8a86de` as a
+  worked example of what not to ship. The rule "target absent from
+  `CachedMetadata` ⇒ deleted in TS" is unsound for four independent reasons below.
+- 2026-08-14 (S6): **The builder deliberately writes edges to targets absent from
+  the metadata cache.** `lineage_service.py:656` —
+  `meta_by_guid.get(model_guid, ("", ""))` emits the edge with `target_name=""`.
+  So a purge on that predicate deletes rows the same code path creates: a model
+  created in TS after the last metadata sync makes two bit-identical
+  `build_column_map` runs produce different databases. Any purge here must not
+  contradict `:656`.
+- 2026-08-14 (S6): **Deleting a lineage row is effectively permanent.**
+  `build_column_map` only re-exports *changed* liveboards, and the only self-heal
+  (`has_lb_edges`, `:540-547`) fires solely when **every** liveboard edge is gone —
+  one surviving edge suppresses it forever. `build_answer_index` has the same
+  shape: its watermark is `max(synced_at)` over the *surviving* ANSWER rows, so a
+  **partial** deletion is permanent while a total one self-heals. Partial loss is
+  worse than total loss in both writers. There is no non-incremental entry point
+  (`api/relationships.py:190` → `run_deep_index` → `incremental=True`).
+- 2026-08-14 (S6): **`_sync_metadata` is delete-all-then-repage-in-spec-order**
+  (`sync_service.py:308-345`): it commits a DELETE-all, then re-inserts page by
+  page committing per page, in `search_metadata`'s spec order — LIVEBOARD, ANSWER,
+  *then* the five logical-table subtypes (`ts_client/client.py:337-345`). An
+  interrupted sync therefore leaves a **non-empty but truncated** cache in the
+  worst possible shape: liveboards + answers present, every model and table
+  missing. **A "cache is non-empty" check is NOT a freshness or completeness
+  guard.** Filed as S23. (`_write_sync_log` does flip the single
+  `(cluster, org, entity_type)` row to `FAILED` on a caught exception — that row,
+  not the row count, is the completeness signal.)
+- 2026-08-14 (S6): `ts_dependencies` **deliberately supports edge endpoints with
+  no `ts_metadata` row** — the model docstring (`models/cache/ts_dependency.py:6-9`)
+  calls them "connections and inaccessible stubs" carrying a denormalized name.
+  Deleting them contradicts the table's design.
+- 2026-08-14 (S6): The `accessible` flag is **plumbed end-to-end but never set
+  `False`** — `_node_from_edge_endpoint(..., accessible: bool = True)`
+  (`lineage_service.py:1169`) is the only producer and no call site passes it;
+  the frontend already renders it (dashed border + 0.6 opacity,
+  `LineageFlow.tsx:56-57`) with a tested "Inaccessible" Legend key. **Nameless
+  ghost nodes are a read-path gap, not a cache-integrity problem** — filed as S22.
+- 2026-08-14 (S6): `CachedMetadata` never contains CONNECTION objects —
+  `search_metadata` syncs exactly 7 specs (`ts_client/client.py:337-345`) while
+  `CONNECTS` edges carry `target_type="CONNECTION"` and often a synthetic
+  `conn::<name>` target (`lineage_service.py:611-614`). Any metadata-existence
+  purge would eat every CONNECTS edge.
+- 2026-08-14 (S6): `api/sync.py:85-138` creates sync jobs **unconditionally — no
+  concurrency guard**, so a metadata sync and a dependencies build interleave with
+  the cache mid-repopulation. Filed as S24.
+- 2026-08-14 (S6): A `NOT IN`-style purge **cannot be chunked** with `_chunks`
+  (`lineage_service.py:129-131`) — chunk A deletes every row whose key lives in
+  chunk B. Correlated `NOT EXISTS` is the only correct formulation, and it does
+  compile correctly correlated on SQLite. (`IN`-style purges chunk fine; the
+  asymmetry is the point.) Pairs with the `not_in(<empty>)` hazard above.
+- 2026-08-14 (S6): Lineage graph nodes are keyed **`guid`**, not `id` —
+  `_node_from_edge_endpoint` returns `{guid, name, node_type, layer, owner_name,
+  accessible}`. In `tests/unit/test_lineage_columns.py`, `_seed(..., lb_modified=now)`
+  does NOT make a liveboard "changed" on a second build (`_changed` compares
+  against the first build's `synced_at`, which is later) — use a **future**
+  timestamp to force re-export.
