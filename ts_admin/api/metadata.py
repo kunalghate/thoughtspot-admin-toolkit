@@ -63,6 +63,11 @@ class MetadataListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    # False when the last metadata sync was interrupted (or never ran): the rows
+    # below are a real but possibly TRUNCATED slice of the org. Browsing stays
+    # allowed — this is a flag, not a refusal — but the UI must not present the
+    # list as complete.
+    cache_authoritative: bool = True
 
 
 class MetadataStatsResponse(BaseModel):
@@ -72,6 +77,7 @@ class MetadataStatsResponse(BaseModel):
     stale_90d: int  # archivable objects last accessed 90+ days ago
     never_accessed: int  # archivable objects with no access date at all
     last_synced: str | None
+    cache_authoritative: bool = True  # see MetadataListResponse
 
 
 class PermissionEntry(BaseModel):
@@ -153,6 +159,7 @@ def list_metadata(
         total=total,
         page=record_offset // page_size + 1,
         page_size=page_size,
+        cache_authoritative=MetadataService.cache_authoritative(cluster_id=cluster_id, org_id=org_id),
     )
 
 

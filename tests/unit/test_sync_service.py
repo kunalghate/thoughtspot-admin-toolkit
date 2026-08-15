@@ -17,6 +17,7 @@ from ts_admin.services import connection_status
 from ts_admin.services.connection_status import ConnectionState
 from ts_admin.ts_client.exceptions import (
     TSAuthenticationError,
+    TSConnectionError,
     TSInsufficientPrivilegesError,
 )
 
@@ -387,6 +388,204 @@ async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_d
     assert seen == {"cluster_id": CLUSTER_ID, "org_id": 0, "finalize": True}
     status, _ = _job_status(job_id)
     assert status == "COMPLETE"
+
+
+# ── Metadata cache completeness (S23) ─────────────────────────────────────────
+#
+# `_sync_metadata` commits a DELETE-all for the org and then re-pages in the
+# spec order LIVEBOARD, ANSWER, <five logical-table subtypes>, committing per
+# page. An interruption therefore leaves the cache NON-EMPTY but TRUNCATED. The
+# completeness signal has to be the sync_log row, written before the delete.
+
+
+def _seed_metadata_success_marker(org_id: int = 0, *, record_count: int = 2) -> None:
+    from datetime import datetime, timezone
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    with get_session() as session:
+        session.add(
+            SyncLog(
+                cluster_id=CLUSTER_ID,
+                org_id=org_id,
+                entity_type="metadata",
+                status="SUCCESS",
+                record_count=record_count,
+                synced_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+
+def _metadata_rows(org_id: int = 0) -> list:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+
+    with get_session() as session:
+        return list(
+            session.exec(
+                select(CachedMetadata).where(
+                    CachedMetadata.cluster_id == CLUSTER_ID,
+                    CachedMetadata.org_id == org_id,
+                )
+            ).all()
+        )
+
+
+def _metadata_marker_status(org_id: int = 0) -> str | None:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    with get_session() as session:
+        row = session.exec(
+            select(SyncLog).where(
+                SyncLog.cluster_id == CLUSTER_ID,
+                SyncLog.org_id == org_id,
+                SyncLog.entity_type == "metadata",
+            )
+        ).first()
+    return row.status if row else None
+
+
+def _meta_obj(guid: str, object_type: str):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        id=guid,
+        name=f"obj-{guid}",
+        type=SimpleNamespace(value=object_type),
+        owner_id="owner-1",
+        author_name="Alice",
+        tags=[],
+        created=now,
+        modified=now,
+        last_accessed=now,
+        view_count=0,
+    )
+
+
+def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = None):
+    """Fake ThoughtSpotClient whose search_metadata yields `pages`, optionally
+    raising after `raise_after` pages to simulate an interrupted crawl."""
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_metadata(self):
+            for idx, page in enumerate(pages):
+                if raise_after is not None and idx >= raise_after:
+                    raise TSConnectionError("upstream dropped the connection mid-crawl")
+                yield page
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+
+@pytest.mark.anyio
+async def test_interrupted_metadata_sync_is_not_reported_as_synced(monkeypatch, in_memory_db, patched_config):
+    """The S23 bug. A metadata sync that dies after page 1 leaves liveboards and
+    answers cached and every model/table missing. Before the write-ahead marker,
+    the previous SUCCESS sync_log row survived untouched, so the whole app —
+    dashboard, transfer preview, share preview — read a truncated cache as
+    authoritative and silently acted on a subset."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _seed_metadata_success_marker()
+    # Page 1 = the two archivable types; page 2 = the logical tables that never arrive.
+    pages = [
+        [_meta_obj("lb-1", "LIVEBOARD"), _meta_obj("ans-1", "ANSWER")],
+        [_meta_obj("model-1", "WORKSHEET")],
+    ]
+    _install_metadata_client(monkeypatch, pages, raise_after=1)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    status, _ = _job_status(job_id)
+    assert status == "FAILED"
+
+    # ANTI-VACUITY: prove we reproduced the *truncated* shape, not a trivially
+    # empty cache. If this is empty the test proves nothing about completeness.
+    rows = _metadata_rows()
+    assert rows, "expected a partially-populated cache — the truncation was not reproduced"
+    assert {r.object_type for r in rows} == {"LIVEBOARD", "ANSWER"}
+    assert not any(r.object_type == "WORKSHEET" for r in rows)
+
+    # The crux: a non-empty cache must NOT read as authoritative.
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+    assert _metadata_marker_status() == "FAILED"
+
+
+@pytest.mark.anyio
+async def test_metadata_marker_is_written_ahead_of_the_delete(monkeypatch, in_memory_db, patched_config):
+    """Ordering test. If the IN_PROGRESS marker were written after the delete
+    block (or after the crawl), a crash before the first insert would leave the
+    cache emptied and the previous SUCCESS marker intact — the worst case, since
+    zero rows would then read as 'this org has no content'."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _seed_metadata_success_marker()
+    # Zero pages ever yielded: the failure happens before ANY insert, so only
+    # write-ahead ordering can have invalidated the marker.
+    _install_metadata_client(monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], raise_after=0)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "FAILED"
+    assert _metadata_rows() == []  # the delete ran, nothing was re-inserted
+    assert _metadata_marker_status() != "SUCCESS"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+
+@pytest.mark.anyio
+async def test_completed_metadata_sync_recertifies_the_cache(monkeypatch, in_memory_db, patched_config):
+    """The recovery half: after a full re-sync the cache is authoritative again,
+    so the refusal guards clear on their own without any manual intervention."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    pages = [
+        [_meta_obj("lb-1", "LIVEBOARD")],
+        [_meta_obj("model-1", "WORKSHEET")],
+    ]
+    _install_metadata_client(monkeypatch, pages, raise_after=1)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+    # Now the same crawl, uninterrupted.
+    _install_metadata_client(monkeypatch, pages)
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert {r.object_type for r in _metadata_rows()} == {"LIVEBOARD", "WORKSHEET"}
+    assert _metadata_marker_status() == "SUCCESS"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is True
 
 
 @pytest.mark.anyio

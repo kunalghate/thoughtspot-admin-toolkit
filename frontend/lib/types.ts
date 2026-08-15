@@ -144,6 +144,14 @@ export interface MetadataStats {
   stale_90d: number;
   never_accessed: number;
   last_synced: string | null;
+  /** False when the last metadata sync was interrupted (or never ran) — the
+   *  cached rows are real but possibly a truncated slice of the org. */
+  cache_authoritative: boolean;
+}
+
+export interface MetadataListResponse extends PaginatedResponse<MetadataObject> {
+  /** See MetadataStats.cache_authoritative. */
+  cache_authoritative: boolean;
 }
 
 export interface PaginatedResponse<T> {

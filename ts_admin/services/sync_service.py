@@ -304,6 +304,19 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     mark_running(job_id, total=0)
     count = 0
 
+    # Write-ahead invalidation. Everything below this line leaves the cache in a
+    # non-empty but TRUNCATED shape if it is interrupted: we delete every row for
+    # the org, then re-page in spec order (liveboards + answers first, models and
+    # tables last), committing per page. A row count cannot distinguish "truncated"
+    # from "healthy", so the sync_log row is the completeness signal — and it must
+    # stop saying SUCCESS *before* the destruction starts, not after it finishes.
+    #
+    # This MUST stay in its own get_session() block, separate from the delete
+    # below: merging them would put both in one transaction, so a crash mid-crawl
+    # could roll the marker back and re-expose the stale SUCCESS. The ordering is
+    # the whole mechanism.
+    _write_sync_log("metadata", org_id, status="IN_PROGRESS")
+
     # Delete all existing rows for this org before re-syncing so stale objects
     # (deleted in TS since last sync) don't linger in the cache.
     from sqlmodel import delete as sql_delete

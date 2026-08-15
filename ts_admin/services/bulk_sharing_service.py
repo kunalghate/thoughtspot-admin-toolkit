@@ -146,7 +146,17 @@ async def preview_share(
     Live call to fetch_permissions per object (cached objects aren't enough —
     permissions are not in the local cache by default for fresh-enough data).
     Concurrency capped to 10 to avoid hammering the cluster.
+
+    Refuses on a non-authoritative metadata cache: `object_guids` are resolved
+    against the cache and any GUID missing from it is silently skipped (`if g in
+    obj_map`), so a truncated cache would quietly drop objects from the preview —
+    and from the share the user then approves.
     """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    # Fail closed before any live ThoughtSpot call.
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     from ts_admin.ts_client import ThoughtSpotClient
 
     with Session(_db.get_engine()) as session:
@@ -307,7 +317,17 @@ async def execute_share(
     """
     Share `object_guids` with `principal_guids` at `mode`. One share_objects
     call per object_type group (the API requires a single type per call).
+
+    Refuses on a non-authoritative metadata cache: objects are grouped by the
+    `object_type` read from the cache, so a truncated cache drops objects from
+    the share entirely — silently, and for NO_ACCESS revokes that means access
+    the admin believes was removed is still live.
     """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    # Fail closed before mark_running and before any live ThoughtSpot call.
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     from ts_admin.services.job_service import (
         is_cancelled,
         mark_complete,

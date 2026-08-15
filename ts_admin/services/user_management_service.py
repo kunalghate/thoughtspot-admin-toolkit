@@ -238,7 +238,15 @@ def preview_transfer(
       - object_types: only these CachedMetadata.object_type values
       - tag_names:    only objects whose tag_names JSON contains every name listed
       - explicit_guids: only these GUIDs (intersected with the owner filter)
+
+    Refuses on a non-authoritative metadata cache: the whole result set IS the
+    cache query, so a truncated cache silently under-reports what the user is
+    about to transfer — objects would be left behind on a departing user.
     """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     with Session(_db.get_engine()) as session:
         q = select(CachedMetadata).where(
             CachedMetadata.cluster_id == cluster_id,
@@ -281,7 +289,17 @@ async def execute_transfer(
     to_user_identifier: str,
     object_ids: list[str],
 ) -> None:
-    """Reassign ownership of `object_ids` to `to_user_identifier`. Chunked at 50."""
+    """Reassign ownership of `object_ids` to `to_user_identifier`. Chunked at 50.
+
+    Refuses on a non-authoritative metadata cache — `object_ids` was produced by
+    `preview_transfer` against that cache, and executing a transfer the preview
+    understated is exactly the failure mode this guard exists for.
+    """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    # Fail closed before mark_running and before any live ThoughtSpot call.
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     from ts_admin.services.job_service import (
         is_cancelled,
         mark_complete,

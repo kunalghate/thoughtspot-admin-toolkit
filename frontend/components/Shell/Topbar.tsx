@@ -232,6 +232,10 @@ function buildSyncLabel(
   }
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
   if (log.status === "FAILED") return "Sync failed";
+  // A stranded IN_PROGRESS marker means a sync started and never finished, so
+  // the cache may be truncated. It still carries a synced_at, so without this
+  // branch it renders as a healthy "Synced Xm ago" — the exact lie this is for.
+  if (log.status === "IN_PROGRESS") return "Sync interrupted";
   if (!log.synced_at) return "Unknown";
 
   const minutes = Math.floor((now - new Date(log.synced_at + "Z").getTime()) / 60_000);
@@ -246,6 +250,7 @@ function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): s
   if (isSyncing) return theme.color.accent;
   if (!log || log.status === "NOT_SYNCED") return theme.color.danger;
   if (log.status === "FAILED") return theme.color.danger;
+  if (log.status === "IN_PROGRESS") return theme.color.warn;
   if (!log.synced_at) return theme.color.textMuted;
 
   const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;

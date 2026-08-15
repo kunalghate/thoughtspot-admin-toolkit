@@ -16,6 +16,7 @@ from ts_admin.ts_client.exceptions import (
     ConfigNotFoundError,
     JobInterruptedError,
     KeyringError,
+    StaleCacheError,
     TMLConflictError,
     TMLDependencyError,
     TMLValidationError,
@@ -111,6 +112,11 @@ _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
         "Add a cluster from Settings → Clusters before running this action.",
     ),
     (ConfigInvalidError, "Cluster configuration is invalid", "Re-enter the cluster details from Settings → Clusters."),
+    (
+        StaleCacheError,
+        "Local cache is incomplete",
+        "A metadata sync was interrupted. Run Settings → Sync → Metadata, then retry.",
+    ),
     (
         JobInterruptedError,
         "Job was interrupted",

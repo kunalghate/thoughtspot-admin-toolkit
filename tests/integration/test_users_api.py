@@ -23,6 +23,7 @@ from ts_admin.models.cache.ts_user import (
     UserOrgMembership,
 )
 from ts_admin.models.cluster import Cluster
+from ts_admin.models.sync_log import SyncLog
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +76,10 @@ def seeded(in_memory_db):
             )
             session.add(UserOrgMembership(cluster_id="c1", ts_guid=guid, org_id=0, synced_at=now))
 
+        # Certify the metadata cache as fully synced — /transfer/preview fails
+        # closed (409 StaleCacheError) without it, because the objects it lists
+        # come straight out of this cache and a truncated cache under-reports.
+        session.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=1))
         session.add(
             CachedMetadata(
                 cluster_id="c1",
@@ -163,6 +168,33 @@ class TestTransferPreview:
         )
         assert r.status_code == 200, r.text
         assert r.json()["total"] == 1
+
+    def test_409_when_the_metadata_cache_is_not_authoritative(self, client, seeded, in_memory_db):
+        """An interrupted metadata sync leaves a non-empty but truncated cache.
+        The preview would then quietly list a subset of what alice owns, and the
+        admin would transfer that subset believing it was everything — so the
+        endpoint refuses instead, with an actionable 409."""
+        from sqlmodel import select
+
+        with Session(in_memory_db) as s:
+            row = s.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).one()
+            row.status = "IN_PROGRESS"
+            s.add(row)
+            s.commit()
+
+        r = client.post(
+            "/api/v1/users/transfer/preview",
+            json={"cluster_id": "c1", "org_id": 0, "from_user_guid": "u-alice"},
+        )
+        assert r.status_code == 409, r.text
+        body = r.json()
+        assert body["error_type"] == "StaleCacheError"
+        assert "Sync" in body["hint"]
+
+        # Anti-vacuity: the cached row is still there — this is a refusal on a
+        # populated cache, not an artefact of an empty one.
+        with Session(in_memory_db) as s:
+            assert s.exec(select(CachedMetadata)).all()
 
 
 class TestTransferExecute:

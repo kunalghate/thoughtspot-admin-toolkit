@@ -14,6 +14,7 @@ from ts_admin.ts_client.exceptions import (
     ConfigNotFoundError,
     JobInterruptedError,
     KeyringError,
+    StaleCacheError,
     TMLConflictError,
     TMLValidationError,
     TSAuthenticationError,
@@ -46,6 +47,7 @@ from ts_admin.ts_client.exceptions import (
         (ConfigNotFoundError("no config"), "No ThoughtSpot cluster", "ConfigNotFoundError"),
         (ConfigInvalidError("bad config"), "configuration is invalid", "ConfigInvalidError"),
         (JobInterruptedError("j1", 5, 10), "interrupted", "JobInterruptedError"),
+        (StaleCacheError("metadata", "IN_PROGRESS"), "cache is incomplete", "StaleCacheError"),
     ],
 )
 def test_format_error_known_exceptions(exc, expected_title_substr, expected_type):
@@ -54,6 +56,14 @@ def test_format_error_known_exceptions(exc, expected_title_substr, expected_type
     assert expected_title_substr.lower() in formatted.title.lower()
     assert formatted.hint  # non-empty
     assert formatted.display.startswith(formatted.title)
+
+
+def test_stale_cache_error_hint_names_the_exact_recovery_step():
+    """The hint has to be actionable: the ONLY fix is re-running the metadata
+    sync, and the user needs to be told where that lives."""
+    formatted = format_error(StaleCacheError("metadata", "IN_PROGRESS"))
+    assert "Sync" in formatted.hint
+    assert "Metadata" in formatted.hint
 
 
 def test_format_error_unknown_falls_back_to_generic():
