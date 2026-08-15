@@ -247,6 +247,12 @@ async def test_build_column_map_is_scoped_to_one_cluster_and_org(monkeypatch, in
     for shadow_cluster, shadow_org in SHADOW_SCOPES:
         _seed_shadow(in_memory_db, cluster_id=shadow_cluster, org_id=shadow_org, synced_at=now + timedelta(days=400))
     before = {s: _shadow_snapshot(in_memory_db, cluster_id=s[0], org_id=s[1]) for s in SHADOW_SCOPES}
+    # Anti-vacuity: with an empty `_seed_shadow` every assertion below holds
+    # trivially (before == after == all-empty), so the fixture must be proven
+    # non-empty BEFORE the build runs. See docs/dev/TESTING.md.
+    assert all(any(before[s].values()) for s in SHADOW_SCOPES), (
+        "shadow fixture wrote nothing — this test guards nothing"
+    )
 
     # c1's liveboard genuinely changed — but strictly BEFORE the shadow's watermark.
     with Session(in_memory_db) as session:
@@ -294,6 +300,17 @@ async def test_self_heal_probe_ignores_other_scopes(monkeypatch, in_memory_db, p
     now = datetime.now(tz=timezone.utc)
     for shadow_cluster, shadow_org in SHADOW_SCOPES:
         _seed_shadow(in_memory_db, cluster_id=shadow_cluster, org_id=shadow_org, synced_at=now)
+    before = {s: _shadow_snapshot(in_memory_db, cluster_id=s[0], org_id=s[1]) for s in SHADOW_SCOPES}
+    # Anti-vacuity: an empty `_seed_shadow` makes this test assert only that a
+    # scope with no edges at all fails to mask c1's loss — which is trivially
+    # true. The shadows must really hold liveboard edges for the probe to be
+    # under test at all.
+    assert all(any(before[s].values()) for s in SHADOW_SCOPES), (
+        "shadow fixture wrote nothing — this test guards nothing"
+    )
+    assert all(any(e[:3] == ("lb-1", "model-1", "USES") for e in before[s]["edges"]) for s in SHADOW_SCOPES), (
+        "shadow fixture seeded no liveboard USES edges — the probe is not under test"
+    )
 
     # Wipe c1/org-0's liveboard edges ONLY — every shadow keeps its own.
     with Session(in_memory_db) as session:
@@ -415,7 +432,9 @@ async def test_null_watermark_alone_forces_a_full_liveboard_recrawl(monkeypatch,
 
     Like the NULL-`modified_at` test below, the kill is VIA CRASH: with the None
     check gone the next disjunct evaluates `datetime > None` and raises
-    `TypeError`. Expect a red ERROR, not a failed assertion.
+    `TypeError`. Expect a red `TypeError`, not an assertion failure — pytest
+    reports it as FAILED (it is raised in the call phase); `ERROR` would mean the
+    fixture itself broke, i.e. the harness misfired.
     """
     from sqlmodel import delete as sql_delete
 
@@ -456,7 +475,9 @@ async def test_liveboard_with_null_modified_at_is_always_recrawled(monkeypatch, 
     kill is VIA CRASH, not via a wrong skip — without that guard the next
     disjunct evaluates `None > datetime(...)` and raises
     `TypeError: '>' not supported between instances of 'NoneType' and 'datetime.datetime'`.
-    A future reader should expect a red ERROR line, not a failed assertion.
+    A future reader should expect a red `TypeError`, not an assertion failure —
+    pytest reports it as FAILED (it is raised in the call phase); `ERROR` would
+    mean the fixture itself broke, i.e. the harness misfired.
     """
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from ts_admin.services import lineage_service
