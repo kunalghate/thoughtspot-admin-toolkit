@@ -37,3 +37,24 @@ One line per cycle on process friction. Format:
   Process gap found outside the diff: PR #14 silently reverted PR #12's merged
   vitest wiring and left `npm test` red on `main` with no gate to notice → M2.
   Merged work is not durable while the suite that proves it isn't in CI.
+- 2026-08-14 S6: **A fully green verification bar certified a permanent-data-loss
+  change.** ruff, 181 unit + 129 integration, tsc, build, vitest all passed, and
+  the acceptance-criteria test provably failed without the fix — yet two reviewer
+  lenses independently reproduced unrecoverable deletion. The gates prove "does
+  what the criteria say"; only the adversarial lenses asked "should the criteria
+  say that". Keep the Review Board non-optional even on a green bar. Second
+  lesson: **a backlog row's acceptance criteria can itself be the bug.** S6's
+  criteria mandated deleting an edge whose source liveboard is unchanged — by
+  definition a row the run cannot rebuild — so no safe implementation exists. The
+  cycle correctly stopped at a records-only PR rather than shipping to criteria.
+  Friction: two agents acted on a stale `codebase.md` "KNOWN RED ruff format"
+  bullet that W2 had fixed in PR #11 — Records must **prune** facts, not only
+  append (bullet deleted this cycle). Also: parallel agents wrote scratch
+  `tests/unit/test_zz_*.py` into the shared tree and reddened another agent's
+  `ruff check`; QA's fix — run the bar in a detached worktree of the branch HEAD —
+  should become the default. Third lesson: **don't discard a slow lens's report
+  once the decision is made.** The performance lens landed after S6 was already
+  rejected and looked moot, but two of its findings (no composite index on
+  `ts_metadata`; sync tasks blocking the event loop) are latent on `main`,
+  independent of the rejected diff — and one of them *blocks the replacement*
+  this cycle recommended. Read late reports; file what outlives the diff.
