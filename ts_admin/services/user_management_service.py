@@ -38,6 +38,7 @@ from ts_admin.models.cache.ts_user import (
     UserOrgMembership,
 )
 from ts_admin.models.user_action_record import UserActionRecord
+from ts_admin.ts_client.exceptions import StaleCacheError
 
 logger = logging.getLogger(__name__)
 
@@ -295,11 +296,6 @@ async def execute_transfer(
     `preview_transfer` against that cache, and executing a transfer the preview
     understated is exactly the failure mode this guard exists for.
     """
-    from ts_admin.services.sync_status import require_authoritative_metadata
-
-    # Fail closed before mark_running and before any live ThoughtSpot call.
-    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
-
     from ts_admin.services.job_service import (
         is_cancelled,
         mark_complete,
@@ -308,7 +304,20 @@ async def execute_transfer(
         mark_running,
         update_progress,
     )
+    from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
+
+    # Defense in depth. The REAL refusal is in `api/users.py::transfer_execute`,
+    # which returns 409 before any Job row exists — this function only ever runs
+    # as a background task, so it is unreachable in practice. It must NOT raise:
+    # an exception escaping a background task is invisible to the caller and
+    # would leave the job QUEUED forever. Mark the job FAILED instead, BEFORE
+    # mark_running and before the UserActionRecord is written.
+    try:
+        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+    except StaleCacheError as exc:
+        mark_failed(job_id, exc)
+        return
 
     total = len(object_ids)
     mark_running(job_id, total)

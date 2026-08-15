@@ -577,6 +577,49 @@ async def test_interrupted_metadata_sync_is_not_reported_as_synced(monkeypatch, 
 
 
 @pytest.mark.anyio
+async def test_write_ahead_marker_preserves_the_last_completed_sync(monkeypatch, in_memory_db, patched_config):
+    """The write-ahead marker says "a sync is running", NOT "a sync just finished
+    with 0 rows". `_write_sync_log` upserts the single (cluster, org, entity)
+    row, so writing synced_at=now / record_count=0 there would destroy the only
+    record of when the cache was last known complete — and the Topbar, which
+    renders off exactly those two fields, would report a healthy in-flight sync
+    as a zero-row sync that landed a moment ago.
+
+    Drop `preserve_progress=True` from the `_sync_metadata` call and this goes
+    red on both assertions.
+    """
+    import asyncio
+    from datetime import datetime, timezone
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    seeded_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed_metadata_success_marker(record_count=42)
+    _install_metadata_client(
+        monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], raise_after=0, exc=asyncio.CancelledError()
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    with pytest.raises(asyncio.CancelledError):
+        await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    with get_session() as session:
+        row = session.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).one()
+
+    assert row.status == "IN_PROGRESS"  # anti-vacuity: the write-ahead write DID happen
+    assert row.record_count == 42, "the last completed sync's record_count was clobbered"
+    assert row.synced_at.replace(tzinfo=timezone.utc) == seeded_at, (
+        "the last completed sync's timestamp was clobbered — the app now has no "
+        "record of when the cache was last known complete"
+    )
+
+
+@pytest.mark.anyio
 async def test_marker_invalidated_before_any_row_is_deleted(monkeypatch, in_memory_db, patched_config):
     """Ordering test — pins the marker AHEAD of the delete, not merely somewhere
     before the crawl.

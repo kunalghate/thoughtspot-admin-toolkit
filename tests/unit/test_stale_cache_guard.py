@@ -9,12 +9,27 @@ act on a subset: transfer would leave objects behind on a departing user, a
 NO_ACCESS revoke would leave access live, and downstream-delete would report "no
 dependents" for a root that has plenty.
 
-All five must RAISE, never warn. Read paths must NOT refuse — browsing a
-partial cache is still useful, it just gets flagged.
+The three read/preview sites RAISE. The two `execute_*` sites are different:
+they only ever run as Starlette background tasks, AFTER the 202 has been sent,
+so a raise there can never become a response and would strand the Job row in
+QUEUED forever. Their real refusal lives in the routers (`api/sharing.py::
+execute`, `api/users.py::transfer_execute`) — see
+`tests/integration/test_stale_cache_endpoints.py`, which is the ONLY place that
+class of bug is visible. The service-level guard is kept as defense in depth and
+marks the job FAILED instead of raising.
 
-Deliberately NOT covered: `archiver_service`. `ARCHIVABLE_TYPES` is exactly
-("LIVEBOARD", "ANSWER") — the first two specs `search_metadata` pages — so its
-input is provably superset-correct under this specific truncation.
+Read paths must NOT refuse — browsing a partial cache is still useful, it just
+gets flagged.
+
+Deliberately NOT covered: `archiver_service`. NOTE: the reason is NOT that its
+input is superset-correct. `search_metadata` paginates WITHIN each spec
+(`ts_client/client.py:~352-375`) and `_sync_metadata` commits per page, so an
+interruption can leave a strict SUBSET of the org's liveboards, not a superset.
+The exemption holds for a different reason: truncation only ever NARROWS the set
+of objects the archiver offers, so it under-archives. Missing a candidate is
+recoverable (re-sync and run again); acting on a set the user believes is
+complete is not. The archiver fails safe by construction; the five sites above
+fail dangerous.
 """
 
 from __future__ import annotations
@@ -177,11 +192,11 @@ async def _call_preview_transfer() -> None:
     svc.preview_transfer(cluster_id=CLUSTER_ID, org_id=ORG_ID, from_user_guid="u-alice")
 
 
-async def _call_execute_transfer() -> None:
+async def _call_execute_transfer(job_id: str) -> None:
     from ts_admin.services import user_management_service as svc
 
     await svc.execute_transfer(
-        _job("transfer_ownership"),
+        job_id,
         CLUSTER_ID,
         ORG_ID,
         "u-alice",
@@ -202,11 +217,11 @@ async def _call_preview_share() -> None:
     )
 
 
-async def _call_execute_share() -> None:
+async def _call_execute_share(job_id: str) -> None:
     from ts_admin.services import bulk_sharing_service as svc
 
     await svc.execute_share(
-        _job("bulk_share"),
+        job_id,
         CLUSTER_ID,
         ORG_ID,
         ["lb-1"],
@@ -215,13 +230,33 @@ async def _call_execute_share() -> None:
     )
 
 
+# Sites reached synchronously from a request, where raising IS the response.
 REFUSAL_SITES = [
     pytest.param(_call_resolve_downstream, id="deleter.resolve_downstream"),
     pytest.param(_call_preview_transfer, id="user_management.preview_transfer"),
-    pytest.param(_call_execute_transfer, id="user_management.execute_transfer"),
     pytest.param(_call_preview_share, id="bulk_sharing.preview_share"),
-    pytest.param(_call_execute_share, id="bulk_sharing.execute_share"),
 ]
+
+# Sites that only ever run as background tasks. `job_type` matters: the record
+# written just past the guard differs per site (ShareRecord vs UserActionRecord).
+JOB_SITES = [
+    pytest.param(_call_execute_share, "bulk_share", id="bulk_sharing.execute_share"),
+    pytest.param(_call_execute_transfer, "user_transfer_ownership", id="user_management.execute_transfer"),
+]
+
+
+def _fail_marker(engine) -> None:
+    with Session(engine) as s:
+        s.add(
+            SyncLog(
+                cluster_id=CLUSTER_ID,
+                org_id=ORG_ID,
+                entity_type="metadata",
+                status="FAILED",
+                error="upstream dropped the connection mid-crawl",
+            )
+        )
+        s.commit()
 
 
 @pytest.mark.parametrize("call", REFUSAL_SITES)
@@ -249,20 +284,96 @@ async def test_proceeds_past_the_guard_once_certified(call, in_memory_db):
 @pytest.mark.anyio
 async def test_a_failed_marker_still_refuses(call, in_memory_db):
     """SUCCESS is the only certification. A FAILED row must not be read as one."""
-    with Session(in_memory_db) as s:
-        s.add(
-            SyncLog(
-                cluster_id=CLUSTER_ID,
-                org_id=ORG_ID,
-                entity_type="metadata",
-                status="FAILED",
-                error="upstream dropped the connection mid-crawl",
-            )
-        )
-        s.commit()
+    _fail_marker(in_memory_db)
     with pytest.raises(StaleCacheError) as excinfo:
         await call()
     assert excinfo.value.status == "FAILED"
+
+
+# ── The two background-task sites ─────────────────────────────────────────────
+#
+# These CANNOT raise: Starlette runs them after the 202 response has been sent,
+# so an escaping exception becomes "Caught handled exception, but response
+# already started" and leaves the Job stuck in QUEUED with error=None until the
+# next server restart reaps it. The guard therefore fails the job instead — and
+# the actual refusal, the one the user sees, is asserted at the endpoint in
+# tests/integration/test_stale_cache_endpoints.py.
+
+
+def _job_row(job_id: str):
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        return session.get(Job, job_id)
+
+
+@pytest.mark.parametrize(("call", "job_type"), JOB_SITES)
+@pytest.mark.anyio
+async def test_background_site_fails_the_job_instead_of_stranding_it(call, job_type):
+    """Never QUEUED-with-no-error. A stranded job is worse than a failed one:
+    the UI polls it forever and the admin has no idea the work never started."""
+    job_id = _job(job_type)
+    await call(job_id)  # must NOT raise — nothing is listening
+
+    job = _job_row(job_id)
+    assert job.status == "FAILED"
+    assert job.error_type == "StaleCacheError"
+    assert job.error  # an actionable message, not None
+
+
+@pytest.mark.parametrize(("call", "job_type"), JOB_SITES)
+@pytest.mark.anyio
+async def test_background_site_guard_runs_before_any_work(call, job_type):
+    """GUARD PLACEMENT, pinned. Moving `require_authoritative_metadata` below
+    `mark_running` (or below the record write) leaves every other assertion in
+    this file green — a reviewer did exactly that and the suite stayed at 368
+    passed. These two assertions are what make placement observable:
+
+      * `total == 0` and `started_at is None` — `mark_running` never ran.
+      * no ShareRecord / UserActionRecord — the audit-trail row that the very
+        next lines write was never created for an operation that never happened.
+    """
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.share_record import ShareRecord
+    from ts_admin.models.user_action_record import UserActionRecord
+
+    job_id = _job(job_type)
+    await call(job_id)
+
+    job = _job_row(job_id)
+    assert job.total == 0, "mark_running() ran — the guard is placed after it"
+    assert job.started_at is None, "mark_running() ran — the guard is placed after it"
+
+    with get_session() as session:
+        assert session.exec(select(ShareRecord)).all() == []
+        assert session.exec(select(UserActionRecord)).all() == []
+
+
+@pytest.mark.parametrize(("call", "job_type"), JOB_SITES)
+@pytest.mark.anyio
+async def test_background_site_proceeds_once_certified(call, job_type, in_memory_db):
+    """Anti-vacuity: with the SUCCESS marker the same call runs to completion,
+    so the two tests above are not passing because everything always fails."""
+    _certify(in_memory_db)
+    job_id = _job(job_type)
+    await call(job_id)
+
+    job = _job_row(job_id)
+    assert job.status != "FAILED"
+    assert job.error_type != "StaleCacheError"
+
+
+@pytest.mark.parametrize(("call", "job_type"), JOB_SITES)
+@pytest.mark.anyio
+async def test_background_site_fails_the_job_on_a_failed_marker(call, job_type, in_memory_db):
+    """SUCCESS is the only certification — a FAILED row must not read as one."""
+    _fail_marker(in_memory_db)
+    job_id = _job(job_type)
+    await call(job_id)
+    assert _job_row(job_id).error_type == "StaleCacheError"
 
 
 # ── The read path must NOT refuse ─────────────────────────────────────────────

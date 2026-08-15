@@ -66,6 +66,19 @@ def test_stale_cache_error_hint_names_the_exact_recovery_step():
     assert "Metadata" in formatted.hint
 
 
+@pytest.mark.parametrize("status", ["NOT_SYNCED", "IN_PROGRESS", "FAILED"])
+def test_stale_cache_error_hint_is_honest_in_every_state(status):
+    """`format_error` maps by exception CLASS, so one hint has to be true for all
+    three ways the cache ends up uncertified. It must not assert "a sync was
+    interrupted" — that is false on a fresh install (NOT_SYNCED), false while a
+    healthy sync is running (IN_PROGRESS), and false for a sync that ran to a
+    clean upstream error (FAILED). The observed status rides on the exception
+    message instead."""
+    formatted = format_error(StaleCacheError("metadata", status))
+    assert "interrupted" not in formatted.hint.lower()
+    assert "was interrupted" not in formatted.display.lower()
+
+
 def test_format_error_unknown_falls_back_to_generic():
     formatted = format_error(ValueError("totally unexpected"))
     assert formatted.error_type == "ValueError"

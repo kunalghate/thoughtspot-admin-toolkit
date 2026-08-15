@@ -128,7 +128,9 @@ class DashboardService:
             ]
 
             activity = DashboardService._recent_activity(session, cluster_id=cluster_id, org_id=org_id)
-            synced, deltas, synced_at = DashboardService._sync_state(session, cluster_id=cluster_id, org_id=org_id)
+            synced, deltas, synced_at, syncing = DashboardService._sync_state(
+                session, cluster_id=cluster_id, org_id=org_id
+            )
             attention = DashboardService._attention(session, cluster_id=cluster_id, org_id=org_id, synced=synced)
 
         return {
@@ -144,6 +146,7 @@ class DashboardService:
             },
             "synced": synced,
             "synced_at": synced_at,
+            "syncing": syncing,
             "deltas": deltas,
             "attention": attention,
             "recent_jobs": recent_jobs,
@@ -155,10 +158,10 @@ class DashboardService:
     @staticmethod
     def _sync_state(
         session: Session, *, cluster_id: str, org_id: int
-    ) -> tuple[dict[str, bool], dict[str, int], dict[str, datetime | None]]:
+    ) -> tuple[dict[str, bool], dict[str, int], dict[str, datetime | None], dict[str, bool]]:
         """
-        Per-entity "has this ever synced?" flags, record-count deltas, and the
-        timestamp of the last successful sync.
+        Per-entity "has this ever synced?" flags, record-count deltas, the
+        timestamp of the last successful sync, and "is a sync running now?".
 
         The flags exist so the UI can tell a real zero apart from a number we
         simply do not have yet — rendering "0 tags" for a cluster that has
@@ -172,10 +175,19 @@ class DashboardService:
         (ADR-005), so "when was this cluster last synced?" has no single answer.
         It reports the last SUCCESS only — a failed attempt does not make the
         cached data any newer than the successful sync before it.
+
+        `in_flight` exists because `synced` alone cannot tell "never synced"
+        apart from "syncing right now". `_sync_metadata` writes an IN_PROGRESS
+        marker before it deletes the cache, and `_write_sync_log` UPSERTS the
+        single (cluster, org, entity) row — so for the whole duration of an
+        ordinary, healthy sync there is no SUCCESS row and `synced[entity]` is
+        False. Without this flag the dashboard tells the admin their content was
+        "Never synced" mid-sync and invites a second concurrent one.
         """
         synced: dict[str, bool] = {}
         deltas: dict[str, int] = {}
         synced_at: dict[str, datetime | None] = {}
+        in_flight: dict[str, bool] = {}
         for entity in _TRACKED_ENTITIES:
             recent = session.exec(
                 select(SyncLog)
@@ -191,7 +203,18 @@ class DashboardService:
             synced[entity] = bool(recent)
             deltas[entity] = recent[0].record_count - recent[1].record_count if len(recent) == 2 else 0
             synced_at[entity] = _naive(recent[0].synced_at) if recent else None
-        return synced, deltas, synced_at
+
+            newest = session.exec(
+                select(SyncLog)
+                .where(
+                    SyncLog.cluster_id == cluster_id,
+                    SyncLog.org_id == org_id,
+                    SyncLog.entity_type == entity,
+                )
+                .order_by(col(SyncLog.synced_at).desc())
+            ).first()
+            in_flight[entity] = newest is not None and newest.status == "IN_PROGRESS"
+        return synced, deltas, synced_at, in_flight
 
     @staticmethod
     def _attention(session: Session, *, cluster_id: str, org_id: int, synced: dict[str, bool]) -> dict[str, int]:

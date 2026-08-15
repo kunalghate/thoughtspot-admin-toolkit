@@ -190,6 +190,12 @@ function DashboardContent() {
 
   const { counts, synced, synced_at, deltas, attention } = data;
   const neverSynced = !synced.metadata && !synced.users;
+  // Server-reported in-flight syncs, OR-ed with the local optimistic set. The
+  // local set is per-mount React state, so it is empty after a reload/new tab
+  // and cannot be the only source — a healthy multi-minute sync would otherwise
+  // render as "Never synced — sync now".
+  const inFlight = data.syncing ?? {};
+  const isSyncing = (entity: "users" | "groups" | "metadata") => syncing.has(entity) || inFlight[entity] === true;
 
   return (
     <div style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20, maxWidth: 1320 }}>
@@ -218,15 +224,15 @@ function DashboardContent() {
       <div className="dash-tiles">
         <StatTile icon={Users} label="Users" value={counts.users} delta={deltas.users}
                   synced={synced.users} href="/users"
-                  onSync={() => triggerSync("users")} syncing={syncing.has("users")} />
+                  onSync={() => triggerSync("users")} syncing={isSyncing("users")} />
         <StatTile icon={UsersRound} label="Groups" value={counts.groups} delta={deltas.groups}
                   synced={synced.groups} href="/groups"
-                  onSync={() => triggerSync("groups")} syncing={syncing.has("groups")} />
+                  onSync={() => triggerSync("groups")} syncing={isSyncing("groups")} />
         <StatTile icon={FolderSearch} label="Content objects" value={counts.objects_total} delta={deltas.metadata}
                   synced={synced.metadata} href="/metadata"
-                  onSync={() => triggerSync("metadata")} syncing={syncing.has("metadata")} />
+                  onSync={() => triggerSync("metadata")} syncing={isSyncing("metadata")} />
         <StatTile icon={Archive} label="Archivable content" value={counts.archivable_total}
-                  synced={synced.metadata} href="/archiver"
+                  synced={synced.metadata} href="/archiver" syncing={isSyncing("metadata")}
                   hint="Liveboards + answers — the only types the Archiver can act on" />
       </div>
 
@@ -404,6 +410,8 @@ function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, o
   synced?: boolean;
   hint?: string;
   onSync?: () => void;
+  /** true → a sync is in flight (locally triggered OR reported by the server),
+   *  so the unknown value is temporary and must not read as "never synced". */
   syncing?: boolean;
 }) {
   const known = synced !== false;
@@ -459,8 +467,11 @@ function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, o
               <RefreshCw size={10} /> {syncing ? "Syncing…" : "Never synced — sync now"}
             </button>
           ) : (
+            // `syncing` matters on this branch too: a tile with no Sync action
+            // (Archivable) still has to say "syncing…" rather than the flatly
+            // false "never synced" while a sync is in flight.
             <span style={{ fontSize: 11.5, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
-              never synced
+              {syncing ? "syncing…" : "never synced"}
             </span>
           )
         )}

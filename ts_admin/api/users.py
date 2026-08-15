@@ -353,6 +353,15 @@ async def transfer_execute(
 
     cluster_id = _resolve_cluster_id(body.cluster_id)
 
+    # Fail closed on a truncated metadata cache, HERE and not in the service.
+    # `execute_transfer` only ever runs as a Starlette background task, i.e.
+    # AFTER the 202 + job_id is on the wire — a raise there cannot become a
+    # response and would strand the Job row in QUEUED forever. Refusing before
+    # create_job means the caller gets a real 409 and no job is created at all.
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=body.org_id)
+
     from ts_admin.services.job_service import create_job
 
     job_id = create_job(
