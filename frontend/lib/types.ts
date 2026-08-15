@@ -558,6 +558,8 @@ export interface DashboardSummary {
   counts: DashboardCounts;
   /** Per-entity "has this ever synced?" — tells a real zero from a missing number. */
   synced: Partial<Record<EntityType, boolean>>;
+  /** When each entity last synced successfully (null = never). */
+  synced_at: Partial<Record<EntityType, string | null>>;
   /** Change in record count since the previous successful sync of each entity. */
   deltas: Partial<Record<EntityType, number>>;
   attention: DashboardAttention;

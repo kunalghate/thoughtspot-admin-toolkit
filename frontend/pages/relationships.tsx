@@ -7,7 +7,7 @@ export default function RelationshipsPage() {
   // Bumped when the topbar "Sync" (dependencies) finishes so the view reloads.
   const [syncVersion, setSyncVersion] = useState(0);
   return (
-    <AppShell pageTitle="Relationships" entityType="dependencies" onSyncComplete={() => setSyncVersion((v) => v + 1)}>
+    <AppShell pageTitle="Lineage" entityType="dependencies" onSyncComplete={() => setSyncVersion((v) => v + 1)}>
       <RelationshipsContent syncVersion={syncVersion} />
     </AppShell>
   );

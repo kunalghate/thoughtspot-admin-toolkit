@@ -60,6 +60,20 @@ const JOB_LABELS: Record<string, string> = {
 // or the "never synced" nudge on a tile).
 const SYNCABLE_ENTITIES: EntityType[] = ["metadata", "users", "groups", "tags", "dependencies"];
 
+// Cache-freshness row, in the order an admin reads the nav: identity first,
+// then content, then the derived graph. "dependencies" is the API/wire name for
+// what the UI calls Lineage. Tags are omitted — the toolkit has no tag page to
+// send anyone to, so a tag clock here would be freshness nobody acts on.
+const FRESHNESS_ENTITIES: { entity: EntityType; label: string }[] = [
+  { entity: "users", label: "Users" },
+  { entity: "groups", label: "Groups" },
+  { entity: "metadata", label: "Metadata" },
+  { entity: "dependencies", label: "Lineage" },
+];
+
+/** Older than a day and the cache is worth a second look, not a hard alarm. */
+const STALE_AFTER_MIN = 24 * 60;
+
 /** While a job is in flight, re-read the summary this often. */
 const LIVE_POLL_MS = 3_000;
 /** Otherwise, refresh quietly so relative timestamps stay honest. */
@@ -71,11 +85,26 @@ function retryableEntity(jobType: string): EntityType | null {
   return SYNCABLE_ENTITIES.includes(entity as EntityType) ? (entity as EntityType) : null;
 }
 
+/** Backend sends naive-UTC ISO; parse it as UTC rather than local time. */
+function parseUtc(iso: string): Date {
+  return new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z");
+}
+
+/** Whole minutes since `iso`, or null when it never happened. */
+function ageMinutes(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  return Math.floor((Date.now() - parseUtc(iso).getTime()) / 60_000);
+}
+
+/** Exact local timestamp, for the tooltip behind a relative one. */
+function absoluteTime(iso: string): string {
+  return parseUtc(iso).toLocaleString();
+}
+
 /** Relative time with minute/hour granularity; backend sends naive-UTC ISO. */
 function timeAgo(iso: string | null | undefined): string {
-  if (!iso) return "never";
-  const t = new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z").getTime();
-  const mins = Math.floor((Date.now() - t) / 60_000);
+  const mins = ageMinutes(iso);
+  if (mins === null) return "never";
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
@@ -159,7 +188,7 @@ function DashboardContent() {
   if (error && !data) return <PageError message={error} />;
   if (!data) return <DashboardSkeleton />;
 
-  const { counts, synced, deltas, attention } = data;
+  const { counts, synced, synced_at, deltas, attention } = data;
   const neverSynced = !synced.metadata && !synced.users;
 
   return (
@@ -200,6 +229,8 @@ function DashboardContent() {
                   synced={synced.metadata} href="/archiver"
                   hint="Liveboards + answers — the only types the Archiver can act on" />
       </div>
+
+      <CacheFreshnessCard syncedAt={synced_at} onSync={triggerSync} syncing={syncing} />
 
       {/* Left = what's on the cluster, right = what the cluster has been doing.
           Both cards are row lists of similar length, so the two columns end on
@@ -526,6 +557,74 @@ function ContentByTypeCard({ byType, total }: { byType: Record<string, number>; 
           ))}
         </div>
       )}
+    </Card>
+  );
+}
+
+/**
+ * Per-entity cache age. Syncs are lazy and independent (ADR-005), so there is
+ * no single "last synced" for a cluster — five separate clocks is the honest
+ * shape, and it also tells the admin *which* entity to re-sync.
+ *
+ * The dot is the fast read (fresh / stale / never); the exact timestamp is in
+ * the tooltip for when "3d ago" isn't precise enough.
+ */
+function CacheFreshnessCard({ syncedAt, onSync, syncing }: {
+  syncedAt: DashboardSummary["synced_at"];
+  onSync: (entity: EntityType) => void;
+  syncing: Set<string>;
+}) {
+  return (
+    <Card title="Cache freshness" meta="each entity syncs on its own — nothing forces a full sync">
+      <div className="dash-fresh">
+        {FRESHNESS_ENTITIES.map(({ entity, label }) => {
+          const iso = syncedAt[entity] ?? null;
+          const age = ageMinutes(iso);
+          const tone =
+            age === null ? { dot: theme.color.textMuted, fg: theme.color.textMuted } :
+            age > STALE_AFTER_MIN ? { dot: theme.color.warn, fg: theme.color.warn } :
+            { dot: theme.color.success, fg: theme.color.textPrimary };
+
+          return (
+            <div key={entity} className="dash-fresh-cell">
+              <span style={{
+                fontSize: 10.5, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase",
+                color: theme.color.textMuted, fontFamily: theme.font.sans,
+              }}>
+                {label}
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: tone.dot, flexShrink: 0 }} />
+                <span
+                  title={iso ? absoluteTime(iso) : "never synced"}
+                  style={{
+                    fontSize: 12.5, color: tone.fg, fontFamily: theme.font.sans,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}
+                >
+                  {timeAgo(iso)}
+                </span>
+              </div>
+              <button
+                className="sync"
+                onClick={() => onSync(entity)}
+                disabled={syncing.has(entity)}
+                style={{
+                  alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: 0, border: "none", background: "none",
+                  cursor: syncing.has(entity) ? "default" : "pointer",
+                  fontSize: 11, fontFamily: theme.font.sans, fontWeight: 500, color: theme.color.accent2,
+                  // Hover-only by default, but a never-synced or in-flight
+                  // entity keeps its action on screen — that one is a nudge.
+                  ...(age === null || syncing.has(entity) ? { opacity: 1 } : null),
+                }}
+              >
+                <RefreshCw size={10} /> {syncing.has(entity) ? "Syncing…" : "Sync now"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </Card>
   );
 }

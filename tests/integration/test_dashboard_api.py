@@ -296,6 +296,80 @@ class TestNeverSyncedVersusZero:
         assert body["deltas"]["users"] == 4
 
 
+class TestCacheFreshness:
+    def test_never_synced_entity_reports_no_timestamp(self, client, seeded):
+        body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
+        assert body["synced_at"]["tags"] is None
+        assert body["synced_at"]["dependencies"] is None
+
+    def test_reports_the_most_recent_successful_sync_per_entity(self, client, seeded, in_memory_db):
+        now = datetime.now(tz=timezone.utc)
+        older, latest = now - timedelta(hours=5), now - timedelta(minutes=12)
+        with Session(in_memory_db) as session:
+            for synced_at in (older, latest):
+                session.add(
+                    SyncLog(
+                        cluster_id="c1",
+                        org_id=0,
+                        entity_type="users",
+                        record_count=360,
+                        status="SUCCESS",
+                        synced_at=synced_at,
+                    )
+                )
+            # A different entity keeps its own clock — syncs are independent.
+            session.add(
+                SyncLog(
+                    cluster_id="c1",
+                    org_id=0,
+                    entity_type="groups",
+                    record_count=234,
+                    status="SUCCESS",
+                    synced_at=older,
+                )
+            )
+            session.commit()
+        body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
+        assert body["synced_at"]["users"].startswith(latest.replace(tzinfo=None).isoformat()[:16])
+        assert body["synced_at"]["groups"].startswith(older.replace(tzinfo=None).isoformat()[:16])
+
+    def test_a_failed_sync_does_not_advance_the_freshness_clock(self, client, seeded, in_memory_db):
+        """A failed attempt leaves the cache exactly as old as it already was."""
+        now = datetime.now(tz=timezone.utc)
+        success, failure = now - timedelta(hours=3), now
+        with Session(in_memory_db) as session:
+            session.add(
+                SyncLog(
+                    cluster_id="c1",
+                    org_id=0,
+                    entity_type="metadata",
+                    record_count=2650,
+                    status="SUCCESS",
+                    synced_at=success,
+                )
+            )
+            session.add(
+                SyncLog(
+                    cluster_id="c1",
+                    org_id=0,
+                    entity_type="metadata",
+                    record_count=0,
+                    status="FAILED",
+                    synced_at=failure,
+                )
+            )
+            session.commit()
+        body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
+        assert body["synced_at"]["metadata"].startswith(success.replace(tzinfo=None).isoformat()[:16])
+
+    def test_freshness_is_scoped_to_the_cluster(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(SyncLog(cluster_id="c2", org_id=0, entity_type="tags", record_count=9, status="SUCCESS"))
+            session.commit()
+        body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
+        assert body["synced_at"]["tags"] is None
+
+
 class TestAttentionSignals:
     @pytest.fixture
     def synced_users_and_groups(self, in_memory_db):
