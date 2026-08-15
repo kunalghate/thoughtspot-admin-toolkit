@@ -47,6 +47,15 @@ def get_engine():
 #
 # NOTE: any new column on a rebuildable cache table must bump its sentinel here,
 # or create_all silently skips it and queries fail with "no such column".
+#
+# NOTE: `ts_column_lineage` is deliberately the only entry. Liveboard USES edges
+# live in `ts_dependencies`, which is NOT dropped here, so the paired sync_log
+# delete must NOT clear the internal `dependencies_liveboard_tml` marker
+# (lineage_service.LIVEBOARD_TIER_ENTITY) — those edges survive the drop and
+# clearing the marker would force a needless full TML re-crawl. If
+# `ts_dependencies` is ever added to this dict, the paired sync_log delete MUST
+# also clear `dependencies_liveboard_tml`, or the liveboard tier will never
+# re-crawl the edges that were just dropped.
 _REBUILDABLE_SENTINELS: dict[str, tuple[str, str]] = {
     "ts_column_lineage": ("is_formula", "dependencies"),
 }

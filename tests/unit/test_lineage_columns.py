@@ -166,8 +166,11 @@ def patched_config(monkeypatch):
 
 
 class _FakeTMLClient:
-    def __init__(self):
+    def __init__(self, *, inaccessible: tuple[str, ...] = ()):
         self.exported: list[str] = []
+        # GUIDs the caller lacks permission on: TS returns the item with an empty
+        # edoc (the real 403 stub shape), which _load_edoc reads as None.
+        self.inaccessible = inaccessible
 
     async def __aenter__(self):
         return self
@@ -183,6 +186,9 @@ class _FakeTMLClient:
         by_guid = {"table-1": TABLE_EDOC, "model-1": MODEL_EDOC, "lb-1": LIVEBOARD_EDOC, "answer-1": ANSWER_EDOC}
         out = []
         for guid in object_ids:
+            if guid in self.inaccessible:
+                out.append({"info": {"id": guid}, "edoc": ""})
+                continue
             edoc = by_guid.get(guid)
             if edoc:
                 out.append({"info": {"id": guid, "name": edoc.get("guid")}, "edoc": edoc})
@@ -317,14 +323,72 @@ async def test_object_graph_rebuild_preserves_phase2_edges(monkeypatch, in_memor
     assert any(e.source_guid == "model-1" and e.target_guid == "table-1" for e in edges)
 
 
+async def test_liveboard_tier_marker_stops_repeat_crawl_when_no_edges(monkeypatch, in_memory_db, patched_config):
+    """
+    A liveboard the admin can't read produces NO edges, forever. The tier marker
+    must still record "crawled", or every subsequent build re-exports it.
+    """
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.sync_log import SyncLog
+    from ts_admin.services import lineage_service
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    fake = _FakeTMLClient(inaccessible=("lb-1",))
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported  # first build crawls it
+    with Session(in_memory_db) as session:
+        lb_edges = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
+    assert lb_edges == []  # zero edges on record — the old has_lb_edges heal would loop
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" not in fake.exported  # at most one crawl per org
+    assert "model-1" in fake.exported and "table-1" in fake.exported  # tier separation preserved
+
+    with Session(in_memory_db) as session:
+        log = session.exec(
+            select(SyncLog).where(
+                SyncLog.cluster_id == CLUSTER_ID,
+                SyncLog.org_id == 0,
+                SyncLog.entity_type == "dependencies_liveboard_tml",
+            )
+        ).one()
+    assert log.status == "SUCCESS"
+
+
+async def test_liveboard_tier_marker_survives_zero_lineage_rows(monkeypatch, in_memory_db, patched_config):
+    """The marker is the liveboard tier's OWN watermark — not borrowed from column lineage."""
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.services import lineage_service
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    fake = _FakeTMLClient(inaccessible=("table-1", "model-1"))
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported
+    with Session(in_memory_db) as session:
+        assert session.exec(select(CachedColumnLineage)).all() == []  # no borrowed watermark available
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" not in fake.exported
+
+
 async def test_column_map_self_heals_missing_liveboard_edges(monkeypatch, in_memory_db, patched_config):
     """
     Regression: a DB whose liveboard edges were wiped (pre-fix object-tier
-    build) recovers on the next column build even when no liveboard changed.
+    build) recovers on the next column build even when no liveboard changed —
+    and then stops, rather than re-crawling on every build after that.
     """
     from sqlmodel import delete as sql_delete
 
     from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.sync_log import SyncLog
     from ts_admin.services import lineage_service
 
     old = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -334,7 +398,9 @@ async def test_column_map_self_heals_missing_liveboard_edges(monkeypatch, in_mem
 
     await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
     with Session(in_memory_db) as session:
+        # A pre-marker legacy install: edges wiped AND no marker, by definition.
         session.exec(sql_delete(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD"))
+        session.exec(sql_delete(SyncLog).where(SyncLog.entity_type == "dependencies_liveboard_tml"))
         session.commit()
 
     fake.exported.clear()
@@ -343,6 +409,44 @@ async def test_column_map_self_heals_missing_liveboard_edges(monkeypatch, in_mem
     with Session(in_memory_db) as session:
         lb_uses = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
     assert lb_uses and lb_uses[0].target_guid == "model-1"
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" not in fake.exported  # healed once, then quiet
+
+
+async def test_liveboard_tier_marker_not_written_when_build_fails(monkeypatch, in_memory_db, patched_config):
+    """Fail-open ordering: a raise mid-build must leave the marker unwritten so the next build re-heals."""
+    from ts_admin.models.sync_log import SyncLog
+    from ts_admin.services import lineage_service
+
+    class _ExplodingTMLClient(_FakeTMLClient):
+        def __init__(self):
+            super().__init__()
+            self.raised = False
+
+        async def tml_export(self, *, object_ids, edoc_format=None):
+            if "lb-1" in object_ids and not self.raised:
+                self.raised = True
+                raise RuntimeError("TML export blew up")
+            return await super().tml_export(object_ids=object_ids, edoc_format=edoc_format)
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    boom = _ExplodingTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: boom)
+
+    with pytest.raises(RuntimeError):
+        await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        markers = session.exec(select(SyncLog).where(SyncLog.entity_type == "dependencies_liveboard_tml")).all()
+    assert markers == []
+
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported
 
 
 async def test_column_map_purges_deleted_liveboards(monkeypatch, in_memory_db, patched_config):

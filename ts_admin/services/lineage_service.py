@@ -210,7 +210,7 @@ async def build_object_graph(*, cluster_id: str, org_id: int, job_id: str, final
             session.commit()
         session.commit()
 
-    _write_dependencies_sync_log(cluster_id, org_id, record_count=len(edges))
+    _upsert_sync_log(cluster_id, org_id, "dependencies", record_count=len(edges))
     if finalize:
         mark_complete(job_id, {"entity_type": "dependencies", "record_count": len(edges)})
     logger.info("Built %d object-graph edges for cluster=%s org=%s", len(edges), cluster_id, org_id)
@@ -301,8 +301,26 @@ def _edges_from_dependents(
     return edges
 
 
-def _write_dependencies_sync_log(cluster_id: str, org_id: int, *, record_count: int) -> None:
-    """Upsert the 'dependencies' SyncLog row (mirrors sync_service._write_sync_log)."""
+# Internal SyncLog entity_type: one row per (cluster_id, org_id) recording that the
+# Phase 2 LIVEBOARD TML tier has completed at least once. It is BOTH that
+# "built at least once" flag AND the liveboard tier's own incremental watermark —
+# absence means "never built", which forces exactly one full liveboard crawl.
+#
+# It is deliberately absent from api/sync.py::VALID_ENTITIES and
+# dashboard_service._TRACKED_ENTITIES (both allowlists): this marker is internal
+# bookkeeping, not a user-facing sync entity. Do NOT add it to either.
+LIVEBOARD_TIER_ENTITY = "dependencies_liveboard_tml"
+
+
+def _upsert_sync_log(
+    cluster_id: str,
+    org_id: int,
+    entity_type: str,
+    *,
+    record_count: int,
+    synced_at: datetime | None = None,
+) -> None:
+    """Upsert one SyncLog row for (cluster, org, entity_type) (mirrors sync_service._write_sync_log)."""
     from ts_admin.models.sync_log import SyncLog
 
     with get_session() as session:
@@ -310,11 +328,11 @@ def _write_dependencies_sync_log(cluster_id: str, org_id: int, *, record_count: 
             select(SyncLog).where(
                 SyncLog.cluster_id == cluster_id,
                 SyncLog.org_id == org_id,
-                SyncLog.entity_type == "dependencies",
+                SyncLog.entity_type == entity_type,
             )
         ).first()
         if existing:
-            existing.synced_at = datetime.now(timezone.utc)
+            existing.synced_at = synced_at or datetime.now(timezone.utc)
             existing.record_count = record_count
             existing.status = "SUCCESS"
             existing.error = None
@@ -324,9 +342,10 @@ def _write_dependencies_sync_log(cluster_id: str, org_id: int, *, record_count: 
                 SyncLog(
                     cluster_id=cluster_id,
                     org_id=org_id,
-                    entity_type="dependencies",
+                    entity_type=entity_type,
                     record_count=record_count,
                     status="SUCCESS",
+                    synced_at=synced_at or datetime.now(timezone.utc),
                 )
             )
         session.commit()
@@ -511,15 +530,19 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
 
     Logical tables are always fully exported (they're the minority set and a
     model's column resolution needs its source tables present in the same batch).
-    Liveboards are exported incrementally: unchanged ones (modified_at ≤ the last
-    column build) keep their existing usage rows + edges. Returns rows written.
+    Liveboards are exported incrementally against the liveboard tier's OWN
+    watermark — the LIVEBOARD_TIER_ENTITY SyncLog marker. Unchanged ones
+    (modified_at ≤ that marker) keep their existing usage rows + edges. Fail-open
+    rule: no SUCCESS marker means the tier has never completed for this
+    (cluster, org), so every liveboard is re-crawled exactly once and the marker
+    is written after the persist commit. Returns rows written.
     """
-    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.models.sync_log import SyncLog
     from ts_admin.services.archiver_service import _get_cluster
     from ts_admin.ts_client import ThoughtSpotClient
 
-    # 1. Universe + last-build timestamp (for liveboard incrementality).
+    # 1. Universe + the liveboard tier's own last-build marker (incrementality).
     with get_session() as session:
         meta_rows = session.exec(
             select(
@@ -532,40 +555,35 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                 CachedMetadata.org_id == org_id,
             )
         ).all()
-        last_built = session.exec(
-            select(func.max(CachedColumnLineage.synced_at)).where(
-                CachedColumnLineage.cluster_id == cluster_id,
-                CachedColumnLineage.org_id == org_id,
+        # The liveboard tier's own watermark. Anything not SUCCESS reads as
+        # "never built" — the fail-open belt on a marker left behind by a
+        # failed run.
+        lb_last_built = session.exec(
+            select(SyncLog.synced_at).where(
+                SyncLog.cluster_id == cluster_id,
+                SyncLog.org_id == org_id,
+                SyncLog.entity_type == LIVEBOARD_TIER_ENTITY,
+                SyncLog.status == "SUCCESS",
             )
         ).first()
-        has_lb_edges = (
-            session.exec(
-                select(CachedDependency.id).where(
-                    CachedDependency.cluster_id == cluster_id,
-                    CachedDependency.org_id == org_id,
-                    CachedDependency.relation == "USES",
-                    CachedDependency.source_type == "LIVEBOARD",
-                )
-            ).first()
-            is not None
-        )
 
     meta_by_guid = {r[0]: (r[1], r[2]) for r in meta_rows}
     table_guids = [r[0] for r in meta_rows if (r[2] or "").upper() in LOGICAL_TABLE_TYPES]
     all_liveboards = [(r[0], r[3]) for r in meta_rows if _node_type(r[2]) == "LIVEBOARD"]
     all_lb_guids = [guid for guid, _ in all_liveboards]
 
-    def _changed(modified_at) -> bool:
-        return not incremental or last_built is None or modified_at is None or modified_at > last_built
+    def _lb_changed(modified_at) -> bool:
+        # SQLite hands back naive datetimes for both sides — compare as-is.
+        return not incremental or lb_last_built is None or modified_at is None or modified_at > lb_last_built
 
-    # Self-heal: with zero liveboard edges on record the incremental skip has
-    # nothing to preserve (e.g. a pre-fix object-tier build wiped them) —
-    # re-export every liveboard so the edges come back.
-    if not has_lb_edges:
-        lb_guids = list(all_lb_guids)
-    else:
-        lb_guids = [guid for guid, modified_at in all_liveboards if _changed(modified_at)]
+    # Marker absent ⇒ every liveboard reads as "changed" ⇒ exactly one heal crawl,
+    # after which the marker suppresses it. This is the whole self-heal: there is
+    # no separate "are there any liveboard edges?" probe, because a partial edge
+    # loss would defeat it.
+    lb_guids = [guid for guid, modified_at in all_liveboards if _lb_changed(modified_at)]
 
+    # Nothing to build ⇒ return before the marker write, so a merely-unsynced
+    # metadata cache never records the liveboard tier as built.
     if not table_guids and not lb_guids:
         return 0
 
@@ -692,6 +710,10 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
         lb_uses_edges=lb_uses_edges,
         usage_rows=usage_rows,
     )
+    # Marker LAST — after _persist_column_map's final commit, and with no
+    # try/except: any raise above propagates and leaves the marker at its previous
+    # value, so the next build re-heals. Same `now` as the rows it certifies.
+    _upsert_sync_log(cluster_id, org_id, LIVEBOARD_TIER_ENTITY, record_count=len(lb_guids), synced_at=now)
     if inaccessible:
         logger.info("Column map: %d inaccessible TML stub(s) for cluster=%s org=%s", inaccessible, cluster_id, org_id)
     logger.info("Built column map (%d rows) for cluster=%s org=%s", written, cluster_id, org_id)
