@@ -60,6 +60,11 @@ agent. (See [CLAUDE.md](CLAUDE.md) → "How the org works".)
 | M4 | P3 | A "spares X" guard test placed on a code path that full-rebuilds X is vacuous — `test_orphan_purge_spares_connects_edges` passed with its entire `relation == "USES"` restriction deleted, because `_persist_column_map` delete-alls and re-inserts CONNECTS after the purge in the same run | The org's review checklist (or the `reviewer` agent brief) requires every "spares/preserves X" guard test to be falsified by deleting the predicate it guards, and the test must be placed on a path that does not rebuild X; the lesson is recorded in `docs/dev/TESTING.md` | open | no |
 | M5 | P2 | The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan) | CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins | open | yes (`CLAUDE.md`) |
 | M6 | P2 | The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop | The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle | open | no |
+| S27 | P1 | **Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded | Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes | open | no |
+| S28 | P2 | The liveboard incremental watermark is a bare timestamp, which cannot express "not yet crawled": a liveboard that has existed in TS since 2020 but enters `CachedMetadata` only after the first build (late/interrupted metadata sync, or newly shared with the admin — a permission grant does not bump `modified_at`) has `modified_at ≤ watermark` and is never crawled, so its USES edges are never built. **Verified present on `main` today** — not introduced by the rejected S7 diff, but S7's persisted marker made it permanent where the accidental `NULL`-watermark reset used to mask it | A liveboard whose lineage has never been built is crawled regardless of its `modified_at` — e.g. the changed-set is computed from a persisted crawled-GUID set (or `max(modified_at, metadata_first_seen)`) rather than a bare timestamp comparison; a unit test seeds a liveboard with a 2020 `modified_at` that arrives in `CachedMetadata` after the first build and asserts the second build exports it | open | no |
+| S29 | P2 | `_persist_column_map` commits its DELETEs before inserting (`session.commit()` between the delete block and the insert loop), so a crash in that window — process kill, `serve` restart, sqlite lock timeout, or an S24 interleave — leaves a durably-empty scope. Today this self-heals only by accident, via `max(CachedColumnLineage.synced_at)` reading NULL; the rejected S7 diff removed that accident and made the loss permanent | The delete+repopulate in `_persist_column_map` is atomic (single transaction), or a crash in the window is detectable so the next build rebuilds the scope rather than trusting it; a test simulates a raise between the delete commit and the insert loop and asserts the following build restores the edges | open | no |
+| M8 | P2 | Gate serialization is violated in practice by **file writes**, not just ports: during the S7 review, reviewer/QA agents wrote five scratch repro files into `tests/unit/` of the **shared** checkout, flipping `pytest tests/unit/` from green to red mid-verification and making QA's gate result untrustworthy. CLAUDE.md serializes port-bound gates but says nothing about agents writing into the working tree they share | The agent briefs (and CLAUDE.md's gate-serialization note) require review/QA repro artifacts to live in a `git worktree` or the scratchpad, never in `tests/` of the shared checkout; QA reports the working tree state it observed so a polluted run is visible rather than silent | open | yes (`CLAUDE.md`) |
+| M9 | P2 | A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier | The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built | open | no |
 | M7 | P3 | `docs/org-memory/` was effectively append-only, so a fact that a later PR had already fixed kept steering agents wrong: the "KNOWN RED `ruff format --check`" bullet was resolved by W2 in PR #11 but still misled two agents in the S6 cycle (one wrote a "record the pre-existing failure" instruction into its plan) | The Records step requires **pruning** — every cycle re-verifies the org-memory facts its work touched and DELETES or amends the ones that no longer hold, not just appends new ones; `docs/org-memory/README.md` states this and the ~120-line cap is described as enforced by pruning stale facts first | open | no |
 
 > Seeded 2026-07-15 at bootstrap (BOOT) from Step 0 discovery. Run
@@ -193,6 +198,74 @@ agent. (See [CLAUDE.md](CLAUDE.md) → "How the org works".)
   fixed mislead two agents (M7). **M5 is `yes` on Protected** — it amends
   CLAUDE.md's verification-bar section, so it needs a human and the
   `human-approved` label; this cycle did not touch that file.
+- 2026-08-15 (S7): **Attempted, built, then REJECTED at review — the second
+  consecutive cycle to do so on this code path. S7 stays `open`.** Unlike S6, S7's
+  acceptance criteria are *satisfiable*; what failed is the **mechanism the
+  criteria prescribe**. The implementation is pushed for inspection at
+  `improve/S7-liveboard-tier-marker` @ `3cdda08` (deliberately NOT opened as a
+  PR). It passed the entire verification bar — ruff, 186 unit + 129 integration,
+  tsc, build, vitest — and its acceptance test provably failed without the fix.
+  It is still wrong.
+  The design: replace the `has_lb_edges` probe with a persisted `SyncLog` marker
+  (`entity_type="dependencies_liveboard_tml"`) whose `synced_at` also becomes the
+  liveboard tier's incremental watermark, replacing
+  `max(CachedColumnLineage.synced_at)`. Four review lenses + QA reported; three
+  found CONFIRMED blockers, and they converge on one root cause:
+  **a watermark derived from the data it certifies self-invalidates when that
+  data is destroyed; an independent marker does not.**
+  1. **`has_lb_edges` was never the real self-heal.** The actual recovery was
+     accidental: `_persist_column_map` delete-and-rebuilds `CachedColumnLineage`
+     every run, so any build producing zero lineage rows (all logical-table TML
+     403-stubbed, or `table_guids == []` from a mid-repopulation cache) left
+     `max(synced_at)` NULL and force-re-crawled every liveboard. No test named
+     this. The research brief, the architect plan, and the CEO all missed it;
+     the correctness lens found it by mutation.
+  2. **Total edge loss became permanent.** A crash between
+     `_persist_column_map`'s delete-commit and its insert loop leaves the edges
+     gone and the *previous* build's SUCCESS marker intact, suppressing the
+     re-crawl forever. Measured against `main`: `main` recovers `['lb-1']`, the
+     branch stays `[]`. Filed as **S29**.
+  3. **The upgrade path both causes loss and removes the recovery.** On every
+     existing DB the marker is absent, so "no marker ⇒ all liveboards changed"
+     drags the build past the `if not table_guids and not lb_guids: return 0`
+     early return with a *partially* repopulated metadata cache (S23 shape,
+     reachable without user error via S24). `_persist_column_map`'s
+     `not_in(all_lb_guids)` purge then deletes the absent liveboards' edges.
+     `main` never even purges here. This also invalidates the org-memory bullet
+     justifying the unguarded `not_in`: it assumed `all_lb_guids` is
+     empty-or-complete, which only holds while nothing else can force
+     `lb_guids` non-empty.
+  4. **An existing regression test was made vacuous** — M4's lesson recurring.
+     `main`'s `test_column_map_self_heals_missing_liveboard_edges` fails
+     verbatim on the branch; one added `sql_delete(SyncLog)` line in its *setup*
+     makes it green, and that line deletes exactly the state blockers 2 and 3
+     land in. The CEO's own plan authorised the rewrite — the failure is at the
+     design step, not the implementation step.
+  5. **The suite could not detect any of it.** 6 of 7 mutations to
+     `build_column_map` left all 16 tests green, including
+     `_lb_changed` → never re-crawl anything, ever. Filed as **S27** (P1) and it
+     **blocks any re-attempt of S7**: harden the tests first, then change the
+     behaviour. That sequencing is the cycle's main recommendation.
+  Not everything was negative. The **security** lens cleared protected paths,
+  org/cluster scoping, and marker leakage into the UI; the **performance** lens
+  found no material issue and measured the intended win (a 500-liveboard stub org
+  goes from 11 `tml_export` calls *every* sync to 11 once, then 1) plus a strictly
+  cheaper read path (two partition scans at 4.9 ms + 24.7 ms → one 0.049 ms
+  lookup). The marker idea is sound; making it the *sole* watermark with no
+  invalidator is what fails. A re-attempt should persist a **crawled-GUID set**
+  co-located with the edges, so the same event that destroys the edges destroys
+  the record.
+  Also filed: **S28** (a bare timestamp watermark cannot express "not yet
+  crawled" — a liveboard shared with the admin after a build, or arriving via a
+  late metadata sync, is never crawled; present on `main` today), **M8** (review
+  agents wrote scratch repros into `tests/unit/` of the shared checkout and
+  reddened QA's gate run mid-verification), and **M9** (nothing requires a cycle
+  to check whether criteria-prescribed *mechanisms* are sound before building —
+  the direct cause of this reject and, one cycle earlier, of S6's).
+  **Shipped instead:** the two missing regression tests that pin `main`'s real
+  behaviour — a changed liveboard re-exports, and total edge loss recovers via
+  the lineage-table reset — so the next attempt starts against a suite that can
+  fail. No production code changed in this PR.
 - 2026-08-14: Filed S6–S9 and M3 from the same review rather than fixing them —
   each needs a design decision (a target-keyed purge, a persisted build marker,
   recorded API fixtures, an org-scoping semantics call, a guard-registry change)
