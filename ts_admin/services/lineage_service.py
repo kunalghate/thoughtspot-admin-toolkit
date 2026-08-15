@@ -567,6 +567,9 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
         lb_guids = [guid for guid, modified_at in all_liveboards if _changed(modified_at)]
 
     if not table_guids and not lb_guids:
+        # Nothing to export, but edges from an earlier build can still point at
+        # targets that have since disappeared from the metadata cache.
+        _purge_orphaned_targets(cluster_id=cluster_id, org_id=org_id)
         return 0
 
     cluster = _get_cluster(cluster_id)
@@ -767,6 +770,11 @@ def _persist_column_map(
                     col(CachedColumnUsage.consumer_guid).in_(lb_guids),
                 )
             )
+        # Target-keyed orphan purge, in the caller's session so it lands in the
+        # same delete-before-insert transaction as the purges above. It runs
+        # BEFORE the inserts, so it can only ever remove rows from a previous
+        # build — anything this run rebuilds is re-inserted below.
+        purged_edges, purged_usage = _purge_orphaned_targets(cluster_id=cluster_id, org_id=org_id, session=session)
         session.commit()
 
         count = 0
@@ -786,7 +794,103 @@ def _persist_column_map(
             session.add(row)
             count += 1
         session.commit()
+    if purged_edges or purged_usage:
+        logger.warning(
+            "Lineage orphan purge: removed %d USES edge(s), %d usage row(s) whose producer is absent "
+            "from the metadata cache (cluster=%s org=%s)",
+            purged_edges,
+            purged_usage,
+            cluster_id,
+            org_id,
+        )
     return count
+
+
+def _purge_orphaned_targets(*, cluster_id: str, org_id: int, session=None) -> tuple[int, int]:
+    """
+    Delete USES edges / column-usage rows whose producer no longer exists.
+
+    A cached USES edge's `target_guid` — and a column-usage row's `model_guid` —
+    must name a row in CachedMetadata for the same (cluster_id, org_id). The
+    source-keyed purges elsewhere cannot catch this: when a model is deleted in
+    TS but the liveboard pointing at it is unchanged, the incremental pass skips
+    that liveboard and its edge outlives the target as a nameless ghost node.
+
+    Correlated NOT EXISTS, deliberately NOT a chunked `not_in` — beyond the bind
+    ceiling it is a correctness issue: chunking a NOT IN deletes, on chunk A,
+    every row whose target lives in chunk B. NOT EXISTS also uses
+    ix_ts_dependencies_target / ix_ts_column_usage_model and CachedMetadata.ts_guid.
+
+    Accepted tradeoff: an edge is also dropped when the target is merely missing
+    from a stale or permission-filtered metadata cache, which is indistinguishable
+    from "deleted in TS". Dropping is the lesser evil — it is recovered on the
+    liveboard's next re-export, while keeping it leaves a permanent nameless node.
+    Phase 1 makes the same call in `_edges_from_dependents`.
+
+    Pass `session` to enlist in an existing transaction (the caller then owns the
+    commit); omit it to run standalone. Returns (edges deleted, usage rows deleted).
+    """
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+
+    if session is None:
+        with get_session() as own_session:
+            counts = _purge_orphaned_targets(cluster_id=cluster_id, org_id=org_id, session=own_session)
+            own_session.commit()
+            return counts
+
+    # An empty metadata cache degenerates the rule to "delete everything" — an
+    # unsynced cache is not evidence that every producer was deleted upstream.
+    has_meta = session.exec(
+        select(CachedMetadata.id)
+        .where(CachedMetadata.cluster_id == cluster_id, CachedMetadata.org_id == org_id)
+        .limit(1)
+    ).first()
+    if has_meta is None:
+        logger.info("Lineage orphan purge skipped: metadata cache empty for cluster=%s org=%s", cluster_id, org_id)
+        return (0, 0)
+
+    orphan_edge_target = ~(
+        select(CachedMetadata.id)
+        .where(
+            CachedMetadata.cluster_id == cluster_id,
+            CachedMetadata.org_id == org_id,
+            CachedMetadata.ts_guid == CachedDependency.target_guid,
+        )
+        .exists()
+    )
+    # CONNECTS targets are connection GUIDs (often synthetic `conn::<name>`) that
+    # search_metadata never syncs, so they are permanently "orphaned" by this
+    # rule. Two independent predicates each sufficient to spare them — the
+    # redundancy is deliberate, because one missed predicate is unrecoverable
+    # data loss.
+    edge_result = session.exec(
+        sql_delete(CachedDependency).where(
+            CachedDependency.cluster_id == cluster_id,
+            CachedDependency.org_id == org_id,
+            CachedDependency.relation == "USES",
+            CachedDependency.target_type != "CONNECTION",
+            orphan_edge_target,
+        )
+    )
+
+    orphan_usage_model = ~(
+        select(CachedMetadata.id)
+        .where(
+            CachedMetadata.cluster_id == cluster_id,
+            CachedMetadata.org_id == org_id,
+            CachedMetadata.ts_guid == CachedColumnUsage.model_guid,
+        )
+        .exists()
+    )
+    # No consumer_type filter: ANSWER-consumer rows orphan the same way.
+    usage_result = session.exec(
+        sql_delete(CachedColumnUsage).where(
+            CachedColumnUsage.cluster_id == cluster_id,
+            CachedColumnUsage.org_id == org_id,
+            orphan_usage_model,
+        )
+    )
+    return (edge_result.rowcount or 0, usage_result.rowcount or 0)
 
 
 # ── BUILD: Phase 3 saved-answer column usage (lazy / opt-in) + debug ────────────

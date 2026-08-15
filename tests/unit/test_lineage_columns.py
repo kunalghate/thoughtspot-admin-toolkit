@@ -12,7 +12,7 @@ db_column_name, liveboard.visualizations[].answer with fqn/search_query).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -193,6 +193,22 @@ class _FakeTMLClient:
         return {"table-1": [{"id": "model-1", "name": "Sales Model", "type": "WORKSHEET"}]}
 
 
+class _FakeTMLClientUnresolvedConnection(_FakeTMLClient):
+    """Connection GUID resolvable from neither the TML fqn nor the connections list."""
+
+    async def list_connections(self):
+        return []
+
+    async def tml_export(self, *, object_ids, edoc_format=None):
+        items = await super().tml_export(object_ids=object_ids, edoc_format=edoc_format)
+        for item in items:
+            if item["info"]["id"] == "table-1":
+                edoc = json.loads(json.dumps(item["edoc"]))
+                edoc["table"]["connection"] = {"name": "Snowflake Prod"}
+                item["edoc"] = edoc
+        return items
+
+
 def _seed(engine, *, lb_modified: datetime | None = None):
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from ts_admin.models.cluster import Cluster
@@ -369,6 +385,156 @@ async def test_column_map_purges_deleted_liveboards(monkeypatch, in_memory_db, p
         lb_usage = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_type == "LIVEBOARD")).all()
     assert lb_edges == []
     assert lb_usage == []
+
+
+async def test_column_map_purges_edges_to_deleted_target(monkeypatch, in_memory_db, patched_config):
+    """
+    A model deleted in TS must not survive as a ghost node reachable from an
+    UNCHANGED liveboard. The liveboard is skipped by the incremental pass, so
+    nothing rebuilds its edge — only a target-keyed purge can remove it.
+    """
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        assert session.exec(
+            select(CachedDependency).where(
+                CachedDependency.source_guid == "lb-1", CachedDependency.target_guid == "model-1"
+            )
+        ).all()
+        assert session.exec(select(CachedColumnUsage).where(CachedColumnUsage.model_guid == "model-1")).all()
+        session.exec(sql_delete(CachedMetadata).where(CachedMetadata.ts_guid == "model-1"))
+        session.commit()
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" not in fake.exported  # unchanged liveboard: nothing rebuilds its edge
+
+    with Session(in_memory_db) as session:
+        orphan_edges = session.exec(
+            select(CachedDependency).where(
+                CachedDependency.relation == "USES", CachedDependency.target_guid == "model-1"
+            )
+        ).all()
+        orphan_usage = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.model_guid == "model-1")).all()
+    assert orphan_edges == []
+    assert orphan_usage == []
+
+    # Feature-level closure: the ghost node is gone from the user-visible graph.
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="lb-1", root_kind="liveboard")
+    assert not [n for n in graph["nodes"] if n["guid"] == "model-1"]
+
+
+async def test_orphan_purge_spares_connects_edges(monkeypatch, in_memory_db, patched_config):
+    """
+    Regression guard against a future over-broad purge: CONNECTS targets are
+    connection GUIDs (often synthetic `conn::<name>`) that search_metadata never
+    syncs, so they are PERMANENTLY absent from CachedMetadata. This passes
+    pre-fix by design — it exists to fail loudly if the purge ever widens beyond
+    relation == "USES".
+    """
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        session.exec(sql_delete(CachedMetadata).where(CachedMetadata.ts_guid == "model-1"))
+        session.commit()
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    with Session(in_memory_db) as session:
+        connects = session.exec(select(CachedDependency).where(CachedDependency.relation == "CONNECTS")).all()
+    assert [e.target_guid for e in connects] == ["conn-1"]
+
+    # Same guard for the synthetic `conn::<name>` fallback (no connection GUID
+    # resolvable from the TML fqn or the connections list).
+    fake_no_guid = _FakeTMLClientUnresolvedConnection()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake_no_guid)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    with Session(in_memory_db) as session:
+        connects = session.exec(select(CachedDependency).where(CachedDependency.relation == "CONNECTS")).all()
+    assert [e.target_guid for e in connects] == ["conn::Snowflake Prod"]
+
+
+async def test_orphan_purge_skipped_when_metadata_cache_empty(monkeypatch, in_memory_db, patched_config):
+    """An unsynced (empty) metadata cache must not be read as 'everything was deleted'."""
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        before_edges = len(session.exec(select(CachedDependency)).all())
+        before_usage = len(session.exec(select(CachedColumnUsage)).all())
+        session.exec(sql_delete(CachedMetadata))
+        session.commit()
+    assert before_edges and before_usage
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    with Session(in_memory_db) as session:
+        after_edges = len(session.exec(select(CachedDependency)).all())
+        after_usage = len(session.exec(select(CachedColumnUsage)).all())
+    assert (after_edges, after_usage) == (before_edges, before_usage)
+
+
+async def test_orphan_purge_spares_edges_rebuilt_this_run(monkeypatch, in_memory_db, patched_config):
+    """
+    Pins delete-before-insert ordering: a CHANGED liveboard is re-exported in the
+    same run, so its edge must survive even though the target model is missing
+    from the metadata cache (it lands with an empty target_name).
+    """
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    # modified_at AFTER the build we are about to run → the incremental pass
+    # always sees the liveboard as changed and re-exports it.
+    _seed(in_memory_db, lb_modified=datetime.now(tz=timezone.utc) + timedelta(days=1))
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        session.exec(sql_delete(CachedMetadata).where(CachedMetadata.ts_guid == "model-1"))
+        session.commit()
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported
+    with Session(in_memory_db) as session:
+        edges = session.exec(
+            select(CachedDependency).where(
+                CachedDependency.source_guid == "lb-1", CachedDependency.target_guid == "model-1"
+            )
+        ).all()
+    assert len(edges) == 1
+    assert edges[0].target_name == ""
 
 
 async def test_graph_columns_populated_after_build(monkeypatch, in_memory_db, patched_config):
