@@ -434,3 +434,48 @@ class TestAttentionSignals:
             "empty_groups": 0,
             "orphaned_content": 0,
         }
+
+
+class TestSyncInFlightFlag:
+    """`synced[entity]` is False for the whole duration of a HEALTHY sync.
+
+    `_sync_metadata` writes an IN_PROGRESS marker before it deletes the cache,
+    and `_write_sync_log` UPSERTS the single (cluster, org, entity) row — so the
+    previous SUCCESS row is gone until the sync finishes. Reading `synced` alone,
+    the dashboard told the admin their content was "Never synced — sync now"
+    while a perfectly normal multi-minute sync was running, and invited a second
+    concurrent one. `syncing[entity]` is what tells the two states apart.
+
+    Showing "—" for the COUNT during this window is correct and stays: the cache
+    genuinely is mid-delete. It was the label that lied.
+    """
+
+    def test_syncing_is_false_for_everything_by_default(self, client, seeded):
+        assert client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()["syncing"] == {
+            "users": False,
+            "groups": False,
+            "metadata": False,
+            "tags": False,
+            "dependencies": False,
+        }
+
+    def test_an_in_progress_marker_reports_syncing_not_never_synced(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(
+                SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="IN_PROGRESS", record_count=0)
+            )
+            session.commit()
+        body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
+        assert body["syncing"]["metadata"] is True
+        # Still not certified — the count really is unknown right now.
+        assert body["synced"]["metadata"] is False
+        # Anti-vacuity: a sibling entity with no marker at all is NOT in flight.
+        assert body["syncing"]["users"] is False
+
+    def test_a_completed_sync_is_synced_and_not_syncing(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=3))
+            session.commit()
+        body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
+        assert body["synced"]["metadata"] is True
+        assert body["syncing"]["metadata"] is False

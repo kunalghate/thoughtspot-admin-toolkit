@@ -128,6 +128,30 @@ class TMLDependencyError(TSAdminError):
     """TML import failed because a referenced dependency does not exist."""
 
 
+# ── Local cache errors ─────────────────────────────────────────────────────────
+
+
+class StaleCacheError(TSAdminError):
+    """
+    The local cache for `entity_type` is not certified complete.
+
+    `_sync_metadata` deletes every row for the org and then re-pages in spec
+    order, committing per page — so an interrupted metadata sync leaves a
+    non-empty but TRUNCATED cache (liveboards + answers present, models and
+    tables missing). Row counts cannot distinguish that from a healthy cache;
+    only the `sync_log` row can. Operations whose *input set* is read from the
+    cache must refuse rather than silently act on a subset.
+    """
+
+    def __init__(self, entity_type: str, status: str) -> None:
+        self.entity_type = entity_type
+        self.status = status
+        super().__init__(
+            f"The local {entity_type} cache is not complete (last sync status: {status}). "
+            f"Run a {entity_type} sync before continuing."
+        )
+
+
 # ── Job errors ─────────────────────────────────────────────────────────────────
 
 

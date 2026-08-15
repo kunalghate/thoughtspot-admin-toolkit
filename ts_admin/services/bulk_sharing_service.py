@@ -27,6 +27,7 @@ from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
 from ts_admin.models.share_record import ShareRecord
+from ts_admin.ts_client.exceptions import StaleCacheError
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,17 @@ async def preview_share(
     Live call to fetch_permissions per object (cached objects aren't enough —
     permissions are not in the local cache by default for fresh-enough data).
     Concurrency capped to 10 to avoid hammering the cluster.
+
+    Refuses on a non-authoritative metadata cache: `object_guids` are resolved
+    against the cache and any GUID missing from it is silently skipped (`if g in
+    obj_map`), so a truncated cache would quietly drop objects from the preview —
+    and from the share the user then approves.
     """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    # Fail closed before any live ThoughtSpot call.
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     from ts_admin.ts_client import ThoughtSpotClient
 
     with Session(_db.get_engine()) as session:
@@ -307,6 +318,11 @@ async def execute_share(
     """
     Share `object_guids` with `principal_guids` at `mode`. One share_objects
     call per object_type group (the API requires a single type per call).
+
+    Refuses on a non-authoritative metadata cache: objects are grouped by the
+    `object_type` read from the cache, so a truncated cache drops objects from
+    the share entirely — silently, and for NO_ACCESS revokes that means access
+    the admin believes was removed is still live.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -316,8 +332,21 @@ async def execute_share(
         mark_running,
         update_progress,
     )
+    from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.ts_client.models import SharePermission
+
+    # Defense in depth. The REAL refusal is in `api/sharing.py::execute`, which
+    # returns 409 before any Job row exists — this function only ever runs as a
+    # background task, so it is unreachable in practice. It is kept because it
+    # is the layer that owns the invariant, but it must NOT raise: an exception
+    # escaping a background task is invisible to the caller and would leave the
+    # job QUEUED forever. Mark the job FAILED instead, BEFORE mark_running.
+    try:
+        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+    except StaleCacheError as exc:
+        mark_failed(job_id, exc)
+        return
 
     total_pairs = len(object_guids) * len(principal_guids)
     mark_running(job_id, total_pairs)

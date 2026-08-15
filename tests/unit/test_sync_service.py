@@ -17,6 +17,7 @@ from ts_admin.services import connection_status
 from ts_admin.services.connection_status import ConnectionState
 from ts_admin.ts_client.exceptions import (
     TSAuthenticationError,
+    TSConnectionError,
     TSInsufficientPrivilegesError,
 )
 
@@ -387,6 +388,341 @@ async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_d
     assert seen == {"cluster_id": CLUSTER_ID, "org_id": 0, "finalize": True}
     status, _ = _job_status(job_id)
     assert status == "COMPLETE"
+
+
+# ── Metadata cache completeness (S23) ─────────────────────────────────────────
+#
+# `_sync_metadata` commits a DELETE-all for the org and then re-pages in the
+# spec order LIVEBOARD, ANSWER, <five logical-table subtypes>, committing per
+# page. An interruption therefore leaves the cache NON-EMPTY but TRUNCATED. The
+# completeness signal has to be the sync_log row, written before the delete.
+
+
+def _seed_metadata_success_marker(org_id: int = 0, *, record_count: int = 2) -> None:
+    from datetime import datetime, timezone
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    with get_session() as session:
+        session.add(
+            SyncLog(
+                cluster_id=CLUSTER_ID,
+                org_id=org_id,
+                entity_type="metadata",
+                status="SUCCESS",
+                record_count=record_count,
+                synced_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
+
+
+def _metadata_rows(org_id: int = 0) -> list:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+
+    with get_session() as session:
+        return list(
+            session.exec(
+                select(CachedMetadata).where(
+                    CachedMetadata.cluster_id == CLUSTER_ID,
+                    CachedMetadata.org_id == org_id,
+                )
+            ).all()
+        )
+
+
+def _seed_cached_metadata(*objs: tuple[str, str], org_id: int = 0) -> None:
+    from datetime import datetime, timezone
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+
+    with get_session() as session:
+        for guid, object_type in objs:
+            session.add(
+                CachedMetadata(
+                    cluster_id=CLUSTER_ID,
+                    org_id=org_id,
+                    ts_guid=guid,
+                    name=f"obj-{guid}",
+                    object_type=object_type,
+                    owner_guid="owner-1",
+                    owner_name="Alice",
+                    tag_names="[]",
+                    synced_at=datetime.now(timezone.utc),
+                )
+            )
+        session.commit()
+
+
+def _metadata_marker_status(org_id: int = 0) -> str | None:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    with get_session() as session:
+        row = session.exec(
+            select(SyncLog).where(
+                SyncLog.cluster_id == CLUSTER_ID,
+                SyncLog.org_id == org_id,
+                SyncLog.entity_type == "metadata",
+            )
+        ).first()
+    return row.status if row else None
+
+
+def _meta_obj(guid: str, object_type: str):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        id=guid,
+        name=f"obj-{guid}",
+        type=SimpleNamespace(value=object_type),
+        owner_id="owner-1",
+        author_name="Alice",
+        tags=[],
+        created=now,
+        modified=now,
+        last_accessed=now,
+        view_count=0,
+    )
+
+
+def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = None, exc: BaseException | None = None):
+    """Fake ThoughtSpotClient whose search_metadata yields `pages`, optionally
+    raising `exc` after `raise_after` pages to simulate an interrupted crawl."""
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def search_metadata(self):
+            for idx, page in enumerate(pages):
+                if raise_after is not None and idx >= raise_after:
+                    raise exc or TSConnectionError("upstream dropped the connection mid-crawl")
+                yield page
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+
+# WHY THESE TESTS INTERRUPT WITH CancelledError, NOT TSConnectionError
+# --------------------------------------------------------------------
+# `run_sync`'s terminal `except Exception` handler already flips the marker to
+# FAILED, so an interruption it CATCHES was never the hole — see
+# `test_caught_failure_also_invalidates_the_marker` below, which passes with or
+# without the write-ahead write. The hole is the interruption that never reaches
+# that handler: process kill, SIGINT, server shutdown, task cancellation. The
+# in-process stand-in is `asyncio.CancelledError` — a BaseException since 3.8,
+# so `except Exception` does not catch it and no terminal marker write happens.
+# Only the write-ahead marker can invalidate the cache in that case. Using a
+# catchable exception here is exactly what makes an ordering test vacuous.
+
+
+@pytest.mark.anyio
+async def test_interrupted_metadata_sync_is_not_reported_as_synced(monkeypatch, in_memory_db, patched_config):
+    """The S23 bug. A metadata sync killed after page 1 leaves liveboards and
+    answers cached and every model/table missing, while the previous SUCCESS
+    sync_log row survives untouched — so the whole app (dashboard, transfer
+    preview, share preview) reads a truncated cache as authoritative and
+    silently acts on a subset."""
+    import asyncio
+
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _seed_metadata_success_marker()
+    # Page 1 = the two archivable types; page 2 = the logical tables that never arrive.
+    pages = [
+        [_meta_obj("lb-1", "LIVEBOARD"), _meta_obj("ans-1", "ANSWER")],
+        [_meta_obj("model-1", "WORKSHEET")],
+    ]
+    _install_metadata_client(monkeypatch, pages, raise_after=1, exc=asyncio.CancelledError())
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    with pytest.raises(asyncio.CancelledError):
+        await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    # No terminal handler ran — the job is still RUNNING, exactly as it would be
+    # after a `kill -9`. Nothing downstream can lean on the job row either.
+    assert _job_status(job_id)[0] == "RUNNING"
+
+    # ANTI-VACUITY: prove we reproduced the *truncated* shape, not a trivially
+    # empty cache. If this is empty the test proves nothing about completeness.
+    rows = _metadata_rows()
+    assert rows, "expected a partially-populated cache — the truncation was not reproduced"
+    assert {r.object_type for r in rows} == {"LIVEBOARD", "ANSWER"}
+    assert not any(r.object_type == "WORKSHEET" for r in rows)
+
+    # The crux: a non-empty cache must NOT read as authoritative.
+    assert _metadata_marker_status() == "IN_PROGRESS"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+
+@pytest.mark.anyio
+async def test_write_ahead_marker_preserves_the_last_completed_sync(monkeypatch, in_memory_db, patched_config):
+    """The write-ahead marker says "a sync is running", NOT "a sync just finished
+    with 0 rows". `_write_sync_log` upserts the single (cluster, org, entity)
+    row, so writing synced_at=now / record_count=0 there would destroy the only
+    record of when the cache was last known complete — and the Topbar, which
+    renders off exactly those two fields, would report a healthy in-flight sync
+    as a zero-row sync that landed a moment ago.
+
+    Drop `preserve_progress=True` from the `_sync_metadata` call and this goes
+    red on both assertions.
+    """
+    import asyncio
+    from datetime import datetime, timezone
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    seeded_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed_metadata_success_marker(record_count=42)
+    _install_metadata_client(
+        monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], raise_after=0, exc=asyncio.CancelledError()
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    with pytest.raises(asyncio.CancelledError):
+        await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    with get_session() as session:
+        row = session.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).one()
+
+    assert row.status == "IN_PROGRESS"  # anti-vacuity: the write-ahead write DID happen
+    assert row.record_count == 42, "the last completed sync's record_count was clobbered"
+    assert row.synced_at.replace(tzinfo=timezone.utc) == seeded_at, (
+        "the last completed sync's timestamp was clobbered — the app now has no "
+        "record of when the cache was last known complete"
+    )
+
+
+@pytest.mark.anyio
+async def test_marker_invalidated_before_any_row_is_deleted(monkeypatch, in_memory_db, patched_config):
+    """Ordering test — pins the marker AHEAD of the delete, not merely somewhere
+    before the crawl.
+
+    The window this closes is the gap between the delete's commit and the marker
+    write. They are two separate transactions by design (a single one would hold
+    the SQLite write lock across the whole crawl — see the comment in
+    `_sync_metadata`), so an interruption can land between them. Write-ahead
+    makes that window contain "marker invalidated, rows still present", which is
+    merely pessimistic. The reverse order makes it contain "rows all gone, marker
+    still SUCCESS" — an empty cache certified as complete, which reads as *this
+    org has no content* rather than *we don't know*.
+
+    Interrupt exactly at the marker write to sit inside that window: move the
+    `_write_sync_log(... IN_PROGRESS)` call below the delete block and this
+    goes red.
+    """
+    import asyncio
+
+    import ts_admin.services.sync_service as sync_module
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _seed_metadata_success_marker()
+    _seed_cached_metadata(("lb-old", "LIVEBOARD"), ("ws-old", "WORKSHEET"))
+    assert len(_metadata_rows()) == 2  # anti-vacuity: there IS something to lose
+
+    real_write = sync_module._write_sync_log
+
+    def _die_on_the_in_progress_write(entity_type, org_id, *, status, **kwargs):
+        if entity_type == "metadata" and status == "IN_PROGRESS":
+            raise asyncio.CancelledError()
+        return real_write(entity_type, org_id, status=status, **kwargs)
+
+    monkeypatch.setattr(sync_module, "_write_sync_log", _die_on_the_in_progress_write)
+    _install_metadata_client(monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]])
+
+    job_id = _make_job("metadata")
+    with pytest.raises(asyncio.CancelledError):
+        await sync_module.run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    # THE INVARIANT: never "certified complete AND emptied". Either the marker
+    # went first (rows intact, still certified — pessimistically fine) or the
+    # marker was invalidated. Both are honest; the conjunction is the lie.
+    rows = _metadata_rows()
+    certified = metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0)
+    assert not (certified and rows == []), (
+        "the org's whole metadata cache was deleted while its sync_log row still says SUCCESS — "
+        "an empty cache certified as complete. Write the IN_PROGRESS marker BEFORE the delete."
+    )
+    # Concretely, on the correct ordering the delete never ran at all.
+    assert len(rows) == 2
+
+
+@pytest.mark.anyio
+async def test_caught_failure_also_invalidates_the_marker(monkeypatch, in_memory_db, patched_config):
+    """The pre-existing half of the guarantee, pinned so a refactor of
+    `run_sync`'s terminal handler can't quietly drop it. This one passes with or
+    without the write-ahead write — that is the point of keeping it separate
+    from the two ordering tests above."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _seed_metadata_success_marker()
+    pages = [[_meta_obj("lb-1", "LIVEBOARD")], [_meta_obj("model-1", "WORKSHEET")]]
+    _install_metadata_client(monkeypatch, pages, raise_after=1)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "FAILED"
+    assert _metadata_rows()  # truncated, not empty
+    assert _metadata_marker_status() == "FAILED"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+
+@pytest.mark.anyio
+async def test_completed_metadata_sync_recertifies_the_cache(monkeypatch, in_memory_db, patched_config):
+    """The recovery half: after a full re-sync the cache is authoritative again,
+    so the refusal guards clear on their own without any manual intervention."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    pages = [
+        [_meta_obj("lb-1", "LIVEBOARD")],
+        [_meta_obj("model-1", "WORKSHEET")],
+    ]
+    _install_metadata_client(monkeypatch, pages, raise_after=1)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+    # Now the same crawl, uninterrupted.
+    _install_metadata_client(monkeypatch, pages)
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert {r.object_type for r in _metadata_rows()} == {"LIVEBOARD", "WORKSHEET"}
+    assert _metadata_marker_status() == "SUCCESS"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is True
 
 
 @pytest.mark.anyio

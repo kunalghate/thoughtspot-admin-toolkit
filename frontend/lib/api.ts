@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, MetadataListResponse, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -187,7 +187,7 @@ export const metadataApi = {
     if (params.sort_order)     q.set("sort_order", params.sort_order);
     if (params.record_offset)  q.set("record_offset", String(params.record_offset));
     if (params.page_size)      q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<MetadataObject>>(`/metadata?${q}`);
+    return request<MetadataListResponse>(`/metadata?${q}`);
   },
 
   stats: (clusterId: string, orgId: number) =>

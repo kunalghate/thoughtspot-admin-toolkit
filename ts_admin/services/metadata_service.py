@@ -28,7 +28,7 @@ from sqlmodel import Session, col, or_, select
 
 import ts_admin.database as _db  # import module, not function — keeps monkeypatching working in tests
 from ts_admin.models.cache.ts_metadata import CachedMetadata
-from ts_admin.models.sync_log import SyncLog
+from ts_admin.services.sync_status import last_successful_sync, metadata_is_authoritative
 
 logger = logging.getLogger(__name__)
 
@@ -262,15 +262,11 @@ class MetadataService:
                 .where(*archivable, col(CachedMetadata.last_accessed_at).is_(None))
             ).one()
 
-            sync_log = session.exec(
-                select(SyncLog)
-                .where(
-                    SyncLog.cluster_id == cluster_id,
-                    SyncLog.entity_type == "metadata",
-                    SyncLog.status == "SUCCESS",
-                )
-                .order_by(col(SyncLog.synced_at).desc())
-            ).first()
+            # Single-sourced via sync_status so "last successful sync" means the
+            # same thing here and at the refusal sites. Note this is now scoped
+            # by org_id as well as cluster_id — the local copy this replaced
+            # filtered on cluster_id only, so org 1's stats reported org 0's sync.
+            sync_log = last_successful_sync(session, cluster_id=cluster_id, org_id=org_id, entity_type="metadata")
 
             return {
                 "total": sum(by_type.values()),
@@ -279,4 +275,14 @@ class MetadataService:
                 "stale_90d": stale,
                 "never_accessed": never_accessed,
                 "last_synced": sync_log.synced_at.isoformat() if sync_log and sync_log.synced_at else None,
+                # Flag, never a refusal: browsing a truncated cache is still
+                # useful, the UI just must not present it as complete.
+                "cache_authoritative": sync_log is not None,
             }
+
+    # ── Cache completeness ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def cache_authoritative(*, cluster_id: str, org_id: int) -> bool:
+        """True when the metadata cache for this scope is certified complete."""
+        return metadata_is_authoritative(cluster_id=cluster_id, org_id=org_id)

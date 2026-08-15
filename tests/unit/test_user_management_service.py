@@ -24,6 +24,7 @@ from ts_admin.models.cache.ts_user import (
 )
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
+from ts_admin.models.sync_log import SyncLog
 from ts_admin.models.user_action_record import UserActionRecord
 
 # ── Fake TS client ─────────────────────────────────────────────────────────────
@@ -211,6 +212,12 @@ def seeded(in_memory_db):
                     synced_at=now,
                 )
             )
+        # Certify the metadata cache as completely synced. preview_transfer /
+        # execute_transfer fail closed without this (S23): an interrupted
+        # metadata sync leaves a non-empty but truncated cache, and the transfer
+        # set IS a cache query, so it would silently under-report. The refusal
+        # itself is covered in tests/unit/test_stale_cache_guard.py.
+        session.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=2))
         # Two metadata objects owned by alice
         session.add(
             CachedMetadata(

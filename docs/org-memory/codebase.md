@@ -332,3 +332,50 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   does NOT make a liveboard "changed" on a second build (`_changed` compares
   against the first build's `synced_at`, which is later) — use a **future**
   timestamp to force re-export.
+- 2026-08-15 (S23): A guard that raises inside a **Starlette background-task target**
+  is fail-**silent**. `bulk_sharing_service.execute_share` and
+  `user_management_service.execute_transfer` run only via `background_tasks.add_task`
+  (`api/sharing.py`, `api/users.py`), i.e. after the 202 is on the wire, so
+  `error_handlers._STATUS_BY_TYPE` cannot apply (you get `RuntimeError: Caught
+  handled exception, but response already started.`) and the `Job` row strands at
+  `QUEUED`/`error=None` until the next restart. A refusal that must reach the caller
+  belongs in the **router, before `create_job`**; a service-layer copy must
+  `mark_failed(job_id, exc); return`, never `raise`. **A service-level unit test
+  cannot see this** — calling the coroutine directly makes the raise observable,
+  which is exactly what production cannot do. All 241 unit tests passed on the
+  broken guard; only a TestClient test asserting "no `Job` row created" pins it.
+- 2026-08-15 (S23): `_write_sync_log` **upserts** the single
+  `(cluster_id, org_id, entity_type)` row, so writing any non-terminal status
+  mid-flight destroys the last completed sync's `synced_at`/`record_count`. It now
+  takes `preserve_progress: bool` — passed only by the write-ahead `IN_PROGRESS`
+  call. Consequence to remember: `synced[entity]` is False for the whole duration of
+  a **healthy** sync, so every consumer of `SyncLog.status` must treat `IN_PROGRESS`
+  as in-flight, never as failed or never-synced. `dashboard_service._sync_state`
+  returns an `in_flight` dict for this; `Topbar.tsx`'s `isSyncing` is per-mount React
+  state (empty after a reload or in a second tab) and can never be the sole signal.
+- 2026-08-15 (S23): The unit fixtures build the engine with `poolclass=StaticPool`
+  (`tests/unit/test_sync_service.py`) — one shared connection — so the suite is
+  **structurally incapable of observing SQLite lock contention** between two
+  `get_session()` calls. Sibling of the S6 "blind to query plans" fact: the bar is
+  blind to locking too.
+- 2026-08-15 (S23): `search_metadata` paginates **within** each spec
+  (`ts_client/client.py`) and `_sync_metadata` commits per page, so an interrupted
+  metadata sync can leave a strict **subset** of liveboards. Any "this consumer only
+  reads the first spec, so its input is superset-correct" argument is unsound —
+  reason about **direction** instead: truncation narrows every query, so selection
+  paths fail safe (under-select) while **absence-as-evidence** paths fail dangerous
+  (`deleter.resolve_downstream`, `user_management_service.preview_delete`).
+- 2026-08-15 (S23): `ts_admin/services/sync_status.py` is now the single completeness
+  helper (`last_successful_sync` / `metadata_is_authoritative` /
+  `require_authoritative_metadata`); `StaleCacheError` → HTTP 409. `.first()` is
+  ordered `synced_at DESC` because `sync_log` has no unique constraint.
+  `dashboard_service` still holds a duplicate of that query — fold it onto the helper
+  once PR #24 lands. Note `metadata_service.stats` was **not** org-scoped before this
+  change (org 1 reported org 0's `last_synced`); fixed.
+- 2026-08-15 (S23, process): `__pycache__` staleness silently corrupts rapid mutation
+  loops — two same-length mutations to the same file within one second reuse the
+  previous `.pyc`, so kills get attributed to the wrong mutant. Run `python3 -B` and
+  purge `__pycache__` between iterations. Also: patching `database.get_engine` does
+  **not** isolate a scratch script from the live cluster (credentials resolve via
+  `config.py`/keyring) — one agent unintentionally issued ~9 read calls against the
+  user's production cluster that way. Use the repo's `patched_config` fixture.

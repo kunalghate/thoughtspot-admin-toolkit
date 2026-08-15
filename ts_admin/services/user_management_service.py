@@ -38,6 +38,7 @@ from ts_admin.models.cache.ts_user import (
     UserOrgMembership,
 )
 from ts_admin.models.user_action_record import UserActionRecord
+from ts_admin.ts_client.exceptions import StaleCacheError
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,15 @@ def preview_transfer(
       - object_types: only these CachedMetadata.object_type values
       - tag_names:    only objects whose tag_names JSON contains every name listed
       - explicit_guids: only these GUIDs (intersected with the owner filter)
+
+    Refuses on a non-authoritative metadata cache: the whole result set IS the
+    cache query, so a truncated cache silently under-reports what the user is
+    about to transfer — objects would be left behind on a departing user.
     """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     with Session(_db.get_engine()) as session:
         q = select(CachedMetadata).where(
             CachedMetadata.cluster_id == cluster_id,
@@ -281,7 +290,12 @@ async def execute_transfer(
     to_user_identifier: str,
     object_ids: list[str],
 ) -> None:
-    """Reassign ownership of `object_ids` to `to_user_identifier`. Chunked at 50."""
+    """Reassign ownership of `object_ids` to `to_user_identifier`. Chunked at 50.
+
+    Refuses on a non-authoritative metadata cache — `object_ids` was produced by
+    `preview_transfer` against that cache, and executing a transfer the preview
+    understated is exactly the failure mode this guard exists for.
+    """
     from ts_admin.services.job_service import (
         is_cancelled,
         mark_complete,
@@ -290,7 +304,20 @@ async def execute_transfer(
         mark_running,
         update_progress,
     )
+    from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
+
+    # Defense in depth. The REAL refusal is in `api/users.py::transfer_execute`,
+    # which returns 409 before any Job row exists — this function only ever runs
+    # as a background task, so it is unreachable in practice. It must NOT raise:
+    # an exception escaping a background task is invisible to the caller and
+    # would leave the job QUEUED forever. Mark the job FAILED instead, BEFORE
+    # mark_running and before the UserActionRecord is written.
+    try:
+        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+    except StaleCacheError as exc:
+        mark_failed(job_id, exc)
+        return
 
     total = len(object_ids)
     mark_running(job_id, total)

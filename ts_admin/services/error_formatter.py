@@ -16,6 +16,7 @@ from ts_admin.ts_client.exceptions import (
     ConfigNotFoundError,
     JobInterruptedError,
     KeyringError,
+    StaleCacheError,
     TMLConflictError,
     TMLDependencyError,
     TMLValidationError,
@@ -111,6 +112,16 @@ _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
         "Add a cluster from Settings → Clusters before running this action.",
     ),
     (ConfigInvalidError, "Cluster configuration is invalid", "Re-enter the cluster details from Settings → Clusters."),
+    (
+        StaleCacheError,
+        "Local cache is incomplete",
+        # State-neutral on purpose. This one hint has to be true for all three
+        # ways the cache ends up uncertified — never synced, sync failed, sync
+        # still running — so it must NOT assert "a sync was interrupted". The
+        # observed status is carried on the exception message itself.
+        "No completed metadata sync is on record for this org. "
+        "Run Settings → Sync → Metadata (or wait for the running one to finish), then retry.",
+    ),
     (
         JobInterruptedError,
         "Job was interrupted",

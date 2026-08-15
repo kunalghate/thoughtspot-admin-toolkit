@@ -304,6 +304,23 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     mark_running(job_id, total=0)
     count = 0
 
+    # Write-ahead invalidation. Everything below this line leaves the cache in a
+    # non-empty but TRUNCATED shape if it is interrupted: we delete every row for
+    # the org, then re-page in spec order (liveboards + answers first, models and
+    # tables last), committing per page. A row count cannot distinguish "truncated"
+    # from "healthy", so the sync_log row is the completeness signal — and it must
+    # stop saying SUCCESS *before* the destruction starts, not after it finishes.
+    #
+    # This MUST stay in its own get_session() block, separate from the delete
+    # below: merging them would put both in one transaction, so a crash mid-crawl
+    # could roll the marker back and re-expose the stale SUCCESS. The ordering is
+    # the whole mechanism.
+    #
+    # preserve_progress: this marker says "a sync is running", not "a sync
+    # finished with 0 rows just now". Keeping the previous synced_at/record_count
+    # is what lets the UI still say when the cache was last known complete.
+    _write_sync_log("metadata", org_id, status="IN_PROGRESS", preserve_progress=True)
+
     # Delete all existing rows for this org before re-syncing so stale objects
     # (deleted in TS since last sync) don't linger in the cache.
     from sqlmodel import delete as sql_delete
@@ -505,7 +522,19 @@ def _write_sync_log(
     record_count: int = 0,
     duration_ms: int = 0,
     error: str | None = None,
+    preserve_progress: bool = False,
 ) -> None:
+    """Upsert the single ``(cluster_id, org_id, entity_type)`` sync_log row.
+
+    ``preserve_progress=True`` is for the *write-ahead* marker only: it flips
+    ``status`` without touching ``synced_at`` / ``record_count`` /
+    ``duration_ms``. Those three describe the last COMPLETED sync, and a
+    write-ahead marker is written before any work happens — overwriting them
+    with "now / 0" destroys the only record of when the cache was last known
+    complete, and makes an in-flight sync indistinguishable from one that just
+    finished with zero rows. SUCCESS/FAILED semantics are unchanged: those are
+    terminal, and their counts and timestamp ARE the outcome.
+    """
     from sqlmodel import select
 
     from ts_admin.config import load_config
@@ -523,9 +552,10 @@ def _write_sync_log(
         ).first()
 
         if existing:
-            existing.synced_at = datetime.now(timezone.utc)
-            existing.record_count = record_count
-            existing.duration_ms = duration_ms
+            if not preserve_progress:
+                existing.synced_at = datetime.now(timezone.utc)
+                existing.record_count = record_count
+                existing.duration_ms = duration_ms
             existing.status = status
             existing.error = error
             session.add(existing)

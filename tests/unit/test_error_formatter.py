@@ -14,6 +14,7 @@ from ts_admin.ts_client.exceptions import (
     ConfigNotFoundError,
     JobInterruptedError,
     KeyringError,
+    StaleCacheError,
     TMLConflictError,
     TMLValidationError,
     TSAuthenticationError,
@@ -46,6 +47,7 @@ from ts_admin.ts_client.exceptions import (
         (ConfigNotFoundError("no config"), "No ThoughtSpot cluster", "ConfigNotFoundError"),
         (ConfigInvalidError("bad config"), "configuration is invalid", "ConfigInvalidError"),
         (JobInterruptedError("j1", 5, 10), "interrupted", "JobInterruptedError"),
+        (StaleCacheError("metadata", "IN_PROGRESS"), "cache is incomplete", "StaleCacheError"),
     ],
 )
 def test_format_error_known_exceptions(exc, expected_title_substr, expected_type):
@@ -54,6 +56,27 @@ def test_format_error_known_exceptions(exc, expected_title_substr, expected_type
     assert expected_title_substr.lower() in formatted.title.lower()
     assert formatted.hint  # non-empty
     assert formatted.display.startswith(formatted.title)
+
+
+def test_stale_cache_error_hint_names_the_exact_recovery_step():
+    """The hint has to be actionable: the ONLY fix is re-running the metadata
+    sync, and the user needs to be told where that lives."""
+    formatted = format_error(StaleCacheError("metadata", "IN_PROGRESS"))
+    assert "Sync" in formatted.hint
+    assert "Metadata" in formatted.hint
+
+
+@pytest.mark.parametrize("status", ["NOT_SYNCED", "IN_PROGRESS", "FAILED"])
+def test_stale_cache_error_hint_is_honest_in_every_state(status):
+    """`format_error` maps by exception CLASS, so one hint has to be true for all
+    three ways the cache ends up uncertified. It must not assert "a sync was
+    interrupted" — that is false on a fresh install (NOT_SYNCED), false while a
+    healthy sync is running (IN_PROGRESS), and false for a sync that ran to a
+    clean upstream error (FAILED). The observed status rides on the exception
+    message instead."""
+    formatted = format_error(StaleCacheError("metadata", status))
+    assert "interrupted" not in formatted.hint.lower()
+    assert "was interrupted" not in formatted.display.lower()
 
 
 def test_format_error_unknown_falls_back_to_generic():

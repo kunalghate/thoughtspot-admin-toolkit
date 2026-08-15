@@ -144,6 +144,14 @@ export interface MetadataStats {
   stale_90d: number;
   never_accessed: number;
   last_synced: string | null;
+  /** False when the last metadata sync was interrupted (or never ran) — the
+   *  cached rows are real but possibly a truncated slice of the org. */
+  cache_authoritative: boolean;
+}
+
+export interface MetadataListResponse extends PaginatedResponse<MetadataObject> {
+  /** See MetadataStats.cache_authoritative. */
+  cache_authoritative: boolean;
 }
 
 export interface PaginatedResponse<T> {
@@ -560,6 +568,10 @@ export interface DashboardSummary {
   synced: Partial<Record<EntityType, boolean>>;
   /** When each entity last synced successfully (null = never). */
   synced_at: Partial<Record<EntityType, string | null>>;
+  /** Per-entity "is a sync running right now?". `synced` is False for the whole
+   *  duration of a healthy sync, so this is what tells "in flight" apart from
+   *  "never synced". Optional: older backends omit it. */
+  syncing?: Partial<Record<EntityType, boolean>>;
   /** Change in record count since the previous successful sync of each entity. */
   deltas: Partial<Record<EntityType, number>>;
   attention: DashboardAttention;

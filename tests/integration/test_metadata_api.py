@@ -166,6 +166,35 @@ class TestMetadataStats:
         assert data["archivable_total"] == 3
 
 
+class TestCacheAuthoritativeFlag:
+    """S23 — the read path FLAGS an incomplete cache, it never refuses. Both
+    endpoints stay 200 with the same `items` shape; one additive boolean tells
+    the UI the rows may be a truncated slice of the org."""
+
+    def test_list_still_200_and_flags_false_without_a_sync_marker(self, client, seeded):
+        r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 3  # rows are served, not withheld
+        assert len(data["items"]) == 3  # items shape unchanged
+        assert data["cache_authoritative"] is False
+
+    def test_stats_flags_false_without_a_sync_marker(self, client, seeded):
+        r = client.get("/api/v1/metadata/stats?cluster_id=c1&org_id=0")
+        assert r.status_code == 200
+        assert r.json()["cache_authoritative"] is False
+
+    def test_both_flag_true_after_a_successful_metadata_sync(self, client, seeded, in_memory_db):
+        from ts_admin.models.sync_log import SyncLog
+
+        with Session(in_memory_db) as s:
+            s.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=3))
+            s.commit()
+
+        assert client.get("/api/v1/metadata?cluster_id=c1&org_id=0").json()["cache_authoritative"] is True
+        assert client.get("/api/v1/metadata/stats?cluster_id=c1&org_id=0").json()["cache_authoritative"] is True
+
+
 class TestGetPermissions:
     """GET /{ts_guid}/permissions — live call, so the TS client is faked."""
 

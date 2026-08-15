@@ -15,6 +15,7 @@ from sqlmodel import Session, create_engine
 
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
+from ts_admin.models.sync_log import SyncLog
 from ts_admin.services.metadata_service import MetadataService
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
@@ -86,6 +87,13 @@ def _make_obj(
     session.add(obj)
     session.commit()
     return obj
+
+
+def _sync_log(session, *, cluster_id="test-cluster", org_id=0, status="SUCCESS", entity_type="metadata"):
+    row = SyncLog(cluster_id=cluster_id, org_id=org_id, entity_type=entity_type, status=status)
+    session.add(row)
+    session.commit()
+    return row
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────────
@@ -214,3 +222,52 @@ class TestMetadataServiceStats:
         stats = MetadataService.stats(cluster_id="test-cluster", org_id=0)
         assert stats["stale_90d"] == 1
         assert stats["archivable_total"] == 1
+
+
+class TestMetadataCacheAuthoritative:
+    """S23 — stats FLAG a truncated cache; they never refuse. `last_synced` and
+    `cache_authoritative` both read the newest SUCCESS `sync_log` row, which is
+    the only completeness signal that survives an interrupted sync."""
+
+    def test_false_and_last_synced_none_when_never_synced(self, session, cluster):
+        _make_obj(session, guid="a", name="A")
+        stats = MetadataService.stats(cluster_id="test-cluster", org_id=0)
+        assert stats["total"] == 1  # rows are still served
+        assert stats["cache_authoritative"] is False
+        assert stats["last_synced"] is None
+        assert MetadataService.cache_authoritative(cluster_id="test-cluster", org_id=0) is False
+
+    def test_true_after_a_successful_metadata_sync(self, session, cluster):
+        _make_obj(session, guid="a", name="A")
+        _sync_log(session, status="SUCCESS")
+        stats = MetadataService.stats(cluster_id="test-cluster", org_id=0)
+        assert stats["cache_authoritative"] is True
+        assert stats["last_synced"] is not None
+        assert MetadataService.cache_authoritative(cluster_id="test-cluster", org_id=0) is True
+
+    def test_false_while_a_sync_is_in_progress(self, session, cluster):
+        """The write-ahead marker: a sync that started and hasn't finished means
+        the cache below it may be mid-rebuild and truncated."""
+        _make_obj(session, guid="a", name="A")
+        _sync_log(session, status="IN_PROGRESS")
+        assert MetadataService.stats(cluster_id="test-cluster", org_id=0)["cache_authoritative"] is False
+
+    def test_org_scoped_org_1_does_not_inherit_org_0s_sync(self, session, cluster):
+        """The tightening this change makes. The copy of this query that lived in
+        metadata_service filtered cluster_id + entity_type but NOT org_id, so a
+        never-synced org reported org 0's `last_synced` and looked healthy."""
+        _make_obj(session, guid="a", name="A", org_id=1)
+        _sync_log(session, status="SUCCESS", org_id=0)
+
+        stats = MetadataService.stats(cluster_id="test-cluster", org_id=1)
+        assert stats["total"] == 1  # anti-vacuity: org 1 really does have rows
+        assert stats["cache_authoritative"] is False
+        assert stats["last_synced"] is None
+
+        # ...and org 0 is unaffected, so this isn't "the query returns nothing".
+        assert MetadataService.stats(cluster_id="test-cluster", org_id=0)["cache_authoritative"] is True
+
+    def test_cluster_scoped(self, session, cluster):
+        _make_obj(session, guid="a", name="A")
+        _sync_log(session, status="SUCCESS", cluster_id="other-cluster")
+        assert MetadataService.stats(cluster_id="test-cluster", org_id=0)["cache_authoritative"] is False

@@ -74,7 +74,17 @@ async def resolve_downstream(
     Calls TS REST `/dependency/listdependents`, then enriches each dependent
     GUID against CachedMetadata. Dependents not in the local cache are
     omitted (the user can run a sync first if they want to see them).
+
+    Refuses outright on a non-authoritative metadata cache: dependents are
+    enriched *out of* the cache and silently dropped when absent, so a truncated
+    cache would under-report exactly the models and tables this mode exists to
+    find — and the user would delete a root believing nothing depends on it.
     """
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    # Fail closed BEFORE any live ThoughtSpot call.
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+
     from ts_admin.services.archiver_service import _get_cluster
     from ts_admin.ts_client import ThoughtSpotClient
 

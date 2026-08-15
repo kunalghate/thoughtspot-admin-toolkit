@@ -124,3 +124,16 @@ One line per cycle on process friction. Format:
   Friction: none from M8 this time. Both review agents used worktrees and the
   scratchpad as instructed and left the tree clean, so QA's gate run was
   trustworthy — the fix worked before the M8 row is even merged.
+- 2026-08-15 (S23): The M9 research question earned its place — asking "what would
+  the criteria's prescribed mechanism REMOVE?" before design is what caught that
+  option (a) would have shipped a defect the entire bar renders invisible. But M9
+  only covers the *criteria's* mechanism, not the *design's*: the write-ahead marker
+  was my own choice and its two CONFIRMED defects (a guard that cannot report itself,
+  and a marker that makes healthy syncs look broken) were found by the review board,
+  not by design. Both were invisible to a fully green bar — the third consecutive
+  cycle where that is true, which is M5's whole argument.
+  Friction: my own "do not touch `dashboard_service.py`" rule, written to avoid a
+  conflict with an in-flight PR of mine, would have shipped a real regression if the
+  regression lens had not caught it. Conflict-avoidance is not a safety constraint
+  and must yield to one; I lifted it mid-cycle. No process row filed — the rule was
+  mine for this cycle, not a standing one.

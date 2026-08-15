@@ -65,6 +65,11 @@ class DashboardResponse(BaseModel):
     # When each entity last synced successfully (null = never). Syncs are lazy
     # and per-entity, so cache freshness is only meaningful entity by entity.
     synced_at: dict[str, datetime | None]
+    # Per-entity "is a sync running right now?". `synced` goes False for the
+    # whole duration of a healthy sync (the write-ahead IN_PROGRESS marker
+    # replaces the SUCCESS row), so without this the UI cannot tell an in-flight
+    # sync apart from a cluster that has never synced.
+    syncing: dict[str, bool] = {}
     # Change in record_count since the previous successful sync of each entity.
     deltas: dict[str, int]
     attention: DashboardAttention

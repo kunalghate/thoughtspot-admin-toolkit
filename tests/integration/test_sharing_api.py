@@ -19,6 +19,7 @@ from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.share_record import ShareRecord
+from ts_admin.models.sync_log import SyncLog
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +83,10 @@ def seeded(in_memory_db):
             )
         )
 
+        # Certify the metadata cache as fully synced — /sharing/execute fails
+        # closed (409 StaleCacheError) without it, because the object_type it
+        # buckets the share calls by is read straight out of this cache.
+        session.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=2))
         session.add(
             CachedMetadata(
                 cluster_id="c1",

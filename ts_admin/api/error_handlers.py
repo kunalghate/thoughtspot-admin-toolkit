@@ -39,6 +39,7 @@ from ts_admin.ts_client.exceptions import (
     ConfigInvalidError,
     ConfigNotFoundError,
     KeyringError,
+    StaleCacheError,
     TSAdminError,
     TSAuthenticationError,
     TSConnectionError,
@@ -64,6 +65,9 @@ _STATUS_BY_TYPE: tuple[tuple[type[TSAdminError], int], ...] = (
     (TSInvalidParametersError, 400),
     (TSPartialSuccessError, 207),
     (TSRateLimitError, 429),
+    # The request is well-formed but conflicts with local state (the cache is
+    # mid-rebuild or was left truncated) — 409, and it becomes valid after a sync.
+    (StaleCacheError, 409),
     # Upstream (ThoughtSpot) is unreachable or misbehaving → 502 Bad Gateway.
     (TSConnectionError, 502),
     (TSSSLError, 502),

@@ -232,6 +232,13 @@ function buildSyncLabel(
   }
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
   if (log.status === "FAILED") return "Sync failed";
+  // An IN_PROGRESS marker is written before the sync deletes the cache and is
+  // only cleared when it finishes. `isSyncing` above is per-mount local state,
+  // so after a reload or in a second tab it is false while a perfectly healthy
+  // sync is still running — this branch is the ONLY thing that reports it.
+  // It must not claim "interrupted": a stranded marker and a running sync are
+  // indistinguishable from here, and "Syncing…" is the honest reading of both.
+  if (log.status === "IN_PROGRESS") return "Syncing…";
   if (!log.synced_at) return "Unknown";
 
   const minutes = Math.floor((now - new Date(log.synced_at + "Z").getTime()) / 60_000);
@@ -246,6 +253,8 @@ function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): s
   if (isSyncing) return theme.color.accent;
   if (!log || log.status === "NOT_SYNCED") return theme.color.danger;
   if (log.status === "FAILED") return theme.color.danger;
+  // Same token as the local isSyncing branch above — in-flight, not alarming.
+  if (log.status === "IN_PROGRESS") return theme.color.accent;
   if (!log.synced_at) return theme.color.textMuted;
 
   const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;
