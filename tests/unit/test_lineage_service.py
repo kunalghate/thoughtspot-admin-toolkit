@@ -313,3 +313,148 @@ async def test_build_is_cluster_scoped(monkeypatch, in_memory_db, patched_config
     graph_c2 = lineage_service.get_lineage_graph(cluster_id="c2", org_id=0, guid="model-1", root_kind="model")
     assert graph_c2 is not None
     assert graph_c2["nodes"] == [graph_c2["root"]]  # no edges → just the root node
+
+
+# ── S22: inaccessible endpoints are flagged, never deleted ──────────────────────
+
+
+async def test_lineage_graph_flags_endpoint_missing_from_metadata(monkeypatch, in_memory_db, patched_config):
+    """
+    A target deleted in TS leaves its edge behind (by design — the builder itself
+    writes edges whose target isn't cached yet). The read path must mark that node
+    `accessible=False` so it renders dashed, and must NOT delete the edge.
+    """
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    # table-1 is deleted in TS: its metadata row goes, its edge stays.
+    with Session(in_memory_db) as session:
+        row = session.exec(
+            select(CachedMetadata).where(
+                CachedMetadata.cluster_id == CLUSTER_ID,
+                CachedMetadata.ts_guid == "table-1",
+            )
+        ).one()
+        session.delete(row)
+        session.commit()
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="model-1", root_kind="model")
+    by_guid = {n["guid"]: n for n in graph["nodes"]}
+    assert by_guid["table-1"]["accessible"] is False  # ghost endpoint, dimmed
+    assert by_guid["model-1"]["accessible"] is True  # root still cached
+    assert by_guid["answer-1"]["accessible"] is True  # untouched consumer
+    assert graph["root"]["accessible"] is True
+
+    # The whole point of S22 over S6: the edge survives.
+    with Session(in_memory_db) as session:
+        edges = session.exec(select(CachedDependency).where(CachedDependency.cluster_id == CLUSTER_ID)).all()
+    assert ("model-1", "table-1") in {(e.source_guid, e.target_guid) for e in edges}
+
+
+async def test_lineage_graph_never_flags_connections_inaccessible(in_memory_db, patched_config):
+    """CONNECTIONs come from TML, never from CachedMetadata — absence proves nothing."""
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    with Session(in_memory_db) as session:
+        session.add(
+            CachedDependency(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                source_guid="table-1",
+                source_type="DB_TABLE",
+                source_name="DB Table 1",
+                target_guid="conn-1",
+                target_type="CONNECTION",
+                target_name="Snowflake Prod",
+                relation="CONNECTS",
+            )
+        )
+        session.commit()
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="table-1", root_kind="table")
+    conn = next(n for n in graph["nodes"] if n["guid"] == "conn-1")
+    assert conn["accessible"] is True
+
+
+async def test_lineage_graph_is_stable_across_repeated_reads(monkeypatch, in_memory_db, patched_config):
+    """
+    Regression for the rejected S6 purge: reading the graph must not mutate the
+    cache, so two identical reads return identical node/edge sets.
+    """
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    fake = _FakeClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    def _read():
+        g = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="model-1", root_kind="model")
+        return sorted((n["guid"], n["accessible"]) for n in g["nodes"])
+
+    with Session(in_memory_db) as session:
+        before = len(session.exec(select(CachedDependency)).all())
+    assert _read() == _read()
+    with Session(in_memory_db) as session:
+        assert len(session.exec(select(CachedDependency)).all()) == before
+
+
+# ── S25: composite index on the (cluster_id, org_id, ts_guid) identity key ──────
+
+
+def test_ts_metadata_has_composite_identity_index(in_memory_db):
+    from sqlalchemy import inspect
+
+    indexes = {i["name"]: i["column_names"] for i in inspect(in_memory_db).get_indexes("ts_metadata")}
+    assert indexes.get("ix_ts_metadata_cluster_org_guid") == ["cluster_id", "org_id", "ts_guid"]
+
+
+def test_identity_lookup_uses_the_composite_index(in_memory_db):
+    """Without it SQLite's no-stats heuristic picks ix_ts_metadata_cluster_id."""
+    from sqlalchemy import text
+
+    with Session(in_memory_db) as session:
+        plan = " ".join(
+            str(r)
+            for r in session.exec(
+                text(
+                    "EXPLAIN QUERY PLAN SELECT ts_guid FROM ts_metadata "
+                    "WHERE cluster_id = 'c1' AND org_id = 0 AND ts_guid = 'model-1'"
+                )
+            ).all()
+        )
+    assert "ix_ts_metadata_cluster_org_guid" in plan
+    assert "COVERING INDEX" in plan.upper()
+
+
+def test_missing_index_is_backfilled_on_an_existing_database(monkeypatch, tmp_path):
+    """
+    `create_all` never adds an index to a table that already exists, so an
+    already-installed DB would otherwise never get it.
+    """
+    from sqlalchemy import create_engine as sa_create_engine
+    from sqlalchemy import inspect, text
+
+    import ts_admin.database as db_module
+
+    db_file = tmp_path / "pre_existing.sqlite"
+    engine = sa_create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
+    monkeypatch.setattr(db_module, "get_engine", lambda: engine)
+
+    # Stand up the schema, then drop the index to simulate a pre-S25 database.
+    db_module.init_db()
+    with engine.begin() as conn:
+        conn.execute(text('DROP INDEX "ix_ts_metadata_cluster_org_guid"'))
+    assert "ix_ts_metadata_cluster_org_guid" not in {i["name"] for i in inspect(engine).get_indexes("ts_metadata")}
+
+    db_module.init_db()  # the backfill runs on every startup
+    assert "ix_ts_metadata_cluster_org_guid" in {i["name"] for i in inspect(engine).get_indexes("ts_metadata")}

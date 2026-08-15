@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Index, SQLModel
 
 
 class CachedMetadata(SQLModel, table=True):
@@ -17,6 +17,13 @@ class CachedMetadata(SQLModel, table=True):
     """
 
     __tablename__ = "ts_metadata"
+
+    # Existence/lookup by the full identity key. Without this, SQLite's no-stats
+    # heuristic picks the single-column ix_ts_metadata_cluster_id — the least
+    # selective of the three — and a per-object lookup degrades to a scan.
+    # create_all does NOT add indexes to an already-existing table, so
+    # database.init_db() also issues this as an explicit CREATE INDEX IF NOT EXISTS.
+    __table_args__ = (Index("ix_ts_metadata_cluster_org_guid", "cluster_id", "org_id", "ts_guid"),)
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
