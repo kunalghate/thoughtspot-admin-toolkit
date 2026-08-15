@@ -62,6 +62,9 @@ class DashboardResponse(BaseModel):
     # Per-entity "has this ever synced?" — lets the UI distinguish a real zero
     # from a number we simply do not have yet.
     synced: dict[str, bool]
+    # When each entity last synced successfully (null = never). Syncs are lazy
+    # and per-entity, so cache freshness is only meaningful entity by entity.
+    synced_at: dict[str, datetime | None]
     # Change in record_count since the previous successful sync of each entity.
     deltas: dict[str, int]
     attention: DashboardAttention

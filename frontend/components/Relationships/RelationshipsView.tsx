@@ -1,5 +1,6 @@
 /**
- * Relationship Visualizer — lineage explorer.
+ * Lineage explorer (the "Relationships" component/route name is historical —
+ * the API entity is `dependencies`, the UI calls all of it Lineage).
  *
  * Left "Browse" panel: a labeled segmented control (Logical Tables / Answers /
  * Liveboards) scoping a searchable object list with a "Recently viewed" section.

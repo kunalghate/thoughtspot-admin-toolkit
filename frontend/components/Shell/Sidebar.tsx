@@ -15,7 +15,7 @@ const BROWSE_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/users",         label: "Users",         icon: Users },
   { href: "/groups",        label: "Groups",        icon: UsersRound },
   { href: "/metadata",      label: "Metadata",      icon: FolderSearch },
-  { href: "/relationships", label: "Relationships", icon: GitFork },
+  { href: "/relationships", label: "Lineage", icon: GitFork },
 ];
 
 const OPERATE_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [

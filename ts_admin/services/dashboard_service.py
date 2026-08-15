@@ -128,7 +128,7 @@ class DashboardService:
             ]
 
             activity = DashboardService._recent_activity(session, cluster_id=cluster_id, org_id=org_id)
-            synced, deltas = DashboardService._sync_state(session, cluster_id=cluster_id, org_id=org_id)
+            synced, deltas, synced_at = DashboardService._sync_state(session, cluster_id=cluster_id, org_id=org_id)
             attention = DashboardService._attention(session, cluster_id=cluster_id, org_id=org_id, synced=synced)
 
         return {
@@ -143,6 +143,7 @@ class DashboardService:
                 "never_accessed": meta["never_accessed"],
             },
             "synced": synced,
+            "synced_at": synced_at,
             "deltas": deltas,
             "attention": attention,
             "recent_jobs": recent_jobs,
@@ -152,9 +153,12 @@ class DashboardService:
         }
 
     @staticmethod
-    def _sync_state(session: Session, *, cluster_id: str, org_id: int) -> tuple[dict[str, bool], dict[str, int]]:
+    def _sync_state(
+        session: Session, *, cluster_id: str, org_id: int
+    ) -> tuple[dict[str, bool], dict[str, int], dict[str, datetime | None]]:
         """
-        Per-entity "has this ever synced?" flags and record-count deltas.
+        Per-entity "has this ever synced?" flags, record-count deltas, and the
+        timestamp of the last successful sync.
 
         The flags exist so the UI can tell a real zero apart from a number we
         simply do not have yet — rendering "0 tags" for a cluster that has
@@ -163,9 +167,15 @@ class DashboardService:
         The delta is the change in `record_count` between the two most recent
         successful syncs of an entity (0 when there is no prior sync to compare
         against), which is the only true time series the cache keeps.
+
+        `synced_at` is per-entity on purpose: syncs are lazy and independent
+        (ADR-005), so "when was this cluster last synced?" has no single answer.
+        It reports the last SUCCESS only — a failed attempt does not make the
+        cached data any newer than the successful sync before it.
         """
         synced: dict[str, bool] = {}
         deltas: dict[str, int] = {}
+        synced_at: dict[str, datetime | None] = {}
         for entity in _TRACKED_ENTITIES:
             recent = session.exec(
                 select(SyncLog)
@@ -180,7 +190,8 @@ class DashboardService:
             ).all()
             synced[entity] = bool(recent)
             deltas[entity] = recent[0].record_count - recent[1].record_count if len(recent) == 2 else 0
-        return synced, deltas
+            synced_at[entity] = _naive(recent[0].synced_at) if recent else None
+        return synced, deltas, synced_at
 
     @staticmethod
     def _attention(session: Session, *, cluster_id: str, org_id: int, synced: dict[str, bool]) -> dict[str, int]:

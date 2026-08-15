@@ -13,13 +13,13 @@ CLI, with a full web UI that any admin can use without needing Python or termina
 
 | Feature | Status | Description |
 |---|---|---|
-| **Dashboard** | ✅ Available | Landing view — cache freshness per entity, content totals, and the shortcuts into every other screen. |
+| **Dashboard** | ✅ Available | Landing view — what needs attention, content totals, recent jobs and admin activity, and a cache-freshness strip showing when users, groups, metadata, and lineage each last synced. |
 | **Metadata Explorer** | ✅ Available | Searchable, filterable grid of all content — owner, tags, last accessed, views. Every column funnel sends real server-side filters (name / owner / tag substring, date ranges, numeric ranges). |
 | **Content Archiver** | ✅ Available | Find stale content, tag or delete with mandatory TML backup, dry-run impact check, restore from History. Archive + History grids share the same full-column filter model. |
 | **User Management** | ✅ Available | Search and filter users, transfer ownership, transfer sharing, bulk delete — every destructive action behind a dry-run preview. Click any row for a read-only audit drawer: group membership, effective privileges ("can do"), and a live on-demand permissions fetch ("can see"). |
 | **Group Management** | ✅ Available | Read-only group browser — privileges and member users per group, cluster- and org-scoped. Writes stay in the ThoughtSpot UI for now. |
 | **Bulk Sharing** | ✅ Available | Share content to users/groups in bulk, with an impact preview before anything is applied and a History tab of past runs. |
-| **Relationship Visualizer** | ✅ Available | Graph view of content dependencies plus a column-level lineage explorer — trace a model column back to its physical DB table/column and forward to everything that consumes it. |
+| **Lineage** | ✅ Available | Graph view of content dependencies plus a column-level lineage explorer — trace a model column back to its physical DB table/column and forward to everything that consumes it. |
 | **Content Deleter** | ✅ Available | Targeted deletion by GUID or search, with dependency resolution and the same dry-run + TML-backup guarantees as the Archiver. |
 | **Jobs** | ✅ Available | Every sync and bulk operation runs as a tracked background job with live progress and failure detail. |
 | **Diagnostics** | ✅ Available | Tail the application log in-app and download a support bundle (logs + recent failed jobs + app info, no credentials) to send to support. |
@@ -73,6 +73,27 @@ On first launch, the app walks you through connecting to your ThoughtSpot instan
 
 ---
 
+## Dashboard
+
+The landing page, read entirely from the local cache — it renders instantly even
+when the cluster is unreachable.
+
+- **Needs attention** — failed jobs, orphaned content, inactive users, empty
+  groups, stale content. Each row links to the screen that fixes it. When there
+  is nothing to act on, it says so.
+- **Counts** — users, groups, content objects, archivable content. An entity that
+  has never synced shows **—** and a Sync action rather than a misleading `0`.
+- **Cache freshness** — when users, groups, metadata, and lineage each last
+  synced. Syncs are lazy and independent, so every entity keeps its own clock: a
+  green dot means synced in the last 24 hours, amber means older, grey means
+  never. Hover a cell for the exact timestamp and a **Sync now** action. Only a
+  *successful* sync moves the clock — a failed attempt leaves the cache as old
+  as it was.
+- **Recent jobs** and **Recent admin activity** — what the cluster has been
+  doing, with the failure reason on any job that failed.
+
+---
+
 ## Content Archiver
 
 The Content Archiver helps admins identify, tag, and safely delete stale Liveboards and Answers.
@@ -116,7 +137,7 @@ privileges and the admin badge only appear once groups have been synced.
 
 ---
 
-## Relationship Visualizer
+## Lineage
 
 Two views over the same dependency cache:
 
@@ -127,8 +148,9 @@ Two views over the same dependency cache:
   it. Computed columns are labelled **ƒ Formula** rather than shown as a missing
   chain, since they are defined by a formula and have no physical source.
 
-Run a **dependencies** sync to build it. The build is incremental — unchanged
-liveboards are skipped on re-runs.
+Run a **Lineage** sync (the `dependencies` entity in the API and job log) to
+build it. The build is incremental — unchanged liveboards are skipped on
+re-runs.
 
 ---
 
