@@ -65,6 +65,12 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Put the repo root (rootdir) on sys.path so `from tests.unit.<mod> import ...`
+# and `import ts_admin` resolve under ANY install mode — not only the editable
+# install whose .pth happens to add the repo root. A bare `tests/conftest.py` is
+# NOT sufficient: with no `tests/__init__.py`, prepend-mode inserts `tests/`
+# itself, not the repo root (verified 2026-08-15 by renaming the .pth away).
+pythonpath = ["."]
 
 [tool.mypy]
 python_version = "3.10"

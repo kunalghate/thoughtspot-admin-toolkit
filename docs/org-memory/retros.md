@@ -90,3 +90,37 @@ One line per cycle on process friction. Format:
   CONFIRMED blockers, each reproduced as a measured `main`-vs-branch delta), and
   the security and performance lenses came back clean with the intended win
   quantified — so the reject is about the mechanism, not the goal.
+
+- 2026-08-15 (S27): **Shipped — the first cycle in three to end at a green PR on
+  this code path, and it did so by changing tests instead of behaviour.** The
+  sequencing lesson from the S7 reject held up: when a suite cannot detect the
+  class of error you keep making, harden the suite first. Concretely, the pre-S27
+  suite killed 9 of 48 mutations and was blind to *every* `cluster_id`/`org_id`
+  predicate in `build_column_map` — on an app whose constitution names
+  multi-cluster a v1 pillar. Nobody knew that until it was measured; three cycles
+  had reviewed this file without anyone counting.
+  What worked, and is worth repeating: **the acceptance evidence was a kill, not a
+  green bar.** Requiring every new test to be demonstrated red-then-green against
+  the specific mutation it targets caught two weak fixtures during development
+  (the diagonal shadow scope, the shared liveboard GUID) that would have shipped as
+  confident-looking dead weight. Also worth repeating: telling the reviewer *not*
+  to trust the implementer's own kill table. It re-ran 27 mutations independently
+  and agreed on all 27 including the documented survivors — which is what makes the
+  published table usable by the next cycle instead of merely reassuring.
+  The sharpest finding was self-referential: **the anti-vacuity tests were
+  fixture-vacuous.** Stub the shadow seeder and all 7 stayed green, because "X is
+  unchanged" is trivially true when X is empty — in the two tests that are the sole
+  killer of 12 scoping mutations. M4 says a guard test can be vacuous; S27 adds
+  that its *fixture* can be, one level below where anyone looks. New rule in
+  org-memory: any "X is unchanged" assertion must first assert X is non-empty.
+  Two process notes. **I skipped the architect stage deliberately** — test-only,
+  zero production change, so there was no mechanism to vet and the S6/S7 failure
+  mode was structurally absent. That was the right call here and should not become
+  a habit. And **M9 bit me inside the row filed to prevent it**: S27's criteria
+  enumerate a mutation ("reordering the post-persist write") that exists only on
+  the rejected S7 branch, because I wrote the row with that design still in hand.
+  Criteria written at the end of a failed cycle inherit its assumptions — write
+  them against `main`, or mark them provisional.
+  Friction: none from M8 this time. Both review agents used worktrees and the
+  scratchpad as instructed and left the tree clean, so QA's gate run was
+  trustworthy — the fix worked before the M8 row is even merged.

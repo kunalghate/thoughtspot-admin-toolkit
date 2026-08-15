@@ -171,6 +171,55 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   no `ts_metadata` row** — the model docstring (`models/cache/ts_dependency.py:6-9`)
   calls them "connections and inaccessible stubs" carrying a denormalized name.
   Deleting them contradicts the table's design.
+## Lineage mutation coverage (S27)
+
+- 2026-08-15 (S27): **Measured — 48 mutations in `build_column_map`'s incremental
+  path, only 9 killed by the pre-S27 suite.** `tests/unit/test_lineage_incremental.py`
+  is now the **sole** killer of 12 `cluster_id`/`org_id` scoping mutations across
+  the seven queries in that path. `tests/integration/test_cluster_isolation.py`
+  cannot cover this — `READ_ENDPOINTS` tests read *endpoints*, not cache *writers*.
+  Do not delete or "simplify" that file's fixture.
+- 2026-08-15 (S27): **Two shadow scopes are mandatory in a cross-scope test.** A
+  single diagonal `(c2, org 1)` shadow is excluded by *either* predicate alone, so
+  dropping just `cluster_id` — or just `org_id` — survives. Need `(c1, org 1)` AND
+  `(c2, org 0)` (`SHADOW_SCOPES`, `tests/unit/test_lineage_incremental.py:47`).
+  Also: a shadow sharing the liveboard GUID is protected by the very
+  `not_in(all_lb_guids)` predicate under test, so each shadow needs a scope-unique
+  liveboard (`local_lb`, `:73`).
+- 2026-08-15 (S27): **Any test whose assertion is "X is unchanged" must first
+  assert X is non-empty.** The S27 cross-scope tests were themselves
+  fixture-vacuous: an early `return` in `_seed_shadow` left all 7 green because
+  `before == after == {}`. Guarded at `:250` and `:303`. This is M4's lesson one
+  level up — the *fixture*, not the assertion, was the single point of failure.
+- 2026-08-15 (S27): **`build_column_map` IS idempotent on current `main`** — two
+  no-change builds produce identical exact counts for all four cache tables and
+  preserve the liveboard `USES` edge. The suspected "unchanged liveboards lose
+  their edges every build" defect does NOT exist; pinned by
+  `test_second_build_with_nothing_changed_is_idempotent`.
+- 2026-08-15 (S27): Mutation-harness rules (full recipe in
+  [docs/dev/TESTING.md](../dev/TESTING.md)): mutate **by line** and confirm
+  `git diff --numstat` prints `1\t1` BEFORE running pytest — the `_changed` line is
+  byte-identical at `lineage_service.py:559` and `:897`, so a replace-all hits both
+  and a failed replace looks like "mutation survived". Work in a throwaway
+  `git worktree` and run it with `PYTHONPATH=<worktree> python3 -m pytest`, or the
+  editable-install `.pth` silently points at the main checkout and you test
+  unmutated code.
+- 2026-08-15 (S27): Removing either `is None` disjunct from `_changed` kills via
+  **`TypeError`** (`datetime > None`), surfacing as pytest `FAILED` (call phase),
+  not `ERROR`. An `ERROR` there means the harness misfired.
+- 2026-08-15 (S27): `lineage_service.py:752` `if lb_guids:` is an **equivalent
+  mutant** — flipping it to `if True:` changes nothing, because `col(...).in_([])`
+  compiles to always-false. Note this is the exact opposite of the
+  `not_in(<empty>)` hazard above; the asymmetry cuts both ways in this one function.
+- 2026-08-15 (S27): `pyproject.toml` now sets `pythonpath = ["."]` under
+  `[tool.pytest.ini_options]`. Before that, both `import ts_admin` and any
+  `from tests.unit.X import ...` resolved **only** via the hatchling editable
+  install's `.pth`. A bare `tests/conftest.py` does NOT fix it — with no
+  `tests/__init__.py`, prepend-mode inserts `tests/`, not the repo root (verified
+  by renaming the `.pth` away). Side effect of cross-module test imports: the
+  imported module is loaded twice under two names, so never add module-level
+  mutable state or session-scoped fixtures to a test module others import from.
+
 ## Lineage cache — why a persisted liveboard watermark is unsound (S7, rejected)
 
 - 2026-08-15 (S7): **The real liveboard self-heal is the `NULL` watermark, not

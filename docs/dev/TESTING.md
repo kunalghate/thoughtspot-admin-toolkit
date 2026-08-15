@@ -28,6 +28,10 @@ and `tests/integration/`.
 - If it calls the ThoughtSpot API, mock the client following
   [tests/unit/test_deletion_service.py](../../tests/unit/test_deletion_service.py)'s `_FakeClient` pattern,
   or use `respx.mock` ([tests/unit/test_auth.py](../../tests/unit/test_auth.py)).
+- A green bar on a delete-before-insert / incremental-watermark service means
+  very little on its own — measure it. See
+  [Mutation testing the lineage builder](#mutation-testing-the-lineage-builder)
+  for the harness and the four test shapes that actually kill those mutations.
 
 ### New router (`ts_admin/api/foo.py`)
 
@@ -58,6 +62,98 @@ and `tests/integration/`.
   `frontend/tests/e2e/` modeled on
   [frontend/tests/e2e/archiver-dry-run.spec.ts](../../frontend/tests/e2e/archiver-dry-run.spec.ts).
   Use `data-testid` attributes on the elements you need to click.
+
+## Mutation testing the lineage builder
+
+`tests/unit/test_lineage_columns.py` was measured **mutation-vacuous** in the S7
+cycle: six of seven mutations to `build_column_map` left every test green. S27
+added [tests/unit/test_lineage_incremental.py](../../tests/unit/test_lineage_incremental.py)
+and re-measured. Everything below is a run that was actually executed on
+2026-08-15 against `improve/S27-lineage-mutation-coverage`; baseline for the
+three-file lineage set (`test_lineage_columns.py`, `test_lineage_service.py`,
+`test_lineage_incremental.py`) is **37 passed**.
+
+### The harness (four rules, all learned the hard way)
+
+1. **Mutate by LINE, never by string replace.** The `_changed` predicate
+   `return not incremental or last_built is None or modified_at is None or modified_at > last_built`
+   is **byte-identical** at `lineage_service.py:559` (`build_column_map`) and
+   `:897` (`build_answer_index`). A replace-all hits both and you learn nothing
+   about either.
+2. **Prove the edit landed before you run pytest.** After every mutation:
+
+   ```bash
+   git diff --numstat -- ts_admin/services/lineage_service.py   # MUST print "1<TAB>1"
+   ```
+
+   A failed/duplicated replace silently produces a green "mutation survived"
+   false result. Verified: the same edit applied as a string replace-all prints
+   `2	2` — abort on anything that is not `1	1`.
+3. **Restore with `git checkout -- <file>` and re-confirm green** before the next
+   mutation.
+4. **Do the experiments in a throwaway `git worktree`** (`git worktree add
+   --detach <scratch-path> HEAD`), never in the working checkout — a mutation
+   left behind reddens another agent's gate run (BACKLOG M8). Note the editable
+   install points at the main checkout, so run the worktree copy explicitly:
+   `PYTHONPATH=<worktree> python3 -m pytest ...`, and sanity-check
+   `python3 -c "import ts_admin; print(ts_admin.__file__)"` resolves inside the
+   worktree first. Remove the worktree when done.
+
+### Kill table (measured 2026-08-15)
+
+Every KILLED row below was observed red-then-restored-green. "Killed only by the
+new file" means the other 36 tests stayed green under that mutation — i.e. the
+pre-S27 suite was blind to it.
+
+| ID | Line | Mutation | Result | Killed by |
+|---|---|---|---|---|
+| X1 | 532 | metadata read: `org_id == org_id` (drop org scoping) | KILLED (only by new file) | `test_build_column_map_is_scoped_to_one_cluster_and_org` |
+| X2 | 531 | metadata read: drop `cluster_id` scoping | KILLED (only by new file) | same |
+| X3 | 538 | `last_built` watermark: drop `org_id` scoping | KILLED (only by new file) | same |
+| X4 | 537 | `last_built` watermark: drop `cluster_id` scoping | KILLED (only by new file) | same |
+| X5 | 545 | `has_lb_edges` probe: drop `org_id` scoping | KILLED (only by new file) | `test_self_heal_probe_ignores_other_scopes` |
+| X6 | 544 | `has_lb_edges` probe: drop `cluster_id` scoping | KILLED (only by new file) | same |
+| X7 | 712 | lineage full-rebuild delete: drop `org_id` scoping | KILLED (only by new file) | `test_build_column_map_is_scoped_to_one_cluster_and_org` |
+| X8 | 711 | lineage full-rebuild delete: drop `cluster_id` scoping | KILLED (only by new file) | same |
+| X9 | 737 | orphan LB-edge purge: drop `org_id` scoping | KILLED (only by new file) | same |
+| X10 | 746 | orphan LB-usage purge: drop `org_id` scoping | KILLED (only by new file) | same |
+| X11 | 736 | orphan LB-edge purge: drop `cluster_id` scoping | KILLED (only by new file) | same |
+| X12 | 745 | orphan LB-usage purge: drop `cluster_id` scoping | KILLED (only by new file) | same |
+| I1 | 740 | orphan LB-edge purge `not_in` → `in_` | KILLED | `test_second_build_with_nothing_changed_is_idempotent` + pre-existing `test_column_map_purges_deleted_liveboards` |
+| I2 | 748 | orphan LB-usage purge `not_in` → `in_` | KILLED | same pair |
+| I3 | 720 | CONNECTS full-rebuild delete neutered (`relation == "CONNECTS_NEVER"`) | KILLED (only by new file) | idempotence + cross-scope tests |
+| I4 | 711 | lineage full-rebuild delete neutered (`cluster_id == "no-such-cluster"`) | KILLED (only by new file) | idempotence + cross-scope tests |
+| K1 | 747 | orphan usage purge loses `consumer_type == "LIVEBOARD"` (eats ANSWER usage) | KILLED (only by new file) | `test_column_build_preserves_answer_usage_and_object_edges` |
+| K2 | 739 | orphan edge purge loses `source_type == "LIVEBOARD"` (eats object-tier edges) | KILLED (only by new file) | same |
+| H1 | 559 | drop the `last_built is None` disjunct | KILLED (only by new file, **via `TypeError`**) | `test_null_watermark_alone_forces_a_full_liveboard_recrawl` |
+| H2 | 559 | drop the `modified_at is None` disjunct | KILLED (only by new file, **via `TypeError`**) | `test_liveboard_with_null_modified_at_is_always_recrawled` |
+| H3 | 569 | remove the empty-universe early return (`if False:`) | KILLED (only by new file) | `test_empty_metadata_universe_returns_early_and_touches_nothing` |
+| H4 | 564 | remove the `has_lb_edges` self-heal (`if False:`) | KILLED | `test_self_heal_probe_ignores_other_scopes` + pre-existing `test_column_map_self_heals_missing_liveboard_edges` |
+| H1b | **897** | H1 applied to the byte-identical twin in `build_answer_index` | **SURVIVED** | nothing — see gaps below |
+| K3 | 766 | scoped usage delete loses `consumer_type == "LIVEBOARD"` | SURVIVED | not killable with realistic data — see gaps |
+| K4 | 758 | scoped edge delete loses `source_type == "LIVEBOARD"` | SURVIVED | not killable with realistic data — see gaps |
+| EQ1 | 752 | `if lb_guids:` → `if True:` | SURVIVED (expected) | equivalent mutant — see gaps |
+
+Two fixture facts fell out of the measurement and are load-bearing; don't
+"simplify" them away:
+
+- **Two shadow scopes are required, not one.** A single `(c2, org 1)` shadow is
+  excluded by *either* predicate alone, so X1 and X2 both survived against it.
+  The fixture seeds `(c1, org 1)` *and* `(c2, org 0)`.
+- **Each shadow needs a scope-unique liveboard GUID.** With only shared GUIDs,
+  X9–X12 survived: the shadow's rows are inside `all_lb_guids` and therefore
+  protected by the very `not_in` predicate under test.
+
+### Known non-kills (recorded, deliberately not chased)
+
+| ID | What | Why it is not killed |
+|---|---|---|
+| M10 | the `not incremental` disjunct at `:559` | Dead code — no production caller passes `incremental=False` (`api/relationships.py` → `run_deep_index` → `incremental=True`). Killing it would require a test-only entry point. |
+| P08 / P26 | purge predicates that only differ on physically-impossible rows | Only killable by seeding rows the writers cannot produce. |
+| K3 / K4 | `consumer_type`/`source_type` on the **scoped** (`in_(lb_guids)`) deletes | Same family as P08/P26: those deletes are already keyed on a liveboard GUID, and no ANSWER usage row or object-tier edge can carry a liveboard GUID in that position (`_edges_from_dependents` skips liveboard dependents by design). |
+| EQ1 / P17b | `if lb_guids:` → `if True:` | **Equivalent mutant.** `in_([])` is always false, so the guarded deletes are no-ops when `lb_guids` is empty. Confirmed by measurement (survived, as expected). Do not try to kill it. |
+| H1b | the `_changed` twin in `build_answer_index` (`:897`) | **Genuine gap, not equivalent.** `build_answer_index`'s incremental predicate has no pinning test at all. S27 scoped only `build_column_map`; file a backlog row before touching the answer index. |
+| O1 | removing the delete-phase `commit()` at `:770` | Only observable via crash injection between the delete and the insert. Deferred — owned by BACKLOG S29. |
 
 ## How to run
 
