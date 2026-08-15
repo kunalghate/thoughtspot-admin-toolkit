@@ -147,10 +147,12 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   created in TS after the last metadata sync makes two bit-identical
   `build_column_map` runs produce different databases. Any purge here must not
   contradict `:656`.
-- 2026-08-14 (S6): **Deleting a lineage row is effectively permanent.**
-  `build_column_map` only re-exports *changed* liveboards, and the only self-heal
-  (`has_lb_edges`, `:540-547`) fires solely when **every** liveboard edge is gone —
-  one surviving edge suppresses it forever. `build_answer_index` has the same
+- 2026-08-14 (S6), **amended 2026-08-15 (S7): the `has_lb_edges` half of this
+  bullet was wrong and it misled the S7 cycle.** `has_lb_edges` is NOT the real
+  self-heal — see the S7 bullet below for the mechanism that actually recovers
+  liveboard-edge loss. The rest stands: **deleting a lineage row is effectively
+  permanent.** `build_column_map` only re-exports *changed* liveboards.
+  `build_answer_index` has the same
   shape: its watermark is `max(synced_at)` over the *surviving* ANSWER rows, so a
   **partial** deletion is permanent while a total one self-heals. Partial loss is
   worse than total loss in both writers. There is no non-incremental entry point
@@ -169,6 +171,63 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   no `ts_metadata` row** — the model docstring (`models/cache/ts_dependency.py:6-9`)
   calls them "connections and inaccessible stubs" carrying a denormalized name.
   Deleting them contradicts the table's design.
+## Lineage cache — why a persisted liveboard watermark is unsound (S7, rejected)
+
+- 2026-08-15 (S7): **The real liveboard self-heal is the `NULL` watermark, not
+  `has_lb_edges`.** `build_column_map`'s watermark is
+  `max(CachedColumnLineage.synced_at)`, and `_persist_column_map` delete-and-
+  rebuilds that whole table every run. So **any build producing zero
+  `lineage_rows` leaves the watermark NULL, which force-re-crawls every
+  liveboard on the next build** — that is what recovered total edge loss. Zero
+  lineage rows is reachable and ordinary: every logical-table TML export 403-stubs
+  (`_load_edoc → None`), or `table_guids == []` because `CachedMetadata` is
+  mid-repopulation. **Any change that persists the liveboard watermark
+  independently of the lineage rows MUST replace this recovery explicitly.**
+  Pinned by `test_total_liveboard_edge_loss_recovers_on_next_build`.
+- 2026-08-15 (S7): **Do not make an independent `SyncLog` marker the liveboard
+  tier's sole watermark.** A full implementation passed the entire bar and was
+  rejected; it lives at `improve/S7-liveboard-tier-marker` @ `3cdda08`. Root
+  cause, worth generalizing: **a watermark derived from the data it certifies
+  self-invalidates when that data is destroyed; an independent marker does not.**
+  A crash between `_persist_column_map`'s delete-commit and its insert loop then
+  leaves the edges gone and the previous SUCCESS marker intact → permanent loss
+  (S29). Same for the upgrade path: "no marker ⇒ all liveboards changed" drags
+  the build past the `if not table_guids and not lb_guids: return 0` early return
+  with a *partial* metadata cache, and the `not_in(all_lb_guids)` purge eats the
+  absent liveboards' edges — `main` never even purges there.
+- 2026-08-15 (S7): **The `not_in(all_lb_guids)` purge's safety argument has a
+  precondition.** The 2026-08-14 bullet says an empty `all_lb_guids` genuinely
+  means "no liveboards exist" because `build_column_map` early-returns when
+  metadata is unsynced. That holds ONLY while nothing else can force `lb_guids`
+  non-empty. Once something can, `all_lb_guids` may be **partial** rather than
+  empty-or-complete, and the purge deletes live data. Check this precondition
+  before adding any new reason to skip the early return.
+- 2026-08-15 (S7): **A bare timestamp watermark cannot express "not yet
+  crawled."** `CachedMetadata.modified_at` reflects TS content edits, NOT
+  permission grants — a liveboard shared with the admin after a build enters the
+  cache with an old `modified_at` and is skipped forever. Same for a liveboard
+  arriving via a late/interrupted metadata sync. **Present on `main` today**
+  (filed S28); a crawled-GUID set is the sound formulation.
+- 2026-08-15 (S7): **`tests/unit/test_lineage_columns.py` was mutation-vacuous** —
+  6 of 7 mutations to `build_column_map` left all 16 tests green, including
+  `_lb_changed` → never re-crawl anything ever. Cause: **no test seeded a FUTURE
+  `lb_modified`**, so "a changed liveboard re-exports" was never asserted. Two
+  pinning tests were added (S27 tracks finishing the job). **Mutation-test this
+  file before trusting a green bar on any lineage change.**
+- 2026-08-15 (S7): `sync_log` is bounded at clusters × orgs × entity_types —
+  every writer upserts on `(cluster_id, org_id, entity_type)`
+  (`sync_service._write_sync_log`, `lineage_service._write_dependencies_sync_log`),
+  none append. It has only single-column `cluster_id`/`org_id` indexes, so a
+  multi-column predicate binds `ix_sync_log_org_id` and post-filters (the S25
+  pathology) — **acceptable only because of that bound.** A future appending
+  writer would make it unbounded and require a composite index. Note there is no
+  unique constraint, so any reader using `.first()` should `ORDER BY synced_at
+  DESC` as `dashboard_service.py:178` and `metadata_service.py:272` do.
+- 2026-08-15 (S7): `api/sync.py::get_sync_status` over-selects rows but renders
+  through the `VALID_ENTITIES` **allowlist** (`:65`), which is what makes internal
+  `entity_type` marker rows safe to add. The safety is in the render loop, not the
+  query — anyone "optimizing" that loop to iterate `rows` would leak internal
+  bookkeeping to the UI.
 - 2026-08-14 (S6): The `accessible` flag is **plumbed end-to-end but never set
   `False`** — `_node_from_edge_endpoint(..., accessible: bool = True)`
   (`lineage_service.py:1169`) is the only producer and no call site passes it;

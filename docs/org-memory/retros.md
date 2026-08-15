@@ -58,3 +58,35 @@ One line per cycle on process friction. Format:
   `ts_metadata`; sync tasks blocking the event loop) are latent on `main`,
   independent of the rejected diff — and one of them *blocks the replacement*
   this cycle recommended. Read late reports; file what outlives the diff.
+
+- 2026-08-15 (S7): **Rejected at review — the second consecutive cycle to build,
+  fully verify, and then reject a lineage change.** The pattern is now clear
+  enough to name: *the criteria prescribed a mechanism, and nobody checked what
+  that mechanism would remove.* S7's criteria say "keyed off a persisted
+  'liveboard tier last built' marker"; the CEO designed straight to that wording,
+  the researcher mapped the code faithfully, the architect planned it cleanly, and
+  all three missed that `has_lb_edges` — the thing the criteria told us to delete —
+  was **not** the real self-heal. The actual recovery was an accident of
+  `_persist_column_map` rebuilding `CachedColumnLineage` every run, which no test
+  named and no reader noticed. The correctness lens found it only by mutation.
+  Filed as **M9**: research must answer "what does the current code do that this
+  mechanism would remove, and what load-bearing behaviour has no test?" *before*
+  design. Second lesson, and the sharper one: **when a suite cannot detect the
+  class of error you keep making, harden the suite before changing the behaviour
+  again.** 6 of 7 mutations left all 16 lineage tests green, including "never
+  re-crawl anything, ever." A third design attempt against that suite would have
+  been guessing with extra steps, so the cycle shipped the two missing pinning
+  tests instead and filed **S27** (P1) to block any S7 re-attempt until the rest
+  land. Third: **I authorised the vacuity myself.** My plan told the implementer
+  to rewrite an existing regression test's setup so it would pass — and that added
+  line deleted exactly the state two blockers land in. M4 warned about this one
+  cycle ago and I re-committed it at the design step; "the plan said to" is not a
+  defence. Cheap rule that would have caught it: check out the pre-change test
+  file and run it against the branch. Friction, repeating from S6 and now filed as
+  **M8** rather than just noted: review agents again wrote scratch repros into
+  `tests/unit/` of the *shared* checkout and flipped QA's suite red mid-run —
+  serialization has to cover file writes, not only ports. What went right: the
+  parallel Review Board earned its cost outright (four lenses, three independent
+  CONFIRMED blockers, each reproduced as a measured `main`-vs-branch delta), and
+  the security and performance lenses came back clean with the intended win
+  quantified — so the reject is about the mechanism, not the goal.

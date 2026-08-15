@@ -12,7 +12,7 @@ db_column_name, liveboard.visualizations[].answer with fqn/search_query).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.pool import StaticPool
@@ -291,6 +291,38 @@ async def test_build_column_map_incremental_skips_unchanged_liveboards(monkeypat
     assert "model-1" in fake.exported and "table-1" in fake.exported
 
 
+async def test_build_column_map_reexports_changed_liveboard(monkeypatch, in_memory_db, patched_config):
+    """
+    The falsifier for the incremental watermark: a liveboard that genuinely
+    changed since the last build MUST be re-exported.
+
+    The timestamp has to be in the FUTURE, not `now` — `last_built` is the first
+    build's `synced_at`, which is strictly later than any `modified_at` seeded at
+    seed time, so `lb_modified=now` still reads as unchanged.
+    """
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported  # first build exports everything
+
+    future = datetime.now(tz=timezone.utc) + timedelta(days=365)
+    with Session(in_memory_db) as session:
+        row = session.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == "lb-1")).one()
+        row.modified_at = future
+        session.add(row)
+        session.commit()
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported
+
+
 async def test_object_graph_rebuild_preserves_phase2_edges(monkeypatch, in_memory_db, patched_config):
     """
     Regression: Phase 1's delete-before-insert must not wipe the edges only
@@ -340,6 +372,57 @@ async def test_column_map_self_heals_missing_liveboard_edges(monkeypatch, in_mem
     fake.exported.clear()
     await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
     assert "lb-1" in fake.exported  # unchanged, but re-exported to heal
+    with Session(in_memory_db) as session:
+        lb_uses = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
+    assert lb_uses and lb_uses[0].target_guid == "model-1"
+
+
+async def test_total_liveboard_edge_loss_recovers_on_next_build(monkeypatch, in_memory_db, patched_config):
+    """
+    Pins the accidental self-heal for total lineage loss.
+
+    Two independent mechanisms recover from this state today, and each one alone
+    is sufficient on current code (verified by mutation, 2026-08-15):
+
+    1. `max(CachedColumnLineage.synced_at)` goes NULL once every lineage row for
+       the scope is deleted, which makes `_changed()` treat every liveboard as
+       changed. This is accidental — it falls out of `_persist_column_map`
+       delete-and-rebuilding the lineage table every run, and is named by no
+       other test.
+    2. The explicit `has_lb_edges` probe (`lineage_service.py:541,564`).
+
+    Because they are redundant, this test only goes red when BOTH are gone. Any
+    change that persists the liveboard watermark independently of the lineage
+    rows (e.g. a dedicated build-timestamp row surviving the delete-and-rebuild)
+    removes mechanism 1 silently — mechanism 2 must then stay, or be replaced
+    explicitly.
+    """
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    _seed(in_memory_db, lb_modified=old)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    with Session(in_memory_db) as session:
+        session.exec(sql_delete(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD"))
+        session.exec(
+            sql_delete(CachedColumnLineage).where(
+                CachedColumnLineage.cluster_id == CLUSTER_ID,
+                CachedColumnLineage.org_id == 0,
+            )
+        )
+        session.commit()
+
+    fake.exported.clear()
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert "lb-1" in fake.exported
     with Session(in_memory_db) as session:
         lb_uses = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
     assert lb_uses and lb_uses[0].target_guid == "model-1"
