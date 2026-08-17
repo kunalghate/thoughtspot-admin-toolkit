@@ -1,9 +1,7 @@
 # ThoughtSpot Admin Toolkit
 
 > **⚠️ Community tool — not a ThoughtSpot product.**
-> This is **not** part of the ThoughtSpot product and is **not supported by the
-> ThoughtSpot product team, Support, or Professional Services**. It was built by
-> the community as a helper for advanced ThoughtSpot administrators. It is
+> This is **not** part of the ThoughtSpot product and is **not supported by the ThoughtSpot product team**. Built by CS/PS team and It is
 > provided as-is, with no warranty and no SLA. Use at your own risk — and test
 > against a non-production cluster first.
 
