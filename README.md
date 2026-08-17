@@ -1,11 +1,35 @@
 # ThoughtSpot Admin Toolkit
 
+> **⚠️ Community tool — not a ThoughtSpot product.**
+> This is **not** part of the ThoughtSpot product and is **not supported by the
+> ThoughtSpot product team, Support, or Professional Services**. It was built by
+> the community as a helper for advanced ThoughtSpot administrators. It is
+> provided as-is, with no warranty and no SLA. Use at your own risk — and test
+> against a non-production cluster first.
+
 A web application for ThoughtSpot administrators. Provides workflows and tools
 for managing ThoughtSpot instances that go beyond what's available out of the box —
 content governance, bulk operations, metadata exploration, and more.
 
 Built as a modern alternative to the [CS Tools](https://thoughtspot.github.io/cs_tools/)
 CLI, with a full web UI that any admin can use without needing Python or terminal knowledge.
+
+---
+
+## Support & expectations
+
+- **Not a ThoughtSpot product.** No ThoughtSpot product, support, or engineering
+  team owns, endorses, or maintains this toolkit. Do not open ThoughtSpot Support
+  tickets for it.
+- **Community-maintained.** Bugs, questions, and feature requests belong in this
+  repository's GitHub issues. Fixes happen on a best-effort basis.
+- **Built for advanced admins.** It performs bulk and destructive operations
+  (delete, transfer ownership, bulk share) against a live cluster. Every
+  destructive action has a dry-run preview and TML backup, but you are
+  responsible for what you run.
+- **Uses only the public [ThoughtSpot REST API v2](https://developers.thoughtspot.com/docs/rest-api-getstarted).**
+  It relies on no private or internal endpoints, but ThoughtSpot may change its
+  APIs at any time without notice, which can break this tool.
 
 ---
 
