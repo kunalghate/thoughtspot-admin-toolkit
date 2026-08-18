@@ -2,7 +2,12 @@ import { useState } from "react";
 import { ChevronDown, RefreshCw, WifiOff } from "lucide-react";
 import { theme } from "@/lib/theme";
 import UpdatePill from "./UpdatePill";
+import { buildSyncColor, buildSyncLabel } from "./Topbar.helpers";
 import type { EntityType, Org, SyncLog } from "@/lib/types";
+
+/** Full offline sentence — rendered AND used as the badge's hover title, since
+ *  the visible text ellipsises on a narrow viewport. */
+const OFFLINE_MESSAGE = "Instance offline — showing cached data";
 
 const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
   metadata: "Metadata",
@@ -37,7 +42,7 @@ export default function Topbar({
 }: TopbarProps) {
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
 
-  const syncLabel = buildSyncLabel(syncLog, isSyncing, syncProgress, now);
+  const syncLabel = buildSyncLabel(syncLog, isSyncing, syncProgress, now, entityType);
   const syncColor = buildSyncColor(syncLog, isSyncing, now);
   const syncButtonLabel = isSyncing ? "Syncing…" : `Sync ${ENTITY_LABELS[entityType!] ?? ""}`;
 
@@ -53,23 +58,47 @@ export default function Topbar({
       padding: "0 24px", gap: 12, flexShrink: 0,
     }}>
       {/* Page title + optional offline badge */}
+      {/* `minWidth: 0` here is what delivers a narrow-viewport deficit INTO this
+          column instead of pushing it onto the org selector (which is rigid and
+          would be clipped off-screen — measured at 52/176/276px past the right
+          edge at 1024/900/800). It is only safe because BOTH children below can
+          absorb it: the h1 and the offline badge each ellipsise. Re-adding
+          `flexShrink: 0` to the badge without removing this line is exactly the
+          bug this replaced — a rigid child in a zero-floor column paints on top
+          of the sync indicator.
+          Do NOT add `overflow: hidden` here: per CSS Flexbox 4.5 it computes the
+          column's automatic minimum size to 0 (`min-width: auto` applies only
+          while the computed overflow is `visible`), so it is not the harmless
+          belt-and-braces it looks like — it silently duplicates `minWidth: 0`.
+          Measured in headless Chromium at 1440/1280/1152/1024/900/800, offline
+          and online: no overlap, and the org selector fits at every width. */}
       <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
         <h1 style={{
           margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         }}>
           {pageTitle}
         </h1>
         {isOffline && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 5,
-            padding: "3px 10px", borderRadius: 20,
-            background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
-            fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
-            whiteSpace: "nowrap", flexShrink: 0,
-          }}>
-            <WifiOff size={11} />
-            Instance offline — showing cached data
+          // Shrinkable on purpose (no `flexShrink: 0`): the badge is the thing
+          // that degrades once the h1 has given up its width, so the sync
+          // indicator, the sync button and the org selector never move. The
+          // WifiOff icon stays rigid, so the worst case is still a recognisable
+          // offline glyph, and `title` keeps the full sentence discoverable.
+          <div
+            title={OFFLINE_MESSAGE}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "3px 10px", borderRadius: 20,
+              background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
+              fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
+              whiteSpace: "nowrap", minWidth: 0, overflow: "hidden",
+            }}
+          >
+            <WifiOff size={11} style={{ flexShrink: 0 }} />
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {OFFLINE_MESSAGE}
+            </span>
           </div>
         )}
       </div>
@@ -225,55 +254,6 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
       </div>
     </>
   );
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-export function buildSyncLabel(
-  log: SyncLog | null,
-  isSyncing: boolean,
-  progress: { processed: number; total: number } | null,
-  now: number,
-): string {
-  if (isSyncing) {
-    if (progress && progress.total > 0) return `Syncing ${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
-    // No grand total from the TS API — show the live running count instead.
-    // Not `Syncing 6,400…`: a number followed by an ellipsis reads as a number
-    // that got truncated, not as a sync still in flight.
-    if (progress && progress.processed > 0) return `Syncing — ${progress.processed.toLocaleString()} objects`;
-    return "Syncing…";
-  }
-  if (!log || log.status === "NOT_SYNCED") return "Never synced";
-  if (log.status === "FAILED") return "Sync failed";
-  // An IN_PROGRESS marker is written before the sync deletes the cache and is
-  // only cleared when it finishes. `isSyncing` above is per-mount local state,
-  // so after a reload or in a second tab it is false while a perfectly healthy
-  // sync is still running — this branch is the ONLY thing that reports it.
-  // It must not claim "interrupted": a stranded marker and a running sync are
-  // indistinguishable from here, and "Syncing…" is the honest reading of both.
-  if (log.status === "IN_PROGRESS") return "Syncing…";
-  if (!log.synced_at) return "Unknown";
-
-  const minutes = Math.floor((now - new Date(log.synced_at + "Z").getTime()) / 60_000);
-  if (minutes < 2)  return "Synced just now";
-  if (minutes < 60) return `Synced ${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24)   return `Synced ${hours}h ago`;
-  return `Synced ${Math.floor(hours / 24)}d ago`;
-}
-
-export function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): string {
-  if (isSyncing) return theme.color.accent;
-  if (!log || log.status === "NOT_SYNCED") return theme.color.danger;
-  if (log.status === "FAILED") return theme.color.danger;
-  // Same token as the local isSyncing branch above — in-flight, not alarming.
-  if (log.status === "IN_PROGRESS") return theme.color.accent;
-  if (!log.synced_at) return theme.color.textMuted;
-
-  const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;
-  if (hours < 1) return theme.color.success;
-  if (hours < 6) return theme.color.textMuted;
-  return theme.color.warn;
 }
 
 /**

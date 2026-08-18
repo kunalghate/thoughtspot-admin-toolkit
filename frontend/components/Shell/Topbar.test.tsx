@@ -1,12 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { theme } from "@/lib/theme";
-import { buildSyncLabel, buildSyncColor } from "./Topbar";
-import type { SyncLog, SyncStatus } from "@/lib/types";
+import { buildSyncLabel, buildSyncColor } from "./Topbar.helpers";
+import type { EntityType, SyncLog, SyncStatus } from "@/lib/types";
 
 // The backend sends NAIVE UTC timestamps and `buildSyncLabel` re-attaches the
 // zone itself (`new Date(log.synced_at + "Z")`). Fixtures are therefore built
 // by subtracting from a fixed UTC instant and stripping the trailing "Z", so
 // these assertions hold in every local timezone.
+//
+// `vitest.config.mts` pins TZ to America/New_York (NOT UTC) and the locale to
+// en_US for the whole run. Both pins are load-bearing, not cosmetic:
+//   - under TZ=UTC, dropping the `+ "Z"` from either helper is invisible, and
+//     that mutant is the S23 fail-open (a stale cache reported "just now", in
+//     green). The age assertions below only kill it at a nonzero UTC offset.
+//   - `toLocaleString()` reads the process locale, so the thousands separators
+//     asserted below are `1.500` on a de/fr/es/pt machine without the pin.
 const NOW = Date.parse("2026-08-18T12:00:00Z");
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -102,6 +110,36 @@ describe("buildSyncLabel", () => {
     [9 * DAY, "Synced 9d ago"],
   ])("renders a SUCCESS row %ims old as %s", (ago, expected) => {
     expect(buildSyncLabel(log("SUCCESS", stampAgo(ago)), false, null, NOW)).toBe(expected);
+  });
+
+  // "objects" is wrong for users and groups — they are principals — and this is
+  // the NORMAL path: every sync marks itself running with total=0 and progress
+  // updates never set a total, so the determinate branch is effectively dead.
+  //
+  // Exhaustive by construction (`Record<EntityType, …>`): adding a value to the
+  // EntityType union without deciding its noun is a COMPILE error under
+  // `tsc --noEmit`, which typechecks *.test.tsx.
+  const ENTITY_NOUNS: Record<EntityType, string> = {
+    users: "users",
+    groups: "groups",
+    tags: "tags",
+    metadata: "objects",
+    dependencies: "objects",
+    // Not a syncable Topbar entity — reaches the generic fallback, not a map hit.
+    orgs: "objects",
+  };
+
+  it.each(Object.entries(ENTITY_NOUNS) as [EntityType, string][])(
+    "counts a running %s sync in its own noun",
+    (entity, noun) => {
+      expect(buildSyncLabel(STATUS_FIXTURES.SUCCESS, true, { processed: 6400, total: 0 }, NOW, entity))
+        .toBe(`Syncing — 6,400 ${noun}`);
+    },
+  );
+
+  it("falls back to objects when no entity type is supplied", () => {
+    expect(buildSyncLabel(STATUS_FIXTURES.SUCCESS, true, { processed: 6400, total: 0 }, NOW))
+      .toBe("Syncing — 6,400 objects");
   });
 
   it("takes precedence over the log while a local sync is in flight", () => {
