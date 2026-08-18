@@ -9,6 +9,7 @@ Each entity type has its own sync function. All follow the same pattern:
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from ts_admin.database import get_session
@@ -49,16 +50,7 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str, cluster_id: st
     Entry point for all sync operations. Dispatches to the correct handler.
     Called as a FastAPI BackgroundTask.
     """
-    handlers = {
-        "users": _sync_users,
-        "groups": _sync_groups,
-        "metadata": _sync_metadata,
-        "tags": _sync_tags,
-        "orgs": _sync_orgs,
-        "dependencies": _sync_dependencies,
-    }
-
-    handler = handlers.get(entity_type)
+    handler = sync_handlers().get(entity_type)
     if not handler:
         mark_failed(job_id, f"Unknown entity type: {entity_type!r}")
         return
@@ -533,6 +525,31 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
     if column_error:
         result["column_error"] = column_error[:500]
     mark_complete(job_id, result)
+
+
+def sync_handlers() -> dict[str, Callable[..., Awaitable[None]]]:
+    """
+    Every entity `run_sync` can dispatch.
+
+    Exposed (rather than inlined in `run_sync`) so the API allowlist can be
+    checked against it: an entity in `api.sync.VALID_ENTITIES` with no handler
+    here 200s with a job id and then fails the job before the response renders —
+    which is exactly what "permissions" did for months.
+    `tests/unit/test_sync_entities.py` pins the two together.
+
+    A function, NOT a module-level dict: a dict built at import time binds the
+    original function objects, so monkeypatching `sync_service._sync_metadata`
+    would no longer swap the dispatch target and several existing tests would
+    silently exercise the real handler (measured — 4 failures).
+    """
+    return {
+        "users": _sync_users,
+        "groups": _sync_groups,
+        "metadata": _sync_metadata,
+        "tags": _sync_tags,
+        "orgs": _sync_orgs,
+        "dependencies": _sync_dependencies,
+    }
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
