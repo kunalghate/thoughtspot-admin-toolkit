@@ -7,6 +7,7 @@ import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import AppShell, { useShell } from "@/components/Shell";
 import { OBJECT_COLUMNS as ARCHIVER_COLUMNS, serializeFilterModel } from "@/components/Deleter/columns";
+import { intersectTypes } from "@/lib/agGridFilters";
 import { DryRunModal } from "@/components/Deleter/DryRunModal";
 import { archiverApi, jobsApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
@@ -370,7 +371,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             org_id: orgId,
             stale_activity_days: snap.staleActivityDays,
             stale_modified_days: snap.staleModifiedDays,
-            types:              f.types ?? snap.types,
+            types:              intersectTypes(f.types, snap.types),
             exclude_tags:       snap.excludeTags.length ? snap.excludeTags : undefined,
             filter_tags:        snap.filterTags.length  ? snap.filterTags  : undefined,
             search:             f.search ?? snap.search ?? undefined,

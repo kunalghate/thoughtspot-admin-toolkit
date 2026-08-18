@@ -8,7 +8,7 @@ import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
-import { serializeFilterModel } from "@/lib/agGridFilters";
+import { intersectTypes, serializeFilterModel } from "@/lib/agGridFilters";
 import { metadataEmptyMessage, noRowsOverlay, withHiddenSuffix } from "@/lib/gridEmptyState";
 import type { MetadataObject } from "@/lib/types";
 import "ag-grid-community/styles/ag-grid.css";
@@ -72,7 +72,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
       fetchPage: (startRow) => metadataApi.list({
         cluster_id: clusterId,
         org_id: orgId,
-        types:               f.types ?? toolbarTypes,
+        types:               intersectTypes(f.types, toolbarTypes),
         search:              f.search ?? toolbarSearch,
         owner_name_search:   f.owner_name_search,
         tag_search:          f.tag_search,

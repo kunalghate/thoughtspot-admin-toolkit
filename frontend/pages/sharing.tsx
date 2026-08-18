@@ -21,7 +21,7 @@ import { OBJECT_COLUMNS } from "@/components/Deleter/columns";
 import { SharingHistoryTab } from "@/components/Sharing/HistoryTab";
 import { ShareModal } from "@/components/Sharing/ShareModal";
 import { metadataApi } from "@/lib/api";
-import { serializeFilterModel } from "@/lib/agGridFilters";
+import { intersectTypes, serializeFilterModel } from "@/lib/agGridFilters";
 import { metadataEmptyMessage, noRowsOverlay, withHiddenSuffix } from "@/lib/gridEmptyState";
 import { theme } from "@/lib/theme";
 import type { MetadataObject } from "@/lib/types";
@@ -154,7 +154,7 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
           const res = await metadataApi.list({
             cluster_id: clusterId,
             org_id: orgId,
-            types:                f.types ?? toolbarTypes,
+            types:                intersectTypes(f.types, toolbarTypes),
             search:               f.search ?? toolbarSearch,
             owner_name_search:    f.owner_name_search,
             tag_search:           f.tag_search,
