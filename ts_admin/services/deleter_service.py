@@ -22,7 +22,7 @@ from sqlmodel import Session, col, select
 
 import ts_admin.database as _db
 from ts_admin.models.cache.ts_metadata import CachedMetadata
-from ts_admin.services.deletion_service import _fetch_objects_by_guids
+from ts_admin.services.deletion_service import SYSTEM_OWNER_NAME, _fetch_objects_by_guids
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ async def resolve_downstream(
     with Session(_db.get_engine()) as session:
         rows = _fetch_objects_by_guids(session, dep_guids, cluster_id, org_id)
 
-    items = [_row_to_dict(r) for r in rows if r.owner_name != "System User"]
+    items = [_row_to_dict(r) for r in rows if r.owner_name != SYSTEM_OWNER_NAME]
     return {
         "items": items,
         "total": len(items),
@@ -138,7 +138,7 @@ def resolve_tag(*, tag_name: str, cluster_id: str, org_id: int) -> dict:
             select(CachedMetadata).where(
                 CachedMetadata.cluster_id == cluster_id,
                 CachedMetadata.org_id == org_id,
-                CachedMetadata.owner_name != "System User",
+                CachedMetadata.owner_name != SYSTEM_OWNER_NAME,
                 col(CachedMetadata.tag_names).like(like_pattern),
             )
         ).all()
@@ -234,7 +234,7 @@ def list_available_tags(*, cluster_id: str, org_id: int) -> list[str]:
             select(CachedMetadata.tag_names).where(
                 CachedMetadata.cluster_id == cluster_id,
                 CachedMetadata.org_id == org_id,
-                CachedMetadata.owner_name != "System User",
+                CachedMetadata.owner_name != SYSTEM_OWNER_NAME,
                 func.length(CachedMetadata.tag_names) > 2,  # not "[]"
             )
         ).all()
@@ -277,7 +277,7 @@ def resolve_list(*, guids: list[str], cluster_id: str, org_id: int) -> dict:
     unrecognized = [g for g in deduped if g not in found_guids]
 
     # Drop System-User-owned even if explicitly requested (consistency guard).
-    items = [_row_to_dict(r) for r in rows if r.owner_name != "System User"]
+    items = [_row_to_dict(r) for r in rows if r.owner_name != SYSTEM_OWNER_NAME]
     return {
         "items": items,
         "total": len(items),
@@ -312,7 +312,7 @@ def search_roots(
             .where(
                 CachedMetadata.cluster_id == cluster_id,
                 CachedMetadata.org_id == org_id,
-                CachedMetadata.owner_name != "System User",
+                CachedMetadata.owner_name != SYSTEM_OWNER_NAME,
                 col(CachedMetadata.object_type).in_(types),
                 col(CachedMetadata.name).ilike(f"%{query}%"),
             )

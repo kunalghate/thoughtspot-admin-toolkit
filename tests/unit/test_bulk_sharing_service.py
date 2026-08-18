@@ -317,3 +317,84 @@ class TestDryRunReportsSkipped:
         assert job.status == "COMPLETE"
         assert result["skipped_count"] == 1
         assert [x["object_guid"] for x in result["skipped"]] == ["ghost-1"]
+
+
+class TestTagResolutionMatchesTheDeleter:
+    """
+    `bulk_sharing_service.resolve_tag_to_guids` and `deleter_service.resolve_tag`
+    are two intake paths over the same cache and the same tag name. They used to
+    disagree — only the Deleter excluded System-User-owned content — so `finance`
+    meant one set in Bulk Sharing and a different set in the Bulk Deleter. That
+    divergence is worst in `mode=NO_ACCESS`, which would revoke access on
+    ThoughtSpot's built-in content the admin never picked out by hand.
+    """
+
+    @pytest.fixture
+    def tagged(self, in_memory_db, seeded):
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            for guid, owner in [("lb-user", "Alice"), ("lb-system", "System User")]:
+                s.add(
+                    CachedMetadata(
+                        cluster_id=CLUSTER_ID,
+                        org_id=ORG_ID,
+                        ts_guid=guid,
+                        name=guid,
+                        object_type="LIVEBOARD",
+                        owner_guid="u-alice",
+                        owner_name=owner,
+                        tag_names=json.dumps(["finance"]),
+                        synced_at=now,
+                    )
+                )
+            # Same tag, another org — must never leak across the org boundary.
+            s.add(
+                CachedMetadata(
+                    cluster_id=CLUSTER_ID,
+                    org_id=99,
+                    ts_guid="lb-other-org",
+                    name="lb-other-org",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-alice",
+                    owner_name="Alice",
+                    tag_names=json.dumps(["finance"]),
+                    synced_at=now,
+                )
+            )
+            s.commit()
+
+    def test_both_features_resolve_the_same_tag_to_the_same_set(self, tagged):
+        from ts_admin.services.bulk_sharing_service import resolve_tag_to_guids
+        from ts_admin.services.deleter_service import resolve_tag
+
+        share_set = set(resolve_tag_to_guids(cluster_id=CLUSTER_ID, org_id=ORG_ID, tag_name="finance"))
+        delete_set = {
+            r["ts_guid"] for r in resolve_tag(tag_name="finance", cluster_id=CLUSTER_ID, org_id=ORG_ID)["items"]
+        }
+
+        assert share_set == delete_set == {"lb-user"}
+        assert "lb-system" not in share_set, "System-User-owned content must not be reachable by tag intake"
+        assert "lb-other-org" not in share_set
+
+    def test_a_tag_that_is_a_substring_of_another_does_not_over_match(self, tagged, in_memory_db):
+        """The LIKE narrowing is a prefilter — the Python check is what decides."""
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedMetadata(
+                    cluster_id=CLUSTER_ID,
+                    org_id=ORG_ID,
+                    ts_guid="lb-super",
+                    name="lb-super",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-alice",
+                    owner_name="Alice",
+                    tag_names=json.dumps(["finance-archive"]),
+                    synced_at=now,
+                )
+            )
+            s.commit()
+
+        from ts_admin.services.bulk_sharing_service import resolve_tag_to_guids
+
+        assert set(resolve_tag_to_guids(cluster_id=CLUSTER_ID, org_id=ORG_ID, tag_name="finance")) == {"lb-user"}

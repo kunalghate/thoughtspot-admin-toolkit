@@ -22,6 +22,7 @@ than shared under a guessed object_type.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from sqlmodel import Session, col, func, select
@@ -32,6 +33,7 @@ from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
 from ts_admin.models.share_record import ShareRecord
+from ts_admin.services.deletion_service import SYSTEM_OWNER_NAME
 from ts_admin.ts_client.exceptions import StaleCacheError
 
 logger = logging.getLogger(__name__)
@@ -124,12 +126,30 @@ def list_principals(
 
 
 def resolve_tag_to_guids(*, cluster_id: str, org_id: int, tag_name: str) -> list[str]:
-    """Return CachedMetadata GUIDs that carry the given tag name."""
+    """
+    Return CachedMetadata GUIDs for `(cluster_id, org_id)` that carry `tag_name`.
+
+    System-User-owned content is excluded, matching `deleter_service.resolve_tag`.
+    The two features used to disagree — the same tag name selected ThoughtSpot's
+    built-in content in Bulk Sharing but not in the Bulk Deleter — and the
+    direction that fails safe is exclusion: tag intake is a convenience path, and
+    `mode=NO_ACCESS` on system-owned content revokes access to objects the admin
+    does not own and never picked out by hand. An admin who really wants to
+    reshare built-in content can still name its GUIDs explicitly via
+    `object_guids`, exactly as the Deleter requires.
+
+    Narrowed by a LIKE on the JSON string first (SQLite has no portable
+    JSON-array contains), then verified in Python — the same two-step as
+    `deleter_service.resolve_tag`, so the two never load different row sets.
+    """
     with Session(_db.get_engine()) as session:
+        like_pattern = f"%{json.dumps(tag_name)[1:-1]}%"  # escape JSON quoting
         rows = session.exec(
             select(CachedMetadata).where(
                 CachedMetadata.cluster_id == cluster_id,
                 CachedMetadata.org_id == org_id,
+                CachedMetadata.owner_name != SYSTEM_OWNER_NAME,
+                col(CachedMetadata.tag_names).like(like_pattern),
             )
         ).all()
     return [r.ts_guid for r in rows if tag_name in r.get_tag_names()]
