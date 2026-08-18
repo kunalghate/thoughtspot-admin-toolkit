@@ -62,6 +62,8 @@ build:
 release-github:
 	@if [ -z "$(v)" ]; then echo "Usage: make release-github v=0.1.0"; exit 1; fi
 	@command -v gh >/dev/null || { echo "gh CLI not found — see https://cli.github.com"; exit 1; }
+	@git rev-parse -q --verify "refs/tags/v$(v)" >/dev/null \
+	  && { echo "Tag v$(v) already exists — pick a new version."; exit 1; } || true
 	@echo "Cutting v$(v)..."
 	make build
 	@test -f ts_admin/static/index.html || { echo "No UI in ts_admin/static/ — build failed"; exit 1; }
@@ -71,7 +73,11 @@ release-github:
 	python -m build --wheel
 	@python -c "import glob, sys, zipfile; w=glob.glob('dist/*.whl')[0]; n=zipfile.ZipFile(w).namelist(); sys.exit('ERROR: %s contains no UI' % w) if 'ts_admin/static/index.html' not in n else print('%s: %d static files bundled' % (w, sum('ts_admin/static/' in x for x in n)))"
 	git add pyproject.toml
-	git commit -m "chore: release v$(v)"
+	# Skip the commit when the version already matches, e.g. the first release
+	# at the version already in pyproject.toml — git exits 1 on an empty commit
+	# and would abort the release right before tagging.
+	@git diff --cached --quiet -- pyproject.toml \
+	  || git commit -m "chore: release v$(v)"
 	git tag v$(v)
 	git push origin HEAD --tags
 	gh release create v$(v) dist/*.whl --title "v$(v)" --generate-notes
