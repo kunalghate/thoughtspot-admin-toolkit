@@ -117,7 +117,7 @@ function UpdateInstructions({ info, onClose, onDismiss }: {
           display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
         }}>
           <span style={{ fontSize: 11, color: theme.color.textMuted }}>
-            Your connections, settings and cached data are kept.
+            Nothing to set up again — your instances, sign-ins and synced data all stay.
           </span>
           <button
             onClick={onDismiss}

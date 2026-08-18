@@ -279,9 +279,13 @@ install. If you are already on the latest version it says so and does nothing.
 ts-admin-toolkit serve
 ```
 
-That is the whole update. Your ThoughtSpot connections, saved settings, job
-history and cached data all live outside the app itself and are untouched — you
-will not have to reconnect or re-sync.
+That is the whole update — there is nothing to set up again afterwards.
+
+Updating replaces the program only. Your ThoughtSpot instances, your saved
+sign-ins, and everything you have synced (users, groups, metadata, lineage, job
+history, audit log) live in your home folder and your computer's keychain, not
+inside the app — so they are never touched. You will not have to reconnect or
+re-sync.
 
 <details>
 <summary>Other ways to update</summary>
