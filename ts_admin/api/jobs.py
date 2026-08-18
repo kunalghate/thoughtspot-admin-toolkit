@@ -26,6 +26,10 @@ class JobResponse(BaseModel):
     error_type: str | None = None
     error_traceback: str | None = None
     result: dict | None = None
+    # Cancel is a request, not an act: the flag is set here and the background
+    # task acts on it at its next page/chunk boundary. Exposed so the UI can show
+    # "cancelling…" for the window in between instead of a job that looks stuck.
+    is_cancelled: bool = False
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -121,8 +125,18 @@ async def cancel_job(job_id: str) -> None:
     """
     Request cancellation of a running job.
 
-    Sets job.is_cancelled = True. The running background task checks this
-    flag at each chunk boundary and stops cleanly if set.
+    Sets ``job.is_cancelled = True`` and returns immediately — cancellation is
+    cooperative. The background task re-reads the flag at its next page/chunk
+    boundary and stops there, so the job keeps running until the in-flight call
+    to ThoughtSpot returns. Poll ``GET /jobs/{id}``: ``is_cancelled`` flips first
+    (cancel-pending), then ``status`` lands on a terminal state.
+
+    Every job type honours the flag: the bulk write paths (delete, share, user
+    management) and — since the sweeps below read it too — sync and the lineage
+    crawls. A cancelled job ends PARTIAL, never COMPLETE, and its cache purge /
+    delete-before-insert is skipped, because a partial sweep cannot tell "deleted
+    upstream" from "not reached yet". See `sync_service._finish_cancelled` and
+    `lineage_service.SyncCancelled`.
 
     Returns 409 if the job is already done.
     """
@@ -152,6 +166,7 @@ def _job_to_response(job) -> JobResponse:
         error_type=job.error_type,
         error_traceback=job.error_traceback,
         result=job.get_result(),
+        is_cancelled=job.is_cancelled,
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
