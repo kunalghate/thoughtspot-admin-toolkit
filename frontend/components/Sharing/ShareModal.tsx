@@ -209,6 +209,20 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
                 </div>
               </div>
 
+              {(preview.skipped_count ?? 0) > 0 && (
+                <div style={{
+                  padding: "10px 14px", borderRadius: 6, flexShrink: 0, fontSize: 12,
+                  background: theme.color.warnSoft, border: `1px solid ${theme.color.warnBorder}`,
+                  color: theme.color.warn, fontFamily: theme.font.sans,
+                }}>
+                  <strong>{preview.skipped_count}</strong> selected object
+                  {preview.skipped_count === 1 ? " is" : "s are"} not in the local
+                  metadata cache and will be skipped — they are not counted above
+                  and the share will not touch them. Re-run a metadata sync if you
+                  expect them to be included.
+                </div>
+              )}
+
               <div style={{ display: "flex", flexDirection: "column", minHeight: 160, maxHeight: 360 }}>
                 <SharingPreviewTable rows={preview.items} />
               </div>

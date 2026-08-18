@@ -427,10 +427,20 @@ export interface SharingPreviewRow {
   will_change: boolean;
 }
 
+export interface SharingSkippedObject {
+  object_guid: string;
+  reason: string;
+}
+
 export interface SharingPreviewResponse {
   items: SharingPreviewRow[];
   total: number;
   will_change_count: number;
+  /** Objects the request named that are not in the metadata cache for this
+   *  (cluster, org) — the share will not touch them. Preview and execute
+   *  resolve through the same path, so this is exactly what execute skips. */
+  skipped?: SharingSkippedObject[];
+  skipped_count?: number;
 }
 
 export interface SharingHistoryItem {

@@ -65,10 +65,21 @@ class PreviewRequest(BaseModel):
     mode: Literal["READ_ONLY", "MODIFY", "NO_ACCESS"]
 
 
+class SkippedObject(BaseModel):
+    object_guid: str
+    reason: str
+
+
 class PreviewResponse(BaseModel):
     items: list[PreviewRow]
     total: int
     will_change_count: int
+    # GUIDs the request named that are not in the metadata cache for this
+    # (cluster, org). Preview and execute resolve through the same code path, so
+    # these are exactly the objects execute will NOT touch — surfacing them here
+    # is what keeps the preview an honest account of what is about to happen.
+    skipped: list[SkippedObject] = []
+    skipped_count: int = 0
 
 
 class ExecuteRequest(BaseModel):
@@ -175,6 +186,8 @@ async def preview(body: PreviewRequest) -> PreviewResponse:
         items=[PreviewRow(**r) for r in result["items"]],
         total=result["total"],
         will_change_count=result["will_change_count"],
+        skipped=[SkippedObject(**r) for r in result.get("skipped", [])],
+        skipped_count=result.get("skipped_count", 0),
     )
 
 

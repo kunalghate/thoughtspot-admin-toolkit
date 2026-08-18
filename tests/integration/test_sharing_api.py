@@ -178,6 +178,66 @@ class TestPreview:
         assert body["total"] == 1
         assert body["will_change_count"] == 1
 
+    def test_skipped_objects_reach_the_preview_response(self, client, seeded, monkeypatch):
+        """
+        The preview is the admin's account of what execute will do. Preview and
+        execute resolve through the same code path, so a GUID missing from the
+        metadata cache is skipped by BOTH — but the router used to build
+        PreviewResponse field-by-field and drop the service's `skipped` list,
+        leaving the admin with no way to see that part of their selection was
+        never going to be touched.
+        """
+
+        async def _fake(**kwargs):
+            return {
+                "items": [],
+                "total": 0,
+                "will_change_count": 0,
+                "skipped": [{"object_guid": "lb-gone", "reason": "not in metadata cache"}],
+                "skipped_count": 1,
+            }
+
+        from ts_admin.services import bulk_sharing_service as svc
+
+        monkeypatch.setattr(svc, "preview_share", _fake)
+
+        r = client.post(
+            "/api/v1/sharing/preview",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "object_guids": ["lb-1", "lb-gone"],
+                "principal_guids": ["g-finance"],
+                "mode": "READ_ONLY",
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["skipped_count"] == 1
+        assert body["skipped"] == [{"object_guid": "lb-gone", "reason": "not in metadata cache"}]
+
+    def test_preview_without_skips_reports_an_empty_list(self, client, seeded, monkeypatch):
+        async def _fake(**kwargs):
+            return {"items": [], "total": 0, "will_change_count": 0}
+
+        from ts_admin.services import bulk_sharing_service as svc
+
+        monkeypatch.setattr(svc, "preview_share", _fake)
+
+        r = client.post(
+            "/api/v1/sharing/preview",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "object_guids": ["lb-1"],
+                "principal_guids": ["g-finance"],
+                "mode": "READ_ONLY",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["skipped"] == []
+        assert r.json()["skipped_count"] == 0
+
     def test_by_tag_resolves_guids(self, client, seeded, monkeypatch):
         async def _fake(**kwargs):
             assert kwargs["object_guids"] == ["lb-1"]  # resolved from finance tag
