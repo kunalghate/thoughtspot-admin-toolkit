@@ -85,10 +85,12 @@ everything. It changes nothing else on your system. Re-running it upgrades.
 <details>
 <summary>Already a Python user? Install it your own way</summary>
 
+Releases are published as a wheel attached to each
+[GitHub Release](https://github.com/kunalghate/thoughtspot-admin-toolkit/releases)
+rather than to PyPI, so install from the release URL:
+
 ```bash
-uv tool install ts-admin-toolkit     # recommended
-pipx install ts-admin-toolkit        # equivalent
-pip install ts-admin-toolkit         # needs a virtualenv on most systems
+uv tool install https://github.com/kunalghate/thoughtspot-admin-toolkit/releases/latest/download/<wheel>
 ```
 
 </details>
