@@ -954,3 +954,466 @@ def test_sync_log_keeps_no_history_so_there_is_no_record_count_trend(in_memory_d
 
     assert len(rows) == 1, "a writer started appending — sync_log is no longer bounded"
     assert rows[0].record_count == 411  # anti-vacuity: the writes DID happen
+
+
+# ── Cache purge: rows deleted upstream (P2) ───────────────────────────────────
+#
+# Every sync was upsert-only except `_sync_groups`. A user deprovisioned in
+# ThoughtSpot by any route other than this toolkit (IdP/SCIM, the TS admin UI)
+# therefore stayed in the grid, in the inactive-user count and in the sharing
+# principal picker forever — and `dashboard_service`'s "orphaned content" signal,
+# defined as "owner not in ts_users", could never fire, so the one card built for
+# exactly this case read 0 and showed an all-clear.
+
+
+def _fake_user(guid: str, *, status: str = "ACTIVE"):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        id=guid,
+        name=f"user-{guid}",
+        display_name=f"User {guid}",
+        email=f"{guid}@example.io",
+        status=SimpleNamespace(value=status),
+        created=now,
+        modified=now,
+    )
+
+
+def _users_client(pages: list[list], monkeypatch):
+    """Install a fake ThoughtSpotClient whose search_users yields `pages`.
+
+    `pages` is captured by reference so a test can mutate it between syncs — the
+    purge is only observable across two sweeps.
+    """
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_users(self, *, org_id):
+            for page in pages:
+                yield page
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+
+def _cached_user_guids() -> set[str]:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_user import CachedUser
+
+    with get_session() as session:
+        return set(session.exec(select(CachedUser.ts_guid).where(CachedUser.cluster_id == CLUSTER_ID)).all())
+
+
+def _org_memberships() -> set[tuple[str, int]]:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_user import UserOrgMembership
+
+    with get_session() as session:
+        rows = session.exec(select(UserOrgMembership).where(UserOrgMembership.cluster_id == CLUSTER_ID)).all()
+    return {(r.ts_guid, r.org_id) for r in rows}
+
+
+@pytest.mark.anyio
+async def test_user_sync_purges_principals_absent_from_the_sweep(monkeypatch, in_memory_db, patched_config):
+    """A user gone upstream must leave BOTH ts_users and user_org_memberships."""
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _cached_user_guids() == {"u1", "u2"}
+    assert _org_memberships() == {("u1", 0), ("u2", 0)}
+
+    # u2 was deprovisioned in ThoughtSpot between syncs.
+    pages[:] = [[_fake_user("u1")]]
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    assert _cached_user_guids() == {"u1"}
+    assert _org_memberships() == {("u1", 0)}
+
+
+@pytest.mark.anyio
+async def test_user_sync_empty_sweep_deletes_nothing(monkeypatch, in_memory_db, patched_config):
+    """The `_sync_groups:280` guard, applied to users.
+
+    SQLAlchemy renders `not_in(<empty>)` as `NOT IN (NULL) OR (1 = 1)` — always
+    true — so an unguarded purge would empty the whole cache on one blank page
+    (wrong org context, transient upstream blip). A zero-result response is
+    indistinguishable from "the org really has no users", and guessing wrong here
+    is unrecoverable without a full re-sync.
+    """
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _cached_user_guids() == {"u1", "u2"}
+
+    pages[:] = []
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    assert _cached_user_guids() == {"u1", "u2"}
+    assert _org_memberships() == {("u1", 0), ("u2", 0)}
+
+
+@pytest.mark.anyio
+async def test_user_sync_keeps_members_of_other_orgs(monkeypatch, in_memory_db, patched_config):
+    """The purge is org-aware, and this is the part that could break a live cluster.
+
+    `ts_users` is cluster-scoped while the sweep is org-scoped (`search_users`
+    filters client-side off each record's own org list), so a naive
+    `not_in(seen_guids)` on ts_users would delete every user who happens to
+    belong only to a DIFFERENT org — silent, cross-org data loss on any
+    multi-org cluster. Deleting only users with no membership left anywhere on
+    the cluster is what makes that impossible.
+    """
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    # u1 + u2 are in org 0; then org 7 is synced and has u2 + u3.
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    pages[:] = [[_fake_user("u2"), _fake_user("u3")]]
+    await run_sync(entity_type="users", org_id=7, job_id=_make_job("users"))
+    assert _cached_user_guids() == {"u1", "u2", "u3"}
+
+    # Re-sync org 0 with u2 removed from THAT org (still on the cluster, in org 7).
+    pages[:] = [[_fake_user("u1")]]
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    # u2 lost only its org-0 membership; u3 was never in the org-0 sweep at all.
+    assert _org_memberships() == {("u1", 0), ("u2", 7), ("u3", 7)}
+    assert _cached_user_guids() == {"u1", "u2", "u3"}
+
+
+@pytest.mark.anyio
+async def test_purged_owner_makes_orphaned_content_visible(monkeypatch, in_memory_db, patched_config):
+    """The end-to-end reason the purge matters.
+
+    `dashboard_service._attention` defines orphaned_content as "owner not in
+    ts_users". With no purge that predicate was unsatisfiable, so the Needs
+    Attention card showed an all-clear precisely when an owner had been
+    deprovisioned — the one situation it exists to catch.
+    """
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session
+
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services.dashboard_service import DashboardService
+
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+
+    # A liveboard owned by u2.
+    with Session(in_memory_db) as session:
+        session.add(
+            CachedMetadata(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                ts_guid="lb-1",
+                name="Q3 Revenue",
+                object_type="LIVEBOARD",
+                owner_guid="u2",
+                owner_name="User u2",
+                synced_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    def _orphaned() -> int:
+        with Session(in_memory_db) as session:
+            return DashboardService._attention(
+                session,
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                synced={"users": True, "groups": False, "metadata": True},
+            )["orphaned_content"]
+
+    assert _orphaned() == 0  # owner still known — anti-vacuity for the assert below
+
+    pages[:] = [[_fake_user("u1")]]
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+
+    assert _orphaned() == 1
+
+
+@pytest.mark.anyio
+async def test_tag_sync_purges_deleted_tags_and_guards_the_empty_sweep(monkeypatch, in_memory_db, patched_config):
+    """Tags get the same treatment as groups: purge on a real sweep, never on an
+    empty one. `search_tags()` is a single complete org-scoped list and CachedTag
+    is (cluster, org)-keyed, so the sweep and the delete scope line up exactly."""
+    from types import SimpleNamespace
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_tag import CachedTag
+
+    tags: list = [
+        SimpleNamespace(id="t1", name="Certified", color="#0f0"),
+        SimpleNamespace(id="t2", name="Deprecated", color="#f00"),
+    ]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_tags(self):
+            return list(tags)
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    def _tag_guids(org_id: int = 0) -> set[str]:
+        with get_session() as session:
+            return set(
+                session.exec(
+                    select(CachedTag.ts_guid).where(CachedTag.cluster_id == CLUSTER_ID, CachedTag.org_id == org_id)
+                ).all()
+            )
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="tags", org_id=0, job_id=_make_job("tags"))
+    assert _tag_guids() == {"t1", "t2"}
+
+    # The same tags exist in another org — the purge must not reach across.
+    await run_sync(entity_type="tags", org_id=7, job_id=_make_job("tags"))
+
+    tags[:] = [SimpleNamespace(id="t1", name="Certified", color="#0f0")]
+    job_id = _make_job("tags")
+    await run_sync(entity_type="tags", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _tag_guids() == {"t1"}
+    assert _tag_guids(org_id=7) == {"t1", "t2"}
+
+    # Empty sweep: keep the cache.
+    tags[:] = []
+    job_id = _make_job("tags")
+    await run_sync(entity_type="tags", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _tag_guids() == {"t1"}
+
+
+# ── Cancellation is real, not a 204 that cancels nothing (P3) ─────────────────
+#
+# DELETE /jobs/{id}/cancel set is_cancelled and returned 204, but nothing in
+# sync_service or lineage_service ever read the flag. An admin who cancelled a
+# 30-minute crawl on the wrong org got a 204 while it ran to completion hammering
+# the cluster, then reported COMPLETE.
+
+
+def _cancel(job_id: str) -> None:
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        job.is_cancelled = True
+        session.add(job)
+        session.commit()
+
+
+def _sync_log_status(entity_type: str, org_id: int = 0) -> str | None:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    with get_session() as session:
+        row = session.exec(
+            select(SyncLog).where(
+                SyncLog.cluster_id == CLUSTER_ID,
+                SyncLog.org_id == org_id,
+                SyncLog.entity_type == entity_type,
+            )
+        ).first()
+    return row.status if row else None
+
+
+@pytest.mark.anyio
+async def test_cancelled_metadata_sync_does_not_end_complete(monkeypatch, in_memory_db, patched_config):
+    """Cancel a running metadata sync at a page boundary.
+
+    Two things have to hold. The job must NOT read COMPLETE — it processed a
+    prefix of the pages, and COMPLETE claims it processed all of them. And the
+    metadata sync_log must stay non-SUCCESS: `_sync_metadata` deletes the org's
+    rows before it re-pages, so a cancel leaves a genuinely TRUNCATED cache that
+    `require_authoritative_metadata` has to keep refusing.
+    """
+    from types import SimpleNamespace
+
+    from ts_admin.ts_client.exceptions import StaleCacheError
+
+    holder: dict = {}
+    pages_fetched = 0
+
+    def _obj(guid: str):
+        return SimpleNamespace(
+            id=guid,
+            name=f"obj-{guid}",
+            type=SimpleNamespace(value="LIVEBOARD"),
+            owner_id="u1",
+            author_name="Alice",
+            tags=[],
+            created=None,
+            modified=None,
+            last_accessed=None,
+            view_count=0,
+        )
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_metadata(self):
+            nonlocal pages_fetched
+            for guid in ("a", "b", "c"):
+                pages_fetched += 1
+                yield [_obj(guid)]
+                # The admin hits cancel while page 1 is being written.
+                _cancel(holder["job_id"])
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    from ts_admin.services.sync_service import run_sync
+
+    holder["job_id"] = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=holder["job_id"])
+
+    status, _ = _job_status(holder["job_id"])
+    assert status == "PARTIAL", "a cancelled sync must not report COMPLETE"
+    assert status != "COMPLETE"
+    # It actually stopped early rather than draining all three pages.
+    assert pages_fetched == 2
+
+    assert _sync_log_status("metadata") == "FAILED"
+    with pytest.raises(StaleCacheError):
+        from ts_admin.services.sync_status import require_authoritative_metadata
+
+        require_authoritative_metadata(cluster_id=CLUSTER_ID, org_id=0)
+
+
+@pytest.mark.anyio
+async def test_cancelled_group_sync_skips_the_purge(monkeypatch, in_memory_db, patched_config):
+    """A cancelled sweep must never purge.
+
+    `seen_guids` then holds only the pages the crawl reached, so purging would
+    delete every group it never got to — turning "stop early" into data loss.
+    """
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_group import CachedGroup
+
+    now = datetime.now(timezone.utc)
+    holder: dict = {}
+
+    def _group(guid: str):
+        return SimpleNamespace(
+            id=guid,
+            name=f"group-{guid}",
+            display_name=f"Group {guid}",
+            description="",
+            privileges=[],
+            member_users=[],
+            author_id="u-creator",
+            created=now,
+            modified=now,
+        )
+
+    cancel_after_first_page = False
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_groups(self, *, org_id):
+            yield [_group("g1")]
+            if cancel_after_first_page:
+                _cancel(holder["job_id"])
+            yield [_group("g2")]
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    def _group_guids() -> set[str]:
+        with get_session() as session:
+            return set(session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all())
+
+    from ts_admin.services.sync_service import run_sync
+
+    holder["job_id"] = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=holder["job_id"])
+    assert _group_guids() == {"g1", "g2"}
+
+    cancel_after_first_page = True
+    holder["job_id"] = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=holder["job_id"])
+
+    assert _job_status(holder["job_id"])[0] == "PARTIAL"
+    # g2 was never reached by the cancelled sweep — it must still be cached.
+    assert _group_guids() == {"g1", "g2"}

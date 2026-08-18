@@ -4,8 +4,16 @@ Sync service — fetches data from ThoughtSpot and upserts into SQLite cache.
 Each entity type has its own sync function. All follow the same pattern:
   1. Mark job as RUNNING
   2. Paginate through TS API, upsert rows into SQLite
-  3. Write SyncLog entry
-  4. Mark job as COMPLETE or FAILED
+  3. Purge rows the sweep did not see (success path only, empty-sweep guarded)
+  4. Write SyncLog entry
+  5. Mark job as COMPLETE or FAILED
+
+Steps 2 and 3 are load-bearing together: without the purge a principal, group or
+tag deleted upstream by any route other than this toolkit lives in the cache
+forever. Without the guard, one empty page deletes everything. The paginated
+handlers check `is_cancelled` at each page boundary and finish PARTIAL via
+`_finish_cancelled` — which also skips step 3, since a partial sweep cannot tell
+"deleted upstream" from "not reached".
 """
 
 import logging
@@ -15,7 +23,14 @@ from datetime import datetime, timezone
 from ts_admin.database import get_session
 from ts_admin.models.sync_log import SyncLog
 from ts_admin.services import connection_status
-from ts_admin.services.job_service import mark_complete, mark_failed, mark_running, update_progress
+from ts_admin.services.job_service import (
+    is_cancelled,
+    mark_complete,
+    mark_failed,
+    mark_partial,
+    mark_running,
+    update_progress,
+)
 from ts_admin.ts_client.exceptions import (
     TSAuthenticationError,
     TSInsufficientPrivilegesError,
@@ -98,7 +113,8 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str, cluster_id: st
 
 
 async def _sync_users(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
-    from sqlmodel import select
+    from sqlmodel import col, select
+    from sqlmodel import delete as sql_delete
 
     from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
     from ts_admin.ts_client import ThoughtSpotClient
@@ -109,11 +125,18 @@ async def _sync_users(*, org_id: int, job_id: str, target_cluster_id: str | None
 
     mark_running(job_id, total=0)
     count = 0
+    cancelled = False
+    seen_guids: set[str] = set()
 
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
         async for page in client.search_users(org_id=org_id):
+            if is_cancelled(job_id):
+                cancelled = True
+                break
             with get_session() as session:
                 for user in page:
+                    seen_guids.add(user.id)
+
                     # Upsert user profile (cluster-scoped, not org-scoped)
                     existing = session.exec(
                         select(CachedUser).where(
@@ -171,6 +194,61 @@ async def _sync_users(*, org_id: int, job_id: str, target_cluster_id: str | None
             # (indeterminate) — the frontend shows a running count instead.
             update_progress(job_id, count)
 
+    if cancelled:
+        # Purge deliberately skipped: `seen_guids` is a partial sweep, and every
+        # principal the crawl never reached would look deprovisioned.
+        _finish_cancelled(job_id, "users", org_id, cluster_id=cluster_id, count=count, start=start)
+        return
+
+    # Success path only: purge the principals this sweep did not see. Without it
+    # a user deprovisioned outside this toolkit (IdP/SCIM, the TS admin UI) stays
+    # in the grid, in the inactive-user count and in the sharing picker forever —
+    # and `dashboard_service`'s "orphaned content" signal, defined as "owner not
+    # in ts_users", can never fire.
+    #
+    # The two tables need DIFFERENT purges because they have different scopes.
+    # `search_users(org_id=...)` filters client-side off each record's own org
+    # list, so `seen_guids` is this ORG's membership, not the cluster's roster:
+    #
+    #   * user_org_memberships is (cluster, org)-scoped — a row for this org the
+    #     sweep didn't see is someone who left the org, so delete it directly.
+    #     This is the only thing that keeps org-scoped counts honest.
+    #   * ts_users is cluster-scoped and shared across orgs, so `not_in(seen_guids)`
+    #     would delete every user who only belongs to ANOTHER org. Delete by "has
+    #     no membership left anywhere on this cluster" instead, evaluated after the
+    #     membership purge in the same transaction. Every ts_users row is written
+    #     alongside a membership row for the org that created it (this handler is
+    #     the only writer), so zero memberships means gone from the cluster — and
+    #     a user still in a not-yet-synced org is kept until that org syncs.
+    #
+    # Skipped on an empty sweep, exactly as `_sync_groups` does: SQLAlchemy renders
+    # `not_in(<empty>)` as `NOT IN (NULL) OR (1 = 1)` — unconditionally true — so
+    # one empty page (wrong org context, transient upstream blip) would wipe the
+    # org's memberships and then every user with them.
+    if not seen_guids:
+        logger.warning(
+            "Users sync for cluster=%s org=%s returned no users; skipping purge to protect the cache",
+            cluster_id,
+            org_id,
+        )
+    else:
+        with get_session() as session:
+            session.exec(
+                sql_delete(UserOrgMembership).where(
+                    UserOrgMembership.cluster_id == cluster_id,
+                    UserOrgMembership.org_id == org_id,
+                    col(UserOrgMembership.ts_guid).not_in(seen_guids),
+                )
+            )
+            still_a_member = select(UserOrgMembership.ts_guid).where(UserOrgMembership.cluster_id == cluster_id)
+            session.exec(
+                sql_delete(CachedUser).where(
+                    CachedUser.cluster_id == cluster_id,
+                    col(CachedUser.ts_guid).not_in(still_a_member),
+                )
+            )
+            session.commit()
+
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log(
         "users", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
@@ -195,10 +273,14 @@ async def _sync_groups(*, org_id: int, job_id: str, target_cluster_id: str | Non
 
     mark_running(job_id, total=0)
     count = 0
+    cancelled = False
     seen_guids: set[str] = set()
 
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
         async for page in client.search_groups(org_id=org_id):
+            if is_cancelled(job_id):
+                cancelled = True
+                break
             with get_session() as session:
                 for group in page:
                     seen_guids.add(group.id)
@@ -261,6 +343,12 @@ async def _sync_groups(*, org_id: int, job_id: str, target_cluster_id: str | Non
                     count += 1
             update_progress(job_id, count)
 
+    if cancelled:
+        # Must land BEFORE the purge below: `seen_guids` holds only the pages the
+        # crawl got to, so purging here would delete every group it never reached.
+        _finish_cancelled(job_id, "groups", org_id, cluster_id=cluster_id, count=count, start=start)
+        return
+
     # Success path only: purge groups (and their memberships) that no longer
     # exist upstream, so deleted groups don't linger in the cache.
     #
@@ -313,6 +401,7 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
 
     mark_running(job_id, total=0)
     count = 0
+    cancelled = False
 
     # Write-ahead invalidation. Everything below this line leaves the cache in a
     # non-empty but TRUNCATED shape if it is interrupted: we delete every row for
@@ -346,6 +435,9 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
 
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
         async for page in client.search_metadata():
+            if is_cancelled(job_id):
+                cancelled = True
+                break
             with get_session() as session:
                 for obj in page:
                     tag_names = json.dumps([t.name for t in obj.tags])
@@ -370,6 +462,13 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
                 session.commit()
             update_progress(job_id, count)
 
+    if cancelled:
+        # The delete-all above already ran, so this cache is TRUNCATED, not just
+        # stale. `_finish_cancelled`'s non-SUCCESS sync_log row is exactly what
+        # keeps `sync_status.require_authoritative_metadata` fail-closed on it.
+        _finish_cancelled(job_id, "metadata", org_id, cluster_id=cluster_id, count=count, start=start)
+        return
+
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log(
         "metadata", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
@@ -379,7 +478,8 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
 
 
 async def _sync_tags(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
-    from sqlmodel import select
+    from sqlmodel import col, select
+    from sqlmodel import delete as sql_delete
 
     from ts_admin.models.cache.ts_tag import CachedTag
     from ts_admin.ts_client import ThoughtSpotClient
@@ -419,6 +519,31 @@ async def _sync_tags(*, org_id: int, job_id: str, target_cluster_id: str | None 
                 )
         session.commit()
 
+    # Purge tags deleted in TS since the last sync, same shape as `_sync_groups`.
+    # `search_tags()` is a single complete list (not paginated by us) scoped to
+    # this org by the auth token, and CachedTag is (cluster, org)-keyed, so the
+    # sweep and the delete scope line up one-to-one.
+    #
+    # Same empty guard and same reason: `not_in(<empty>)` is unconditionally true,
+    # and "the org genuinely has no tags" is indistinguishable from a blip.
+    seen_guids = {tag.id for tag in tags}
+    if not seen_guids:
+        logger.warning(
+            "Tags sync for cluster=%s org=%s returned no tags; skipping purge to protect the cache",
+            cluster_id,
+            org_id,
+        )
+    else:
+        with get_session() as session:
+            session.exec(
+                sql_delete(CachedTag).where(
+                    CachedTag.cluster_id == cluster_id,
+                    CachedTag.org_id == org_id,
+                    col(CachedTag.ts_guid).not_in(seen_guids),
+                )
+            )
+            session.commit()
+
     count = len(tags)
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log(
@@ -428,6 +553,18 @@ async def _sync_tags(*, org_id: int, job_id: str, target_cluster_id: str | None 
 
 
 async def _sync_orgs(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+    """Upsert the cluster's org list. Deliberately upsert-only — no purge.
+
+    Unlike users/groups/tags, ts_orgs is a *dimension* the rest of the cache
+    hangs off: every other table's `org_id` is a logical FK to it, and the org
+    switcher, every org-scoped read and every SyncLog row key off those ids.
+    Deleting a CachedOrg row on an empty or partial `orgs/search` would orphan
+    all of it in one shot, and `search_orgs()` has no pagination and no empty
+    guard to reason about. A decommissioned org lingering in the switcher is a
+    cosmetic wart; it is not the same class of bug as a phantom user in the
+    sharing picker, and it is not worth that blast radius. Revisit only with a
+    verified-live signal (e.g. org status DELETED) rather than sweep absence.
+    """
     from sqlmodel import select
 
     from ts_admin.models.cache.ts_org import CachedOrg
@@ -496,9 +633,16 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
     # Phase 1: object tier — commits edges + writes the "dependencies" SyncLog so
     # the graph is queryable while the (longer) TML column pass runs. Defer job
     # completion to the end when a column pass follows.
-    edge_count = await lineage_service.build_object_graph(
-        cluster_id=cluster_id, org_id=org_id, job_id=job_id, finalize=not has_column_pass
-    )
+    try:
+        edge_count = await lineage_service.build_object_graph(
+            cluster_id=cluster_id, org_id=org_id, job_id=job_id, finalize=not has_column_pass
+        )
+    except lineage_service.SyncCancelled as exc:
+        # Unwound before the delete-before-insert: no edges written, no SyncLog
+        # written, previous build untouched. PARTIAL — never COMPLETE.
+        logger.info("Dependencies sync cancelled for cluster=%s org=%s: %s", cluster_id, org_id, exc)
+        mark_partial(job_id, {"entity_type": "dependencies", "record_count": 0, "cancelled": True})
+        return
 
     if not has_column_pass:
         return
@@ -510,8 +654,14 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
     # is swallowed: the object graph stands, columns just stay empty, job completes.
     column_count = 0
     column_error: str | None = None
+    cancelled = False
     try:
         column_count = await lineage_service.build_column_map(cluster_id=cluster_id, org_id=org_id, job_id=job_id)
+    except lineage_service.SyncCancelled as exc:
+        # Must precede `except Exception`, which would otherwise swallow a cancel
+        # into a COMPLETE job — the exact "204 that cancels nothing" this fixes.
+        cancelled = True
+        logger.info("Column-map pass cancelled (object tier kept): %s", exc)
     except TSAuthenticationError:
         raise
     except Exception as exc:
@@ -524,6 +674,12 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
     result: dict = {"entity_type": "dependencies", "record_count": edge_count, "column_count": column_count}
     if column_error:
         result["column_error"] = column_error[:500]
+    if cancelled:
+        # The object tier IS committed and its SyncLog written — only the column
+        # enrichment was dropped. That is a genuine partial result, not a failure.
+        result["cancelled"] = True
+        mark_partial(job_id, result)
+        return
     mark_complete(job_id, result)
 
 
@@ -553,6 +709,43 @@ def sync_handlers() -> dict[str, Callable[..., Awaitable[None]]]:
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
+
+
+def _finish_cancelled(
+    job_id: str,
+    entity_type: str,
+    org_id: int,
+    *,
+    cluster_id: str | None,
+    count: int,
+    start: datetime,
+) -> None:
+    """Terminate a sync the admin cancelled. Writes two records, both required.
+
+    The **job** goes PARTIAL with ``cancelled: True`` — the same shape
+    `deletion_service` / `bulk_sharing_service` already use, so the Jobs grid
+    reads identically everywhere. Never COMPLETE: a cancelled crawl processed
+    some prefix of the pages, and "COMPLETE" would claim it processed all of them.
+
+    The **sync_log** row goes FAILED with an explicit reason. There is no
+    CANCELLED status in the `api/sync.py::EntitySyncStatus` vocabulary and
+    `sync_status.py` says in as many words not to invent one — the UI renders off
+    that set. FAILED is also the correct read for `metadata`, whose handler
+    deletes the org's rows before it re-pages: a cancel there leaves a genuinely
+    truncated cache that `require_authoritative_metadata` must keep refusing.
+    """
+    duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+    _write_sync_log(
+        entity_type,
+        org_id,
+        status="FAILED",
+        record_count=count,
+        duration_ms=duration_ms,
+        error="Cancelled by user before the sweep finished",
+        cluster_id=cluster_id,
+    )
+    mark_partial(job_id, {"entity_type": entity_type, "record_count": count, "cancelled": True})
+    logger.info("Sync %s cancelled for cluster=%s org=%s after %d record(s)", entity_type, cluster_id, org_id, count)
 
 
 def _write_sync_log(
