@@ -45,6 +45,21 @@ from ts_admin.ts_client.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+
+class SyncCancelled(Exception):
+    """A crawl loop saw ``job.is_cancelled`` at a page/chunk boundary and stopped.
+
+    An exception rather than a return flag on purpose: it has to unwind *past*
+    every delete-before-insert in this module. A cancelled crawl holds a partial
+    result set, and persisting that would truncate the cache — the exact failure
+    `_write_dependencies_sync_log` / `_persist_column_map` are ordered to avoid.
+    Unwinding writes nothing, so the previous build stands untouched.
+
+    Callers turn it into a PARTIAL job (never COMPLETE) — see
+    `sync_service._sync_dependencies` and `run_deep_index` below.
+    """
+
+
 # ── Type / layer mapping ────────────────────────────────────────────────────────
 #
 # CachedMetadata stores TS cache subtypes; the lineage graph uses six coarse node
@@ -163,6 +178,10 @@ async def build_object_graph(*, cluster_id: str, org_id: int, job_id: str, final
     `finalize=False` when a Phase 2 column pass follows, so the graph is queryable
     (SyncLog written, edges committed) while the longer TML tail runs, and the job
     is only marked complete once everything lands.
+
+    Raises `SyncCancelled` if the sweep is cancelled — deliberately from *inside*
+    the sweep, so it unwinds before step 2's delete-before-insert and the previous
+    build survives intact rather than being replaced by a partial one.
     """
     from ts_admin.services.archiver_service import _get_cluster
     from ts_admin.services.sync_status import require_authoritative_metadata
@@ -243,7 +262,20 @@ async def build_object_graph(*, cluster_id: str, org_id: int, job_id: str, final
 
 
 async def _sweep_dependents(client, table_guids: list[str], job_id: str) -> dict[str, list[dict]]:
-    """Batched, bounded-concurrency dependency sweep over the logical-table universe."""
+    """Batched, bounded-concurrency dependency sweep over the logical-table universe.
+
+    Every chunk task is created up front, so this drain loop OWNS them and must
+    account for all of them on every exit path. Leaving the loop early — one
+    chunk raising, or a cancel at a chunk boundary — used to abandon the rest:
+    they were neither awaited nor cancelled, `build_object_graph`'s
+    ``async with ThoughtSpotClient`` then closed httpx underneath them, and on a
+    100-chunk cluster a single transient 500 left ~99 coroutines failing into
+    "Task exception was never retrieved" on the loop that also serves /health.
+    The `finally` below cancels and drains them while the client is still open,
+    and (with ``return_exceptions=True``) never masks the original error.
+    """
+    from ts_admin.services.job_service import is_cancelled
+
     chunks = list(_chunks(table_guids, 100))
     sem = asyncio.Semaphore(CRAWL_CONCURRENCY)
     merged: dict[str, list[dict]] = {}
@@ -254,11 +286,21 @@ async def _sweep_dependents(client, table_guids: list[str], job_id: str) -> dict
             return await client.search_dependents(object_ids=chunk, object_type="LOGICAL_TABLE", batch_size=100)
 
     tasks = [asyncio.create_task(_one(c)) for c in chunks]
-    for task in asyncio.as_completed(tasks):
-        result = await task
-        merged.update(result)
-        done += len(result)  # count objects swept, not chunks (consistent with the column pass)
-        update_progress(job_id, done)
+    try:
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            merged.update(result)
+            done += len(result)  # count objects swept, not chunks (consistent with the column pass)
+            update_progress(job_id, done)
+            if is_cancelled(job_id):
+                raise SyncCancelled(f"dependency sweep cancelled after {done} object(s)")
+    finally:
+        # No-op on the happy path (every task is already done); on the error or
+        # cancel path this is what stops the in-flight requests and retrieves
+        # every outstanding result/exception before the client goes away.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     return merged
 
 
@@ -616,10 +658,14 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
     model's column resolution needs its source tables present in the same batch).
     Liveboards are exported incrementally: unchanged ones (modified_at ≤ the last
     column build) keep their existing usage rows + edges. Returns rows written.
+
+    Raises `SyncCancelled` if cancelled at a TML chunk boundary — before
+    `_persist_column_map`, so a half-exported pass never replaces a whole one.
     """
     from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
     from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.services.job_service import is_cancelled
     from ts_admin.ts_client import ThoughtSpotClient
 
     # 1. Universe + last-build timestamp (for liveboard incrementality).
@@ -692,6 +738,8 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
 
         # 2a. Logical tables → physical summaries + model specs (parse, don't hoard raw TML).
         for chunk in _chunks(table_guids, 50):
+            if is_cancelled(job_id):
+                raise SyncCancelled(f"column map cancelled after {progress} object(s)")
             items = await _export_tml_resilient(client, chunk, failed_exports)
             for item in items:
                 edoc = _load_edoc(item)
@@ -740,6 +788,8 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
 
         # 2c. Liveboards → model→liveboard USES edges + per-column usage (attributed to the LB).
         for chunk in _chunks(lb_guids, 50):
+            if is_cancelled(job_id):
+                raise SyncCancelled(f"column map cancelled after {progress} object(s)")
             items = await _export_tml_resilient(client, chunk, failed_exports)
             for item in items:
                 edoc = _load_edoc(item)
@@ -1030,9 +1080,13 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
     largest TML set). Same modified_at skip logic as the liveboard pass, plus a
     "never certified by a deep pass" disjunct — see the section note above for
     why both halves are required.
+
+    Raises `SyncCancelled` if cancelled at a TML chunk boundary — before the
+    delete-before-insert, so the existing usage rows survive.
     """
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
     from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.services.job_service import is_cancelled
     from ts_admin.ts_client import ThoughtSpotClient
 
     with get_session() as session:
@@ -1094,6 +1148,8 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
     progress = 0
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
         for chunk in _chunks(answer_guids, 50):
+            if is_cancelled(job_id):
+                raise SyncCancelled(f"deep answer index cancelled after {progress} answer(s)")
             items = await _export_tml_resilient(client, chunk, failed_exports)
             for item in items:
                 edoc = _load_edoc(item)
@@ -1152,10 +1208,15 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
 
 async def run_deep_index(cluster_id: str, org_id: int, job_id: str) -> None:
     """Background-task wrapper for build_answer_index with job/error accounting."""
-    from ts_admin.services.job_service import mark_failed
+    from ts_admin.services.job_service import mark_failed, mark_partial
 
     try:
         await build_answer_index(cluster_id=cluster_id, org_id=org_id, job_id=job_id)
+    except SyncCancelled as exc:
+        # The admin asked for this — PARTIAL, not FAILED, and never COMPLETE.
+        # Nothing was persisted, so the previous index is still whatever it was.
+        logger.info("Deep answer index cancelled for cluster=%s org=%s: %s", cluster_id, org_id, exc)
+        mark_partial(job_id, {"entity_type": "answer_index", "record_count": 0, "cancelled": True})
     except Exception as exc:
         logger.exception("Deep answer index failed: %s", exc)
         mark_failed(job_id, exc)
