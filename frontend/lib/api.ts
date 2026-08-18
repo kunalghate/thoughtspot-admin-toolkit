@@ -90,7 +90,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export const healthApi = {
-  check: () => request<{ status: string }>("/health"),
+  check: () => request<{ status: string; version: string }>("/health"),
 };
 
 // ── Updates ───────────────────────────────────────────────────────────────────
@@ -126,6 +126,9 @@ export const clustersApi = {
 
   testConnection: (id: string) =>
     request<{ success: boolean; ts_version?: string; error?: string }>(`/clusters/${id}/test`, { method: "POST" }),
+
+  activate: (id: string) =>
+    request<Cluster>(`/clusters/${id}/activate`, { method: "POST" }),
 
   listOrgs: (id: string) =>
     request<Org[]>(`/clusters/${id}/orgs`),

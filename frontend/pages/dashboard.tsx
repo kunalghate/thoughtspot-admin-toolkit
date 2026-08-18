@@ -120,29 +120,33 @@ function DashboardContent() {
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<Set<string>>(new Set());
-  const cancelled = useRef(false);
+  // Generation counter, not a boolean ref: the effect below resets a boolean to
+  // false in the same commit that the cleanup sets it true, so a shared flag
+  // never rejects anything and a slow read for the PREVIOUS (cluster, org) can
+  // paint its numbers under the new one's Topbar. Same guard the grid pages
+  // use, and it survives being read from a stale `load` closure.
+  const loadIdRef = useRef(0);
 
   const clusterId = activeCluster?.id;
   const orgId = activeOrg?.org_id;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (loadId: number) => {
     if (!clusterId || orgId == null) return;
     try {
       const summary = await dashboardApi.summary(clusterId, orgId);
-      if (cancelled.current) return;
+      if (loadId !== loadIdRef.current) return;
       setData(summary);
       setError(null);
     } catch (e) {
-      if (cancelled.current) return;
+      if (loadId !== loadIdRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [clusterId, orgId]);
 
   useEffect(() => {
-    cancelled.current = false;
+    const loadId = ++loadIdRef.current;
     setData(null);
-    void load();
-    return () => { cancelled.current = true; };
+    void load(loadId);
   }, [load]);
 
   // Poll fast while work is in flight, slowly otherwise — this is also what
@@ -150,7 +154,7 @@ function DashboardContent() {
   const busy = (data?.running_jobs.length ?? 0) > 0 || syncing.size > 0;
   useEffect(() => {
     if (!clusterId || orgId == null) return;
-    const iv = setInterval(() => { void load(); }, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
+    const iv = setInterval(() => { void load(loadIdRef.current); }, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
     return () => clearInterval(iv);
   }, [load, busy, clusterId, orgId]);
 
@@ -159,7 +163,7 @@ function DashboardContent() {
     setSyncing((prev) => new Set(prev).add(entity));
     try {
       await syncApi.trigger(clusterId, orgId, entity);
-      await load();
+      await load(loadIdRef.current);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -181,7 +185,19 @@ function DashboardContent() {
   // and cannot be the only source — a healthy multi-minute sync would otherwise
   // render as "Never synced — sync now".
   const inFlight = data.syncing ?? {};
-  const isSyncing = (entity: "users" | "groups" | "metadata") => syncing.has(entity) || inFlight[entity] === true;
+  // `syncing` (the server map) is derived from the IN_PROGRESS SyncLog marker,
+  // which only `_sync_metadata` writes — so for users and groups it is always
+  // false and a first sync rendered "Never synced — sync now" for its whole
+  // run, right below a RunningJobsBar saying the opposite, inviting a second
+  // concurrent sync. `running_jobs` carries `sync:{entity}` for every entity,
+  // so read that too.
+  const runningEntities = new Set(
+    data.running_jobs
+      .map((j) => (j.job_type.startsWith("sync:") ? j.job_type.slice(5) : null))
+      .filter((e): e is string => e !== null),
+  );
+  const isSyncing = (entity: "users" | "groups" | "metadata") =>
+    syncing.has(entity) || inFlight[entity] === true || runningEntities.has(entity);
 
   return (
     <div style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20, maxWidth: 1320 }}>
