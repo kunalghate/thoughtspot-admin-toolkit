@@ -49,6 +49,10 @@ def get_engine():
 # or create_all silently skips it and queries fail with "no such column".
 _REBUILDABLE_SENTINELS: dict[str, tuple[str, str]] = {
     "ts_column_lineage": ("is_formula", "dependencies"),
+    # `author_guid` was added after ts_groups shipped. The table is a pure
+    # cache of groups/search, so drop-and-re-sync is cheaper and safer than a
+    # migration — the next Groups sync repopulates it with the creator GUID.
+    "ts_groups": ("author_guid", "groups"),
 }
 
 

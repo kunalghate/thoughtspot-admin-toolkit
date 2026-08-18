@@ -76,6 +76,18 @@ class TestGroupMemberUsers:
         group = TSGroup.model_validate({"id": "g1", "name": "admins", "member_users": ["u9"], "users": [{"id": "u1"}]})
         assert group.member_users == ["u9"]
 
+    def test_author_id_parsed(self):
+        group = TSGroup.model_validate({"id": "g1", "name": "admins", "author_id": "u-creator"})
+        assert group.author_id == "u-creator"
+
+    def test_absent_author_id_gives_empty_string(self):
+        group = TSGroup.model_validate({"id": "g1", "name": "admins"})
+        assert group.author_id == ""
+
+    def test_null_author_id_gives_empty_string(self):
+        group = TSGroup.model_validate({"id": "g1", "name": "admins", "author_id": None})
+        assert group.author_id == ""
+
     def test_absent_users_key_gives_empty_list(self):
         group = TSGroup.model_validate({"id": "g1", "name": "admins"})
         assert group.member_users == []

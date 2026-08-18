@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, MetadataListResponse, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, MetadataListResponse, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind, UpdateCheck } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -93,6 +93,12 @@ export const healthApi = {
   check: () => request<{ status: string }>("/health"),
 };
 
+// ── Updates ───────────────────────────────────────────────────────────────────
+
+export const updateApi = {
+  check: () => request<UpdateCheck>("/update"),
+};
+
 // ── Clusters ──────────────────────────────────────────────────────────────────
 
 export const clustersApi = {
@@ -131,12 +137,17 @@ export const clustersApi = {
 // ── Sync ──────────────────────────────────────────────────────────────────────
 
 export const syncApi = {
-  // clusterId unused — backend uses active cluster from config
-  status: (_clusterId: string, orgId = 0) =>
-    request<SyncLog[]>(`/sync?org_id=${orgId}`),
+  // cluster_id is sent explicitly: the shell can be displaying one cluster while
+  // a different one is marked active in config, and a sync must run against the
+  // cluster the user is looking at.
+  status: (clusterId: string, orgId = 0) =>
+    request<SyncLog[]>(`/sync?org_id=${orgId}&cluster_id=${encodeURIComponent(clusterId)}`),
 
-  trigger: (_clusterId: string, orgId: number, entityType: EntityType) =>
-    request<{ entity_type: string; job_id: string }>(`/sync/${entityType}?org_id=${orgId}`, { method: "POST" }),
+  trigger: (clusterId: string, orgId: number, entityType: EntityType) =>
+    request<{ entity_type: string; job_id: string }>(
+      `/sync/${entityType}?org_id=${orgId}&cluster_id=${encodeURIComponent(clusterId)}`,
+      { method: "POST" },
+    ),
 };
 
 // ── Metadata ──────────────────────────────────────────────────────────────────

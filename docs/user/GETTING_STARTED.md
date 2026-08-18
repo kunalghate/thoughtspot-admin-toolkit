@@ -170,12 +170,44 @@ Removing a cluster deletes its configuration and credential from the keychain. I
 
 ---
 
-## Upgrading
+## Updating
 
-Run the same install command from [Step 1](#step-1-install) again. It upgrades
-the toolkit in place.
+You do not have to watch for new versions. When one is published, an
+**Update available** pill appears in the top bar of the app, and clicking it
+shows these same steps.
 
-Your local data and settings are preserved when upgrading.
+> **If you installed before v0.2.0**, your copy predates the `update` command —
+> it will say `No such command 'update'`. Run the install command from
+> [Step 1](#step-1-install) once to catch up. After that, the steps below work.
+
+**1. Stop the toolkit.** Press `Ctrl+C` in the terminal window running it.
+
+**2. Update it:**
+
+```bash
+ts-admin-toolkit update
+```
+
+If you are already on the newest version, it tells you so and changes nothing.
+
+**3. Start it again:**
+
+```bash
+ts-admin-toolkit serve
+```
+
+Your clusters, credentials, settings, job history and cached data are all kept —
+there is nothing to reconnect or re-sync afterwards.
+
+To see what you are running now: `ts-admin-toolkit --version`. To check for a
+new version without installing it: `ts-admin-toolkit update --check`.
+
+If `ts-admin-toolkit update` reports that it cannot find `uv`, run the install
+command from [Step 1](#step-1-install) again instead — that upgrades in place
+too.
+
+The toolkit never updates itself in the background. It performs bulk deletes and
+permission changes, so it tells you an update exists and leaves the timing to you.
 
 ---
 

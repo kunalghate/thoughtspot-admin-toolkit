@@ -113,7 +113,7 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
                 <span style={{ fontSize: 13, fontWeight: 600 }}>Cannot connect to ThoughtSpot</span>
               </div>
               <p style={{ margin: 0, fontSize: 12, color: theme.color.danger }}>
-                Permissions are fetched live and are unavailable while the cluster is offline.
+                Permissions are fetched live and are unavailable while the instance is offline.
                 Check your network connection and retry.
               </p>
             </div>

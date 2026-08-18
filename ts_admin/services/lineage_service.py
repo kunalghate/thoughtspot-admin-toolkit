@@ -35,6 +35,13 @@ from ts_admin.database import get_session
 from ts_admin.models.cache.ts_dependency import CachedDependency
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.services.job_service import mark_complete, mark_running, update_progress
+from ts_admin.ts_client.exceptions import (
+    TSInvalidParametersError,
+    TSObjectNotFoundError,
+    TSResponseParseError,
+    TSServerError,
+    TSTimeoutError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +62,7 @@ _NODE_TYPE_BY_OBJECT_TYPE: dict[str, str] = {
     "MODEL": "MODEL",
     "ONE_TO_ONE_LOGICAL": "DB_TABLE",
     "TABLE": "DB_TABLE",
+    "DATASET": "DB_TABLE",  # Analyst Studio dataset — a table on a Mode connection
     "SQL_VIEW": "LOGICAL_TABLE",
     "USER_DEFINED": "LOGICAL_TABLE",
     "VIEW": "LOGICAL_TABLE",
@@ -62,15 +70,17 @@ _NODE_TYPE_BY_OBJECT_TYPE: dict[str, str] = {
     "CONNECTION": "CONNECTION",
 }
 
-# Left-list subtype filter labels (AdminOps parity: Model / Table / Dataset / View).
+# Left-list subtype filter labels. Keep in step with TYPE_LABELS in
+# frontend/lib/objectTypes.ts — one vocabulary across the app.
 _SUBTYPE_LABEL: dict[str, str] = {
     "WORKSHEET": "Model",
-    "AGGR_WORKSHEET": "Model",
+    "AGGR_WORKSHEET": "View",
     "MODEL": "Model",
     "ONE_TO_ONE_LOGICAL": "Table",
     "TABLE": "Table",
-    "USER_DEFINED": "Dataset",
-    "SQL_VIEW": "View",
+    "DATASET": "Dataset",
+    "USER_DEFINED": "CSV Upload",
+    "SQL_VIEW": "SQL View",
     "VIEW": "View",
     "LOGICAL_TABLE": "Table",
     "ANSWER": "Answer",
@@ -90,7 +100,7 @@ _LAYER_BY_NODE_TYPE: dict[str, int] = {
 # CachedMetadata object_types that make up the "logical tables" universe we sweep
 # for dependents (everything that is neither an Answer nor a Liveboard).
 LOGICAL_TABLE_TYPES: frozenset[str] = frozenset(
-    {"WORKSHEET", "AGGR_WORKSHEET", "ONE_TO_ONE_LOGICAL", "SQL_VIEW", "USER_DEFINED", "LOGICAL_TABLE"}
+    {"WORKSHEET", "AGGR_WORKSHEET", "ONE_TO_ONE_LOGICAL", "SQL_VIEW", "USER_DEFINED", "DATASET", "LOGICAL_TABLE"}
 )
 
 # How many consumer nodes a graph response embeds before collapsing to a count
@@ -100,6 +110,11 @@ CONSUMER_NODE_CAP = 50
 IMPACT_BFS_CAP = 5000
 # Concurrent metadata/search calls during the crawl (client retry handles 429s).
 CRAWL_CONCURRENCY = 5
+# How many individual objects may fail TML export before the column pass gives up.
+# A handful of un-exportable objects is normal on a big cluster; hundreds means
+# the cluster (or our privileges) is the problem, and bisecting every batch down
+# to singles would be thousands of pointless calls.
+TML_EXPORT_FAILURE_BUDGET = 100
 
 
 def _node_type_strict(object_type: str | None) -> str | None:
@@ -150,9 +165,20 @@ async def build_object_graph(*, cluster_id: str, org_id: int, job_id: str, final
     is only marked complete once everything lands.
     """
     from ts_admin.services.archiver_service import _get_cluster
+    from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
 
     mark_running(job_id, total=0)
+
+    # The GUID universe below IS this build's input set, so a truncated metadata
+    # cache doesn't fail loudly — it silently yields a graph missing whole
+    # branches (models and tables are the LAST specs `_sync_metadata` pages in),
+    # under a SUCCESS "dependencies" SyncLog that reads as a complete lineage.
+    # Downstream-delete then reports "no dependents" for a root that has plenty.
+    # Fail closed on the sync_log, not on a row count, which cannot tell a
+    # truncated cache from a healthy one. Same posture as the other input-set
+    # sites (deleter, transfer, revoke) — see services/sync_status.py.
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
 
     # 1. Read the GUID universe (cluster + org scoped) from CachedMetadata.
     with get_session() as session:
@@ -167,10 +193,9 @@ async def build_object_graph(*, cluster_id: str, org_id: int, job_id: str, final
             )
         ).all()
 
-    if not meta_rows:
-        # Lineage is derived from the metadata cache — refuse to build on an empty
-        # one rather than write a misleading empty graph.
-        raise ValueError("No cached metadata for this cluster/org — sync metadata first, then build lineage.")
+    # No empty-cache raise here: past the guard, empty means a metadata sync
+    # genuinely certified this org as having no objects, which is a valid
+    # (empty) lineage — it falls through to the `not table_guids` branch below.
 
     # guid → (name, object_type) for resolving both edge endpoints.
     meta_by_guid: dict[str, tuple[str, str]] = {r[0]: (r[1], r[2]) for r in meta_rows}
@@ -339,8 +364,14 @@ def _write_dependencies_sync_log(cluster_id: str, org_id: int, *, record_count: 
 # (unit-tested against canned TML) so parser fidelity — THE risk — is exercisable
 # without a live cluster; the Phase 3 debug endpoint validates against real data.
 
-_MODEL_KINDS = ("worksheet", "model")
-_SOURCE_KINDS = ("table", "view", "sql_view")
+# TML `view` is a ThoughtSpot View (AGGR_WORKSHEET) — a *derived* object built on
+# another logical table, not a physical one. It has no `connection` and no
+# `db_table`; its columns name an upstream output column. Classifying it as a
+# source made every View parse as a physical table: it produced no CONNECTS edge
+# and no column rows, and it registered a bogus physical entry (db_table = the
+# View's own name) that any model referencing that name would resolve against.
+_MODEL_KINDS = ("worksheet", "model", "view")
+_SOURCE_KINDS = ("table", "sql_view")
 
 
 def _load_edoc(item: dict) -> dict | None:
@@ -387,12 +418,65 @@ def _parse_physical_source(body: dict) -> dict:
     }
 
 
+async def _export_tml_resilient(client, chunk: list[str], failed: list[str]) -> list[dict]:
+    """
+    Export a chunk of TML, surviving objects ThoughtSpot refuses to export.
+
+    `metadata/tml/export` is all-or-nothing per request, and a big cluster has
+    two ways to poison a batch: an object the server can't serialize (500, "No
+    value present") and an identifier it rejects outright (400, "Invalid
+    parameter values: metadata_identifiers" — a GUID in our metadata cache that
+    TS no longer accepts). Either one used to abort the entire column pass —
+    minutes of successful exports discarded, leaving the graph with no
+    connection edges and no column map at all (silently, since sync_service
+    treats the pass as best-effort).
+
+    So on a batch-level failure, bisect: halve the chunk and retry each half
+    until the offending object is isolated to a chunk of one, which is recorded
+    in `failed` and skipped. Everything else in the batch still lands.
+
+    Auth and privilege errors are NOT caught — those are whole-cluster
+    conditions where bisecting would just repeat the same failure per object.
+    A 400 IS caught because the only variable in the request body is the
+    identifier list, so a rejected batch means a bad object in it, not a bad
+    request shape.
+    """
+    try:
+        return await client.tml_export(object_ids=chunk, edoc_format="JSON")
+    except (
+        TSServerError,
+        TSTimeoutError,
+        TSResponseParseError,
+        TSObjectNotFoundError,
+        TSInvalidParametersError,
+    ) as exc:
+        if len(failed) >= TML_EXPORT_FAILURE_BUDGET:
+            raise
+        if len(chunk) == 1:
+            failed.append(chunk[0])
+            logger.warning("TML export failed for %s — skipped: %s", chunk[0], exc)
+            return []
+        mid = len(chunk) // 2
+        left = await _export_tml_resilient(client, chunk[:mid], failed)
+        right = await _export_tml_resilient(client, chunk[mid:], failed)
+        return left + right
+
+
 def _model_alias_map(body: dict) -> dict[str, tuple[str, str]]:
     """
     Map every `column_id` prefix a model column can use → (table_name, table_guid).
 
-    A prefix may be a table_paths id (worksheet), a model_tables id, or a table
-    name directly. `tables`/`model_tables[].fqn` supplies the source GUID.
+    A prefix may be a table_paths id (worksheet), a model_tables id or **alias**,
+    or a table name directly. `tables`/`model_tables[].fqn` supplies the source
+    GUID.
+
+    The alias matters: MODEL-kind TML (the shape that replaced worksheets) keys
+    its columns off `model_tables[].alias`, which is the table name lowercased —
+    `fact_supply_chain_perf::date_fk`, not `Fact_Supply_Chain_Perf::date_fk`.
+    Indexing only name/id left every Model-kind object unresolved (empty
+    table_guid AND db_table), so the column map came back blank for exactly the
+    objects a modern cluster has most of. Lowercased keys are registered as a
+    fallback for the same reason, without letting them shadow an exact match.
     """
     alias: dict[str, tuple[str, str]] = {}
     name_to_fqn: dict[str, str] = {}
@@ -403,12 +487,15 @@ def _model_alias_map(body: dict) -> dict[str, tuple[str, str]]:
             continue
         name_to_fqn[name] = fqn
         alias[name] = (name, fqn)
-        if tbl.get("id"):
-            alias[tbl["id"]] = (name, fqn)
+        for key in (tbl.get("id"), tbl.get("alias")):
+            if key:
+                alias[key] = (name, fqn)
     for path in body.get("table_paths", []) or []:
         pid, tname = path.get("id"), path.get("table")
         if pid and tname:
             alias[pid] = (tname, name_to_fqn.get(tname, ""))
+    for key, value in list(alias.items()):
+        alias.setdefault(key.lower(), value)
     return alias
 
 
@@ -428,7 +515,17 @@ def _resolve_model_columns(
     from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
 
     alias = _model_alias_map(body)
-    cols = body.get("worksheet_columns") or body.get("columns") or []
+    cols = body.get("worksheet_columns") or body.get("columns") or body.get("view_columns") or []
+    # A View's columns reference an upstream output column by name rather than by
+    # a `table::column` id, so the prefix that normally names the source table is
+    # absent. With exactly one source table the parent is unambiguous; with
+    # several, the TML does not say which, so the chain stops at the column name.
+    view_tables = body.get("tables") or [] if "view_columns" in body else []
+    view_parent = (
+        (view_tables[0].get("name") or view_tables[0].get("id") or "", view_tables[0].get("fqn", "") or "")
+        if len(view_tables) == 1
+        else ("", "")
+    )
     rows: list[CachedColumnLineage] = []
     for c in cols:
         model_col = c.get("name")
@@ -441,13 +538,19 @@ def _resolve_model_columns(
         table_name = table_guid = table_col = ""
         if "::" in column_id:
             prefix, table_col = column_id.split("::", 1)
-            table_name, table_guid = alias.get(prefix, (prefix, ""))
+            table_name, table_guid = alias.get(prefix) or alias.get(prefix.lower()) or (prefix, "")
+        elif c.get("search_output_column"):
+            table_col = c["search_output_column"]
+            table_name, table_guid = view_parent
 
         phys = None
         if table_guid:
             phys = physical_by_guid.get(table_guid)
         if phys is None and table_name:
-            phys = physical_by_name.get(table_name)
+            # Case-insensitive fallback: a Model's alias is the lowercased table
+            # name, so the name we recovered may not match the physical table's
+            # exported casing.
+            phys = physical_by_name.get(table_name) or physical_by_name.get(table_name.lower())
 
         rows.append(
             CachedColumnLineage(
@@ -578,6 +681,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
     usage_rows: list = []
     lb_uses_edges: list = []
     inaccessible = 0
+    failed_exports: list[str] = []  # objects the server refused to export (see _export_tml_resilient)
     progress = 0
 
     async with ThoughtSpotClient(
@@ -588,7 +692,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
 
         # 2a. Logical tables → physical summaries + model specs (parse, don't hoard raw TML).
         for chunk in _chunks(table_guids, 50):
-            items = await client.tml_export(object_ids=chunk, edoc_format="JSON")
+            items = await _export_tml_resilient(client, chunk, failed_exports)
             for item in items:
                 edoc = _load_edoc(item)
                 if edoc is None:
@@ -602,6 +706,9 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
                         physical_by_guid[guid] = summary
                     if body.get("name"):
                         physical_by_name[body["name"]] = summary
+                        # Lowercase alias key: Model TML refers to its sources by
+                        # the lowercased table name (see _model_alias_map).
+                        physical_by_name.setdefault(body["name"].lower(), summary)
                     conn_guid = summary["connection_guid"] or conn_name_to_guid.get(summary["connection_name"], "")
                     if guid and summary["connection_name"]:
                         connect_edges[guid] = {
@@ -633,7 +740,7 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
 
         # 2c. Liveboards → model→liveboard USES edges + per-column usage (attributed to the LB).
         for chunk in _chunks(lb_guids, 50):
-            items = await client.tml_export(object_ids=chunk, edoc_format="JSON")
+            items = await _export_tml_resilient(client, chunk, failed_exports)
             for item in items:
                 edoc = _load_edoc(item)
                 if edoc is None:
@@ -680,27 +787,49 @@ async def build_column_map(*, cluster_id: str, org_id: int, job_id: str, increme
             update_progress(job_id, progress)
 
     # 3. Persist (delete-before-insert, scoped for incremental liveboards).
+    # A liveboard whose export failed was NOT rebuilt this round — keep it out of
+    # the delete scope so its existing edges/usage survive instead of being wiped
+    # by a transient server error.
+    failed_set = set(failed_exports)
     now = datetime.now(timezone.utc)
-    written = _persist_column_map(
+    counts = _persist_column_map(
         cluster_id=cluster_id,
         org_id=org_id,
         now=now,
         lineage_rows=lineage_rows,
         connect_edges=list(connect_edges.values()),
-        lb_guids=lb_guids,
+        lb_guids=[g for g in lb_guids if g not in failed_set],
         all_lb_guids=all_lb_guids,
         lb_uses_edges=lb_uses_edges,
         usage_rows=usage_rows,
     )
     if inaccessible:
         logger.info("Column map: %d inaccessible TML stub(s) for cluster=%s org=%s", inaccessible, cluster_id, org_id)
-    logger.info("Built column map (%d rows) for cluster=%s org=%s", written, cluster_id, org_id)
-    return written
+    if failed_exports:
+        logger.warning(
+            "Column map: %d object(s) failed TML export and were skipped for cluster=%s org=%s (first: %s)",
+            len(failed_exports),
+            cluster_id,
+            org_id,
+            ", ".join(failed_exports[:5]),
+        )
+    logger.info(
+        "Built column map for cluster=%s org=%s: %d column chain(s), %d connection edge(s), "
+        "%d liveboard edge(s), %d usage row(s)",
+        cluster_id,
+        org_id,
+        counts["columns"],
+        counts["connects"],
+        counts["lb_uses"],
+        counts["usage"],
+    )
+    return counts["columns"]
 
 
 def _persist_column_map(
     *, cluster_id, org_id, now, lineage_rows, connect_edges, lb_guids, all_lb_guids, lb_uses_edges, usage_rows
-) -> int:
+) -> dict[str, int]:
+    """Write the pass's four row kinds; return a per-kind count (they are not interchangeable)."""
     from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
 
@@ -769,24 +898,24 @@ def _persist_column_map(
             )
         session.commit()
 
-        count = 0
         for row in lineage_rows:
             row.synced_at = now
             session.add(row)
-            count += 1
         for fields in connect_edges:
             session.add(CachedDependency(cluster_id=cluster_id, org_id=org_id, synced_at=now, **fields))
-            count += 1
         for edge in lb_uses_edges:
             edge.synced_at = now
             session.add(edge)
-            count += 1
         for row in usage_rows:
             row.synced_at = now
             session.add(row)
-            count += 1
         session.commit()
-    return count
+    return {
+        "columns": len(lineage_rows),
+        "connects": len(connect_edges),
+        "lb_uses": len(lb_uses_edges),
+        "usage": len(usage_rows),
+    }
 
 
 # ── BUILD: Phase 3 saved-answer column usage (lazy / opt-in) + debug ────────────
@@ -905,10 +1034,11 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
     mark_running(job_id, total=len(answer_guids))
     cluster = _get_cluster(cluster_id)
     all_rows: list = []
+    failed_exports: list[str] = []
     progress = 0
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
         for chunk in _chunks(answer_guids, 50):
-            items = await client.tml_export(object_ids=chunk, edoc_format="JSON")
+            items = await _export_tml_resilient(client, chunk, failed_exports)
             for item in items:
                 edoc = _load_edoc(item)
                 if edoc is None:
@@ -926,13 +1056,17 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
             update_progress(job_id, progress)
 
     now = datetime.now(timezone.utc)
+    # Answers whose export failed were not re-crawled — leave their existing
+    # usage rows alone rather than deleting rows nothing will rebuild.
+    failed_set = set(failed_exports)
+    rebuilt_guids = [g for g in answer_guids if g not in failed_set]
     with get_session() as session:
         session.exec(
             sql_delete(CachedColumnUsage).where(
                 CachedColumnUsage.cluster_id == cluster_id,
                 CachedColumnUsage.org_id == org_id,
                 CachedColumnUsage.consumer_type == "ANSWER",
-                col(CachedColumnUsage.consumer_guid).in_(answer_guids),
+                col(CachedColumnUsage.consumer_guid).in_(rebuilt_guids),
             )
         )
         session.commit()
@@ -940,7 +1074,16 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
             row.synced_at = now
             session.add(row)
         session.commit()
-    mark_complete(job_id, {"entity_type": "answer_index", "record_count": len(all_rows)})
+    result: dict = {"entity_type": "answer_index", "record_count": len(all_rows)}
+    if failed_exports:
+        result["failed_exports"] = len(failed_exports)
+        logger.warning(
+            "Deep answer index: %d answer(s) failed TML export and were skipped for cluster=%s org=%s",
+            len(failed_exports),
+            cluster_id,
+            org_id,
+        )
+    mark_complete(job_id, result)
     logger.info("Deep answer index: %d usage rows for cluster=%s org=%s", len(all_rows), cluster_id, org_id)
     return len(all_rows)
 
@@ -1018,8 +1161,13 @@ async def debug_tml(*, cluster_id: str, org_id: int, guid: str) -> dict:
 
 def get_topology(*, cluster_id: str, org_id: int) -> dict:
     """
-    Return the three left-list groups from CachedMetadata. Pure SQLite read.
-    Each item carries node_type + subtype so the frontend can filter/colour.
+    Return the four left-list groups. Pure SQLite read. Each item carries
+    node_type + subtype so the frontend can filter/colour.
+
+    Connections are the odd one out: they are never CachedMetadata rows (they come
+    from TML `connection` references, not the metadata API), so they are read off
+    the CONNECTS edges that name them. Without this they were unreachable — a
+    connection node in the graph resolved to nothing and clicking it did nothing.
     """
     with get_session() as session:
         rows = session.exec(
@@ -1052,10 +1200,43 @@ def get_topology(*, cluster_id: str, org_id: int) -> dict:
         else:
             logical_tables.append(item)
 
-    for group in (logical_tables, answers, liveboards):
+    connections = _connection_items(cluster_id, org_id)
+
+    for group in (logical_tables, answers, liveboards, connections):
         group.sort(key=lambda i: i["name"].lower())
 
-    return {"logical_tables": logical_tables, "answers": answers, "liveboards": liveboards}
+    return {
+        "logical_tables": logical_tables,
+        "answers": answers,
+        "liveboards": liveboards,
+        "connections": connections,
+    }
+
+
+def _connection_items(cluster_id: str, org_id: int) -> list[dict]:
+    """Every distinct connection named by a CONNECTS edge, as a left-list item."""
+    with get_session() as session:
+        rows = session.exec(
+            select(CachedDependency.target_guid, CachedDependency.target_name)
+            .where(
+                CachedDependency.cluster_id == cluster_id,
+                CachedDependency.org_id == org_id,
+                CachedDependency.relation == "CONNECTS",
+                CachedDependency.target_type == "CONNECTION",
+            )
+            .distinct()
+        ).all()
+    return [
+        {
+            "ts_guid": guid,
+            "name": name or guid,
+            "object_type": "CONNECTION",
+            "node_type": "CONNECTION",
+            "subtype": "Connection",
+            "owner_name": "",
+        }
+        for guid, name in rows
+    ]
 
 
 # ── READ: neighborhood-scoped lineage graph ─────────────────────────────────────
@@ -1090,10 +1271,24 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
                 CachedMetadata.ts_guid == guid,
             )
         ).first()
-        if not root_meta:
-            return None
-        root_name, root_object_type, root_owner = root_meta
-        root_node_type = _node_type(root_object_type)
+        if root_meta:
+            root_name, root_object_type, root_owner = root_meta
+            root_node_type = _node_type(root_object_type)
+        else:
+            # Connections have no CachedMetadata row (see get_topology) — their
+            # identity lives on the CONNECTS edges pointing at them. Anything else
+            # missing from the cache is a genuine 404.
+            conn_name = session.exec(
+                select(CachedDependency.target_name).where(
+                    CachedDependency.cluster_id == cluster_id,
+                    CachedDependency.org_id == org_id,
+                    CachedDependency.target_guid == guid,
+                    CachedDependency.target_type == "CONNECTION",
+                )
+            ).first()
+            if conn_name is None:
+                return None
+            root_name, root_owner, root_node_type = conn_name or guid, "", "CONNECTION"
         root = _node_from_edge_endpoint(guid, root_name, root_node_type, root_owner or "")
 
         nodes: dict[str, dict] = {guid: root}
@@ -1243,6 +1438,11 @@ def _columns_for_root(session, cluster_id: str, org_id: int, guid: str, node_typ
     def _usage_entry(u: CachedColumnUsage) -> dict:
         return {"guid": u.consumer_guid, "name": u.consumer_name, "node_type": u.consumer_type}
 
+    # A connection is below the column map: the chain is defined per model, and a
+    # connection is never a model_guid nor a table_guid on a lineage row.
+    if node_type == "CONNECTION":
+        return []
+
     if node_type in ("ANSWER", "LIVEBOARD"):
         usage = session.exec(
             select(CachedColumnUsage).where(
@@ -1268,7 +1468,10 @@ def _columns_for_root(session, cluster_id: str, org_id: int, guid: str, node_typ
             out.append(_column_row(r, u.model_guid, u.model_column_name, [_usage_entry(u)]))
         return out
 
-    # Model / logical-table root.
+    # Model / logical-table root. A physical table (DB_TABLE) is never the
+    # `model_guid` of a lineage row — it is the `table_guid` one or more models
+    # source from — so fall back to the table side, which yields one row per
+    # (model, column) pair that reads through this table.
     lineage = session.exec(
         select(CachedColumnLineage).where(
             CachedColumnLineage.cluster_id == cluster_id,
@@ -1277,20 +1480,31 @@ def _columns_for_root(session, cluster_id: str, org_id: int, guid: str, node_typ
         )
     ).all()
     if not lineage:
+        lineage = session.exec(
+            select(CachedColumnLineage).where(
+                CachedColumnLineage.cluster_id == cluster_id,
+                CachedColumnLineage.org_id == org_id,
+                CachedColumnLineage.table_guid == guid,
+            )
+        ).all()
+    if not lineage:
         return []
+    # Usage is keyed by the model the column belongs to — a table root spans
+    # several models, so match on (model_guid, column) rather than column alone.
+    model_guids = {r.model_guid for r in lineage}
     usage = session.exec(
         select(CachedColumnUsage).where(
             CachedColumnUsage.cluster_id == cluster_id,
             CachedColumnUsage.org_id == org_id,
-            CachedColumnUsage.model_guid == guid,
+            col(CachedColumnUsage.model_guid).in_(model_guids),
         )
     ).all()
-    used_by: dict[str, list[dict]] = {}
+    used_by: dict[tuple[str, str], list[dict]] = {}
     for u in usage:
-        used_by.setdefault(u.model_column_name, []).append(_usage_entry(u))
+        used_by.setdefault((u.model_guid, u.model_column_name), []).append(_usage_entry(u))
     return [
-        _column_row(r, r.model_guid, r.model_column_name, used_by.get(r.model_column_name, []))
-        for r in sorted(lineage, key=lambda x: x.model_column_name.lower())
+        _column_row(r, r.model_guid, r.model_column_name, used_by.get((r.model_guid, r.model_column_name), []))
+        for r in sorted(lineage, key=lambda x: (x.model_column_name.lower(), x.model_guid))
     ]
 
 

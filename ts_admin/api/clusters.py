@@ -196,7 +196,7 @@ async def test_cluster(cluster_id: str) -> TestResult:
         config = load_config()
         cluster = config.clusters.get(cluster_id)
         if not cluster:
-            raise HTTPException(status_code=404, detail=f"Cluster {cluster_id!r} not found")
+            raise HTTPException(status_code=404, detail=f"Instance {cluster_id!r} not found")
 
         auth = cluster.build_auth_strategy()
         async with ThoughtSpotClient(url=cluster.url, auth=auth) as client:
@@ -243,7 +243,7 @@ async def list_cluster_orgs(cluster_id: str) -> list[OrgOut]:
         config = load_config()
         cluster = config.clusters.get(cluster_id)
         if not cluster:
-            raise HTTPException(status_code=404, detail=f"Cluster {cluster_id!r} not found")
+            raise HTTPException(status_code=404, detail=f"Instance {cluster_id!r} not found")
 
         auth = cluster.build_auth_strategy()
         async with ThoughtSpotClient(url=cluster.url, auth=auth) as client:

@@ -541,7 +541,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           valueFormatter: undefined,
           cellRenderer: (p: { value: string[] | null }) => {
             const tags = p.value ?? [];
-            if (!tags.length) return <span style={{ color: theme.color.borderLight, fontFamily: theme.font.sans }}>—</span>;
+            if (!tags.length) return <span style={{ color: theme.color.textMuted, fontFamily: theme.font.sans }}>—</span>;
             return (
               <div style={{ display: "flex", gap: 4, alignItems: "center", height: "100%", flexWrap: "wrap" }}>
                 {tags.slice(0, 2).map((t: string) => (
@@ -718,7 +718,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           value={criteria.excludeTags.join(", ")}
           placeholder="Exclude tags…"
           onChange={(e) => setCriteria({ ...criteria, excludeTags: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          style={{ width: 140, height: 32, padding: "0 10px", borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface, fontSize: 12, fontFamily: theme.font.sans, outline: "none" }}
+          style={{ width: 140, height: 32, padding: "0 10px", borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface, color: theme.color.textPrimary, fontSize: 12, fontFamily: theme.font.sans, outline: "none" }}
         />
 
         {/* Reset */}
@@ -887,7 +887,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
           flexShrink: 0,
         }}>
-          <span style={{ fontSize: 13, color: theme.color.violetBorder }}>☑</span>
+          <span style={{ fontSize: 13, color: theme.color.textMuted }}>☑</span>
           <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
             Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them, or{" "}
             <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
@@ -984,7 +984,7 @@ function ConfirmTagModal({ pending, onCancel, onConfirm }: {
           {pending.action === "tag" ? "Apply tag" : "Remove tag"}
         </div>
         <p style={{ margin: "0 0 16px", fontSize: 13, color: theme.color.textSecondary, lineHeight: 1.5 }}>
-          {message} This changes the objects on your ThoughtSpot cluster immediately.
+          {message} This changes the objects on your ThoughtSpot instance immediately.
         </p>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button onClick={onCancel} style={{

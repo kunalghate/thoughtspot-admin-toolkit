@@ -22,18 +22,8 @@ import {
 import AppShell, { useShell } from "@/components/Shell";
 import { dashboardApi, syncApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { typeLabelPlural } from "@/lib/objectTypes";
 import type { DashboardSummary, EntityType } from "@/lib/types";
-
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD: "Liveboards",
-  ANSWER: "Answers",
-  WORKSHEET: "Worksheets",
-  LOGICAL_TABLE: "Worksheets",
-  ONE_TO_ONE_LOGICAL: "Tables",
-  AGGR_WORKSHEET: "Agg Worksheets",
-  SQL_VIEW: "SQL Views",
-  USER_DEFINED: "User Defined",
-};
 
 const JOB_LABELS: Record<string, string> = {
   "sync:users": "User sync",
@@ -205,7 +195,7 @@ function DashboardContent() {
       {neverSynced && (
         <Banner>
           Nothing synced yet — open <Link href="/metadata" style={linkStyle}>Metadata</Link> or{" "}
-          <Link href="/users" style={linkStyle}>Users</Link> and press Sync to pull data from your cluster.
+          <Link href="/users" style={linkStyle}>Users</Link> and press Sync to pull data from your instance.
         </Banner>
       )}
 
@@ -324,7 +314,7 @@ function AttentionBand({ attention, staleCount, failedJobs, neverSynced }: {
   const items = [
     { n: failedJobs, label: `job${failedJobs === 1 ? "" : "s"} failed in the last 7 days`, href: "/jobs", tone: "danger" as const },
     { n: attention.orphaned_content, label: "objects owned by a user who no longer exists", href: "/users", tone: "danger" as const },
-    { n: attention.inactive_users, label: "inactive users still on the cluster", href: "/users", tone: "warn" as const },
+    { n: attention.inactive_users, label: "inactive users still on the instance", href: "/users", tone: "warn" as const },
     { n: attention.empty_groups, label: "groups with no members", href: "/groups", tone: "warn" as const },
     { n: attention.users_without_group, label: "users belong to no group", href: "/users", tone: "warn" as const },
     { n: staleCount, label: "liveboards/answers unused for 90+ days", href: "/archiver", tone: "warn" as const },
@@ -528,7 +518,7 @@ function Card({ title, meta, action, children }: {
 function ContentByTypeCard({ byType, total }: { byType: Record<string, number>; total: number }) {
   const merged = new Map<string, number>();
   for (const [type, count] of Object.entries(byType)) {
-    const label = TYPE_LABELS[type] ?? type;
+    const label = typeLabelPlural(type);
     merged.set(label, (merged.get(label) ?? 0) + count);
   }
   const rows = [...merged].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);

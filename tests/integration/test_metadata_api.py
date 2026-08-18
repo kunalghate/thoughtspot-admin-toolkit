@@ -134,6 +134,35 @@ class TestListMetadata:
         r = client.get("/api/v1/metadata?cluster_id=nobody&org_id=0")
         assert r.status_code == 200
         assert r.json()["total"] == 0
+        assert r.json()["hidden_system_count"] == 0
+
+    def test_reports_hidden_system_content(self, client, seeded, in_memory_db):
+        """An org holding only built-in content must not look like a failed sync:
+        total is 0, but the response says how many objects were withheld."""
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as session:
+            for i in range(4):
+                session.add(
+                    CachedMetadata(
+                        cluster_id="c1",
+                        org_id=7,
+                        ts_guid=f"sys-{i}",
+                        name=f"TS: Builtin {i}",
+                        object_type="WORKSHEET",
+                        owner_guid="system",
+                        owner_name="System User",
+                        tag_names=json.dumps([]),
+                        last_accessed_at=None,
+                        synced_at=now,
+                    )
+                )
+            session.commit()
+
+        r = client.get("/api/v1/metadata?cluster_id=c1&org_id=7")
+        assert r.status_code == 200
+        assert r.json()["total"] == 0
+        assert r.json()["items"] == []
+        assert r.json()["hidden_system_count"] == 4
 
 
 class TestGetMetadata:

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronDown, RefreshCw, WifiOff } from "lucide-react";
 import { theme } from "@/lib/theme";
+import UpdatePill from "./UpdatePill";
 import type { EntityType, Org, SyncLog } from "@/lib/types";
 
 const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
@@ -19,6 +20,8 @@ interface TopbarProps {
   orgs: Org[];
   syncLog: SyncLog | null;
   syncProgress: { processed: number; total: number } | null;
+  /** Non-null when a prerequisite is unmet — disables sync and explains why. */
+  blockedReason?: string | null;
   onOrgChange: (org: Org) => void;
   onSync: () => void;
   isSyncing: boolean;
@@ -28,7 +31,7 @@ interface TopbarProps {
 
 export default function Topbar({
   pageTitle, entityType, clusterName, activeOrg, orgs,
-  syncLog, syncProgress, onOrgChange, onSync, isSyncing,
+  syncLog, syncProgress, blockedReason, onOrgChange, onSync, isSyncing,
   clusterOnline,
   now,
 }: TopbarProps) {
@@ -40,7 +43,7 @@ export default function Topbar({
 
   const isOffline = clusterOnline === false;
   const isChecking = clusterOnline === null;
-  const syncDisabled = isSyncing || isOffline || isChecking;
+  const syncDisabled = isSyncing || isOffline || isChecking || !!blockedReason;
 
   return (
     <header style={{
@@ -62,7 +65,7 @@ export default function Topbar({
             fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
           }}>
             <WifiOff size={11} />
-            Cluster offline — showing cached data
+            Instance offline — showing cached data
           </div>
         )}
       </div>
@@ -85,7 +88,7 @@ export default function Topbar({
           <button
             onClick={onSync}
             disabled={syncDisabled}
-            title={isOffline ? "Cannot sync — cluster is offline" : undefined}
+            title={isOffline ? "Cannot sync — instance is offline" : blockedReason ?? undefined}
             style={{
               display: "flex", alignItems: "center", gap: 5,
               padding: "5px 11px", borderRadius: 6, border: "none",
@@ -101,6 +104,9 @@ export default function Topbar({
           </button>
         </>
       )}
+
+      {/* Update available — renders nothing unless a newer release exists */}
+      <UpdatePill />
 
       {/* Org selector */}
       <div style={{ position: "relative" }}>
@@ -120,7 +126,7 @@ export default function Topbar({
           <span style={{ color: theme.color.border }}>·</span>
           {/* Active org — clickable */}
           <span style={{ fontSize: 12, color: theme.color.textPrimary, fontWeight: 500 }}>
-            {activeOrg?.name ?? "All Orgs"}
+            {activeOrg?.name ?? "Select Org"}
           </span>
           <ChevronDown size={12} style={{ color: theme.color.textMuted }} />
         </button>

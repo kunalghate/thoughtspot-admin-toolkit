@@ -63,9 +63,13 @@ def patched_config(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def clear_health():
-    connection_status.clear(CLUSTER_ID)
+    # "c2" is the second cluster used by the cluster-routing tests below; a
+    # successful run_sync marks it connected, and that must not leak between tests.
+    for cid in (CLUSTER_ID, "c2"):
+        connection_status.clear(cid)
     yield
-    connection_status.clear(CLUSTER_ID)
+    for cid in (CLUSTER_ID, "c2"):
+        connection_status.clear(cid)
 
 
 def _make_job(entity: str) -> str:
@@ -94,7 +98,7 @@ def _job_status(job_id: str) -> tuple[str, str | None]:
 async def test_org_access_denied_does_not_expire_cluster(monkeypatch, in_memory_db, patched_config):
     """TSInsufficientPrivilegesError → job FAILED, but cluster session stays non-expired."""
 
-    async def _boom(*, org_id: int, job_id: str) -> None:
+    async def _boom(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
         raise TSInsufficientPrivilegesError(f"The connected account can't access org {org_id}.")
 
     monkeypatch.setattr("ts_admin.services.sync_service._sync_metadata", _boom)
@@ -281,7 +285,7 @@ async def test_group_sync_populates_memberships_and_purges_stale(monkeypatch, in
 
     now = datetime.now(timezone.utc)
 
-    def _group(guid: str, members: list[str]):
+    def _group(guid: str, members: list[str], author: str = "u-creator"):
         return SimpleNamespace(
             id=guid,
             name=f"group-{guid}",
@@ -289,6 +293,7 @@ async def test_group_sync_populates_memberships_and_purges_stale(monkeypatch, in
             description="",
             privileges=["ADMINISTRATION"],
             member_users=members,
+            author_id=author,
             created=now,
             modified=now,
         )
@@ -329,8 +334,16 @@ async def test_group_sync_populates_memberships_and_purges_stale(monkeypatch, in
 
     assert _memberships() == {("u1", "g1"), ("u2", "g1"), ("u1", "g2")}
 
-    # Re-sync: u2 left g1, and g2 was deleted upstream entirely.
-    pages[:] = [[_group("g1", ["u1"])]]
+    # The creator GUID (groups/search `author_id`) is persisted on insert — it
+    # is the only source for the Groups grid's "Created by" column.
+    with get_session() as session:
+        authors = session.exec(
+            select(CachedGroup.ts_guid, CachedGroup.author_guid).where(CachedGroup.cluster_id == CLUSTER_ID)
+        ).all()
+    assert dict(authors) == {"g1": "u-creator", "g2": "u-creator"}
+
+    # Re-sync: u2 left g1, g2 was deleted upstream, and g1 changed hands.
+    pages[:] = [[_group("g1", ["u1"], author="u-newowner")]]
     job_id = _make_job("groups")
     await run_sync(entity_type="groups", org_id=0, job_id=job_id)
     status, _ = _job_status(job_id)
@@ -338,6 +351,12 @@ async def test_group_sync_populates_memberships_and_purges_stale(monkeypatch, in
 
     # Membership rewritten (no duplicates, no stale members), stale group purged.
     assert _memberships() == {("u1", "g1")}
+    # ...and the update path refreshes author_guid, not just the insert path.
+    with get_session() as session:
+        author = session.exec(
+            select(CachedGroup.author_guid).where(CachedGroup.cluster_id == CLUSTER_ID, CachedGroup.ts_guid == "g1")
+        ).first()
+    assert author == "u-newowner"
     with get_session() as session:
         guids = session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all()
     assert list(guids) == ["g1"]
@@ -729,7 +748,7 @@ async def test_completed_metadata_sync_recertifies_the_cache(monkeypatch, in_mem
 async def test_genuine_auth_failure_still_expires_cluster(monkeypatch, in_memory_db, patched_config):
     """TSAuthenticationError → job FAILED AND cluster flipped to EXPIRED (guards the distinction)."""
 
-    async def _boom(*, org_id: int, job_id: str) -> None:
+    async def _boom(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
         raise TSAuthenticationError("session expired")
 
     monkeypatch.setattr("ts_admin.services.sync_service._sync_metadata", _boom)
@@ -742,3 +761,165 @@ async def test_genuine_auth_failure_still_expires_cluster(monkeypatch, in_memory
     status, _ = _job_status(job_id)
     assert status == "FAILED"
     assert connection_status.get(CLUSTER_ID).state is ConnectionState.EXPIRED
+
+
+@pytest.mark.anyio
+async def test_tag_sync_scopes_its_auth_token_to_the_requested_org(monkeypatch, in_memory_db, patched_config):
+    """`tags/search` has no org filter parameter — the token's org context is the
+    only thing that scopes it.
+
+    Verified live against PS-internal Prod (26.8.0.cl): a token scoped to the
+    Secondary org returns 0 tags, an unscoped token returns Primary's 114. Syncing
+    with an unscoped token therefore wrote Primary's tags into the cache stamped
+    with whichever org the user asked for.
+
+    Users and groups are deliberately NOT covered here, but for different reasons.
+    `groups/search` takes `org_identifiers`, and on the same cluster the body
+    filter returns an org's full membership (133 users for Secondary) where a
+    token scoped to that org returns only what that session can see (4).
+    `users/search` no longer sends `org_identifiers` at all — it scopes
+    client-side off each record's own `orgs` list, because the server-side filter
+    404s a whole page when any one result has an unresolvable membership. See
+    tests/unit/test_client_org_scoping.py.
+    """
+    seen_org_ids: list[int | None] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_tags(self):
+            return []
+
+    def _capture(self, org_id=None):
+        seen_org_ids.append(org_id)
+        return None
+
+    monkeypatch.setattr("ts_admin.config.ClusterConfig.build_auth_strategy", _capture)
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("tags")
+    await run_sync(entity_type="tags", org_id=349890686, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert seen_org_ids == [349890686]
+
+
+# ── Cluster routing ───────────────────────────────────────────────────────────
+#
+# The shell can be displaying one cluster while a different one is marked active
+# in config (adding a cluster and activating it does not repoint an already-open
+# page). Before run_sync took a cluster_id, every sync ran against the *active*
+# cluster regardless of what the caller asked for — so the grid showed cluster A
+# while Sync fetched cluster B, and B's org ids were used against A.
+
+
+@pytest.fixture
+def two_cluster_config(monkeypatch):
+    """Two clusters where the ACTIVE one is deliberately not the one we ask for."""
+    from ts_admin.config import AppConfig, ClusterConfig
+    from ts_admin.ts_client.models import AuthType
+
+    def _cluster(cid: str, name: str) -> ClusterConfig:
+        return ClusterConfig(
+            id=cid,
+            name=name,
+            url=f"https://{cid}.thoughtspot.cloud",
+            username="admin",
+            auth_type=AuthType.TRUSTED,
+        )
+
+    config = AppConfig(
+        clusters={CLUSTER_ID: _cluster(CLUSTER_ID, "Prod"), "c2": _cluster("c2", "Demo")},
+        active_cluster_id="c2",
+    )
+    monkeypatch.setattr("ts_admin.config.load_config", lambda: config)
+    return config
+
+
+@pytest.mark.anyio
+async def test_run_sync_targets_the_requested_cluster_not_the_active_one(monkeypatch, in_memory_db, two_cluster_config):
+    seen: list[str | None] = []
+
+    async def _capture(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+        seen.append(target_cluster_id)
+
+    monkeypatch.setattr("ts_admin.services.sync_service._sync_metadata", _capture)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id, cluster_id=CLUSTER_ID)
+
+    assert seen == [CLUSTER_ID], "sync must run against the caller's cluster, not active_cluster_id"
+
+
+@pytest.mark.anyio
+async def test_run_sync_falls_back_to_the_active_cluster_when_none_is_named(
+    monkeypatch, in_memory_db, two_cluster_config
+):
+    seen: list[str | None] = []
+
+    async def _capture(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+        seen.append(target_cluster_id)
+
+    monkeypatch.setattr("ts_admin.services.sync_service._sync_metadata", _capture)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert seen == ["c2"]
+
+
+@pytest.mark.anyio
+async def test_failed_sync_log_is_written_against_the_requested_cluster(monkeypatch, in_memory_db, two_cluster_config):
+    """A failure syncing cluster A must not stamp cluster B's sync_log row."""
+
+    async def _boom(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+        raise TSConnectionError("unreachable")
+
+    monkeypatch.setattr("ts_admin.services.sync_service._sync_metadata", _boom)
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id, cluster_id=CLUSTER_ID)
+
+    with get_session() as session:
+        rows = session.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).all()
+
+    assert [r.cluster_id for r in rows] == [CLUSTER_ID]
+
+
+@pytest.mark.anyio
+async def test_run_sync_rejects_an_unknown_cluster_id(monkeypatch, in_memory_db, two_cluster_config):
+    called = False
+
+    async def _never(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("ts_admin.services.sync_service._sync_metadata", _never)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id, cluster_id="does-not-exist")
+
+    assert called is False
+    status, _ = _job_status(job_id)
+    assert status == "FAILED"

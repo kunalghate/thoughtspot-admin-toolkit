@@ -109,7 +109,7 @@ export function TransferSharingModal({
             background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 4,
             fontFamily: theme.font.sans,
           }}>
-            Cluster admins are rejected — they already see everything.
+            Instance admins are rejected — they already see everything.
           </div>
           <Footer>
             <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
@@ -193,6 +193,7 @@ export function TransferSharingModal({
                       width: "100%", padding: "8px 12px", fontSize: 13,
                       border: `1px solid ${theme.color.border}`, borderRadius: 6,
                       fontFamily: theme.font.mono,
+                      background: theme.color.surface, color: theme.color.textPrimary,
                     }}
                   />
                 </div>

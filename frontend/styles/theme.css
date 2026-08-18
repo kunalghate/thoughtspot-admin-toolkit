@@ -241,7 +241,17 @@ button { font-family: inherit; }
  * AG Grid (alpine theme) — bind AG's own CSS variables to our tokens so data
  * grids adopt the active theme, then polish the filter popups.
  * ───────────────────────────────────────────────────────────────────────────*/
-.ag-theme-alpine {
+:root .ag-theme-alpine,
+.ag-theme-alpine.ag-theme-alpine {
+  /* Doubled selector on purpose. AG Grid's own ag-theme-alpine.css declares
+   * these same --ag-* defaults at `.ag-theme-alpine` (specificity 0,1,0), and
+   * it is imported per-page — i.e. AFTER this file, which _app.tsx imports.
+   * At equal specificity the later sheet wins, so a plain `.ag-theme-alpine`
+   * block here loses every variable and the grid renders in AG's light
+   * defaults regardless of the active theme. Raising specificity to 0,2,0
+   * makes the binding order-independent. The popup wrapper AG creates
+   * (`.ag-theme-alpine.ag-popup`) also carries the class, so filter popups
+   * pick the tokens up too. */
   --ag-font-family: var(--sans);
   --ag-font-size: 13px;
   --ag-background-color: var(--surface);

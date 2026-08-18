@@ -3,7 +3,7 @@
 > **⚠️ Community tool — not a ThoughtSpot product.**
 > This is **not** part of the ThoughtSpot product and is **not supported by the ThoughtSpot product team**. Built by CS/PS team and It is
 > provided as-is, with no warranty and no SLA. Use at your own risk — and test
-> against a non-production cluster first.
+> against a non-production instance first.
 
 A web application for ThoughtSpot administrators. Provides workflows and tools
 for managing ThoughtSpot instances that go beyond what's available out of the box —
@@ -22,7 +22,7 @@ CLI, with a full web UI that any admin can use without needing Python or termina
 - **Community-maintained.** Bugs, questions, and feature requests belong in this
   repository's GitHub issues. Fixes happen on a best-effort basis.
 - **Built for advanced admins.** It performs bulk and destructive operations
-  (delete, transfer ownership, bulk share) against a live cluster. Every
+  (delete, transfer ownership, bulk share) against a live instance. Every
   destructive action has a dry-run preview and TML backup, but you are
   responsible for what you run.
 - **Uses only the public [ThoughtSpot REST API v2](https://developers.thoughtspot.com/docs/rest-api-getstarted).**
@@ -36,16 +36,17 @@ CLI, with a full web UI that any admin can use without needing Python or termina
 | Feature | Status | Description |
 |---|---|---|
 | **Dashboard** | ✅ Available | Landing view — what needs attention, content totals, recent jobs and admin activity, and a cache-freshness strip showing when users, groups, metadata, and lineage each last synced. |
-| **Metadata Explorer** | ✅ Available | Searchable, filterable grid of all content — owner, tags, last accessed, views. Every column funnel sends real server-side filters (name / owner / tag substring, date ranges, numeric ranges). |
+| **Metadata Explorer** | ✅ Available | Searchable, filterable grid of all content — owner, tags, last accessed, views. Every column funnel sends real server-side filters (name / owner / tag substring, date ranges, numeric ranges). Analyst Studio datasets are identified as their own type instead of being lumped in with tables. |
 | **Content Archiver** | ✅ Available | Find stale content, tag or delete with mandatory TML backup, dry-run impact check, restore from History. Archive + History grids share the same full-column filter model. |
 | **User Management** | ✅ Available | Search and filter users, transfer ownership, transfer sharing, bulk delete — every destructive action behind a dry-run preview. Click any row for a read-only audit drawer: group membership, effective privileges ("can do"), and a live on-demand permissions fetch ("can see"). |
-| **Group Management** | ✅ Available | Read-only group browser — privileges and member users per group, cluster- and org-scoped. Writes stay in the ThoughtSpot UI for now. |
+| **Group Management** | ✅ Available | Read-only group browser — privileges, member users, and **who created each group** (which ThoughtSpot's own UI never shows), instance- and org-scoped. Writes stay in the ThoughtSpot UI for now. |
 | **Bulk Sharing** | ✅ Available | Share content to users/groups in bulk, with an impact preview before anything is applied and a History tab of past runs. |
-| **Lineage** | ✅ Available | Graph view of content dependencies plus a column-level lineage explorer — trace a model column back to its physical DB table/column and forward to everything that consumes it. |
+| **Lineage** | ✅ Available | Graph view of content dependencies plus a column-level lineage explorer — trace a model column back to its physical DB table/column and forward to everything that consumes it. Browse from a connection, a logical table, an answer, or a liveboard. |
 | **Content Deleter** | ✅ Available | Targeted deletion by GUID or search, with dependency resolution and the same dry-run + TML-backup guarantees as the Archiver. |
 | **Jobs** | ✅ Available | Every sync and bulk operation runs as a tracked background job with live progress and failure detail. |
 | **Diagnostics** | ✅ Available | Tail the application log in-app and download a support bundle (logs + recent failed jobs + app info, no credentials) to send to support. |
-| **Multi-cluster** | ✅ Available | Manage multiple ThoughtSpot instances from one app |
+| **Multi-instance** | ✅ Available | Manage multiple ThoughtSpot instances from one app, each with its own local cache. |
+| **Update notifications** | ✅ Available | The app checks for new releases and shows an **Update available** pill in the top bar. Updating is a single command — see [Updating](#updating). It never updates itself silently. |
 
 All data is cached locally — the app is fast, no waiting on ThoughtSpot API calls
 on every page load. See [How sync works](docs/user/SYNC.md).
@@ -78,7 +79,10 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/kun
 
 That is the whole install. It sets up an isolated environment, downloads a Python
 for the toolkit if your machine doesn't have a suitable one, and installs
-everything. It changes nothing else on your system. Re-running it upgrades.
+everything. It changes nothing else on your system.
+
+To update later, see [Updating](#updating) — the app tells you when a new
+version is available.
 
 <details>
 <summary>Already a Python user? Install it your own way</summary>
@@ -123,7 +127,7 @@ On first launch, the app walks you through connecting to your ThoughtSpot instan
 ## Dashboard
 
 The landing page, read entirely from the local cache — it renders instantly even
-when the cluster is unreachable.
+when the instance is unreachable.
 
 - **Needs attention** — failed jobs, orphaned content, inactive users, empty
   groups, stale content. Each row links to the screen that fixes it. When there
@@ -136,7 +140,7 @@ when the cluster is unreachable.
   never. Hover a cell for the exact timestamp and a **Sync now** action. Only a
   *successful* sync moves the clock — a failed attempt leaves the cache as old
   as it was.
-- **Recent jobs** and **Recent admin activity** — what the cluster has been
+- **Recent jobs** and **Recent admin activity** — what the instance has been
   doing, with the failure reason on any job that failed.
 
 ---
@@ -148,7 +152,7 @@ The Content Archiver helps admins identify, tag, and safely delete stale Liveboa
 **Workflow:**
 1. **Set criteria** — a single **Stale: 90d AND 90d** pill opens a compact editor where you pick both `Last Accessed ≥` and `Last Modified ≥` thresholds plus the AND/OR operator. Scope further with type chips (Liveboard / Answer) and per-tag include/exclude.
 2. **Review** — browse stale objects in a grid; every column funnel applies real backend filters (name · type · owner · tag substring, numeric ranges on Views / Days Unused, date ranges on Last Accessed / Modified / Created). System-owned objects are hidden automatically.
-3. **Tag** — bulk-tag selected rows (e.g. `Stale`) with one click; choose from existing cluster tags or create new ones. Tag lookup is case-insensitive and scoped to the selected org (including the Primary org, `org_id=0`); if the name already exists elsewhere on the cluster the Archiver reuses it instead of failing. Tags currently on the selection appear as red pill chips in the toolbar — click one to remove that tag from every selected row.
+3. **Tag** — bulk-tag selected rows (e.g. `Stale`) with one click; choose from existing instance tags or create new ones. Tag lookup is case-insensitive and scoped to the selected org (including the Primary org, `org_id=0`); if the name already exists elsewhere on the instance the Archiver reuses it instead of failing. Tags currently on the selection appear as red pill chips in the toolbar — click one to remove that tag from every selected row.
 4. **Delete (safe)** — click **Delete selected** → dry-run checks permissions and dependencies → type `DELETE` to confirm → every object gets a TML backup before deletion.
 5. **History** — browse all past archive sessions; download individual TML backups for any deleted object. Same column-filter model as the Archive tab.
 
@@ -174,9 +178,11 @@ which is how ThoughtSpot actually grants them — and an on-demand **Load access
 from ThoughtSpot** button that fetches, live, every object the user can see
 (directly or inherited through a group).
 
-**Groups** — a read-only browser for the groups themselves: privileges and
-member users per group, scoped to the selected cluster and org. Group writes
-stay in the ThoughtSpot UI in this version.
+**Groups** — a read-only browser for the groups themselves: privileges,
+member users, and the user who created each group, scoped to the selected
+instance and org. Creator is resolved to a display name from the cached users,
+so run a **users** sync alongside **groups** to see names rather than GUIDs.
+Group writes stay in the ThoughtSpot UI in this version.
 
 Both screens read from the local cache — run a **users** and a **groups** sync
 to populate them. Group membership is written by the *groups* sync, so effective
@@ -189,7 +195,8 @@ privileges and the admin badge only appear once groups have been synced.
 Two views over the same dependency cache:
 
 - **Graph** — how content connects: liveboards and answers to the models they
-  read, models to their tables, tables to their connections.
+  read, models to their tables, tables to their connections. Start from any of
+  the four: **Connections**, **Logical Tables**, **Answers**, or **Liveboards**.
 - **Columns** — column-level lineage for a model: each column traced back to its
   physical DB table and column, and forward to every liveboard/answer that uses
   it. Computed columns are labelled **ƒ Formula** rather than shown as a missing
@@ -216,14 +223,15 @@ When a sync fails, the failure toast links straight here.
 
 ---
 
-## Managing multiple clusters
+## Managing multiple instances
 
-To add another ThoughtSpot instance, go to **Settings → Connections → Add cluster**
+To add another ThoughtSpot instance, go to **Settings → Connections → Add instance**
 and follow the same setup flow.
 
-Switch between clusters at any time using the cluster picker in the top navigation bar.
-Each cluster has its own local cache — switching clusters shows that cluster's data.
-The selected org is remembered per cluster across page refreshes.
+Switch between instances at any time using the instance picker in the sidebar.
+Each instance has its own local cache — switching shows that instance's data, and
+syncs always run against the instance you are looking at.
+The selected org is remembered per instance across page refreshes.
 
 ---
 
@@ -240,10 +248,68 @@ hot-reload. See [CONTRIBUTING.md](docs/dev/CONTRIBUTING.md) for the full develop
 
 ---
 
-## Upgrading
+## Updating
 
-Run the same install command again — it upgrades in place and preserves your
-local data and settings.
+The app tells you when a new version is out: an **Update available** pill appears
+in the top bar, with the steps below built in. You can also check any time with
+`ts-admin-toolkit update --check`.
+
+> **Installed the toolkit before v0.2.0?** The `update` command and the in-app
+> update pill did not exist yet, so `ts-admin-toolkit update` will answer
+> `Error: No such command 'update'`. Re-run the install command from
+> [Install](#install) once — that brings you up to date, and every update after
+> it works with the three steps below.
+
+To update:
+
+**1. Stop the toolkit.** Press `Ctrl+C` in the terminal window that is running it.
+
+**2. Run the update:**
+
+```bash
+ts-admin-toolkit update
+```
+
+It checks for the newest release, downloads it, and replaces your current
+install. If you are already on the latest version it says so and does nothing.
+
+**3. Start it again:**
+
+```bash
+ts-admin-toolkit serve
+```
+
+That is the whole update. Your ThoughtSpot connections, saved settings, job
+history and cached data all live outside the app itself and are untouched — you
+will not have to reconnect or re-sync.
+
+<details>
+<summary>Other ways to update</summary>
+
+**Re-run the installer.** Re-running the install one-liner from the top of this
+README does exactly the same thing — `ts-admin-toolkit update` just saves you
+finding the URL again.
+
+**If `ts-admin-toolkit update` cannot find `uv`** (the package manager the
+installer uses), re-run the install one-liner instead.
+
+**Installed it yourself with uv or pip?** Then update it the same way you
+installed it, pointing at the newest wheel on the
+[Releases page](https://github.com/kunalghate/thoughtspot-admin-toolkit/releases).
+
+**Check which version you are on:**
+
+```bash
+ts-admin-toolkit --version
+```
+
+</details>
+
+### Does it update itself automatically?
+
+No, by design. The toolkit performs bulk deletes, archives and permission
+changes, and silently swapping the code out from under an admin mid-operation is
+the wrong trade. It notifies you; you choose when.
 
 ---
 

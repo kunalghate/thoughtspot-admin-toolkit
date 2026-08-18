@@ -67,7 +67,7 @@ export function UsersHistoryTab({
           style={{
             padding: "7px 10px", fontSize: 13, fontFamily: theme.font.sans,
             border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
-            cursor: "pointer",
+            color: theme.color.textPrimary, cursor: "pointer",
           }}
         >
           <option value="">All actions</option>

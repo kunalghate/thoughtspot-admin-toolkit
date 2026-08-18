@@ -29,6 +29,9 @@ class CachedGroup(SQLModel, table=True):
     display_name: str = ""
     description: str = ""
     privileges: str = "[]"  # JSON list of privilege strings
+    # GUID of the creating user (groups/search `author_id`). Resolved to a
+    # display name at read time by joining ts_users — see group_service.
+    author_guid: str = ""
     created_at: datetime | None = None
     modified_at: datetime | None = None
     synced_at: datetime | None = None

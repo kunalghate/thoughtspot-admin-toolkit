@@ -23,18 +23,28 @@ from ts_admin.ts_client.exceptions import (
 logger = logging.getLogger(__name__)
 
 
-def _active_cluster_id() -> str | None:
-    """Best-effort active cluster id for reporting live session health."""
+def _resolve_cluster(cluster_id: str | None):
+    """
+    Cluster a sync must run against.
+
+    The caller (the UI) names the cluster explicitly; ``None`` falls back to the
+    configured active cluster for callers that predate the parameter. Resolving
+    from the caller matters because the shell can be pointed at one cluster while
+    another is marked active — syncing the active one then writes rows the user
+    is not looking at, or fails against an org that only exists on the other side.
+    """
     from ts_admin.config import load_config
-    from ts_admin.ts_client.exceptions import ConfigNotFoundError
 
-    try:
-        return load_config().active_cluster_id
-    except ConfigNotFoundError:
-        return None
+    config = load_config()
+    if cluster_id is None:
+        return config.active_cluster
+    cluster = config.clusters.get(cluster_id)
+    if cluster is None:
+        raise ValueError(f"Cluster {cluster_id!r} not found in config")
+    return cluster
 
 
-async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
+async def run_sync(*, entity_type: str, org_id: int, job_id: str, cluster_id: str | None = None) -> None:
     """
     Entry point for all sync operations. Dispatches to the correct handler.
     Called as a FastAPI BackgroundTask.
@@ -53,18 +63,27 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
         mark_failed(job_id, f"Unknown entity type: {entity_type!r}")
         return
 
+    # Resolve once so the health/sync-log writes below name the cluster that was
+    # actually synced, including when the caller left it implicit.
+    from ts_admin.ts_client.exceptions import ConfigNotFoundError
+
     try:
-        await handler(org_id=org_id, job_id=job_id)
+        target_id: str | None = _resolve_cluster(cluster_id).id
+    except (ConfigNotFoundError, ValueError) as exc:
+        mark_failed(job_id, exc)
+        return
+
+    try:
+        await handler(org_id=org_id, job_id=job_id, target_cluster_id=target_id)
     except TSAuthenticationError as exc:
         # A live sync just proved the session is dead — flip the cluster's
         # health so the "Connected" badge reflects reality instead of waiting
         # for the user to notice a buried FAILED job.
-        cluster_id = _active_cluster_id()
-        if cluster_id:
-            connection_status.mark_expired(cluster_id, detail=str(exc))
+        if target_id:
+            connection_status.mark_expired(target_id, detail=str(exc))
         logger.warning("Sync auth-failed for %s org=%s: %s", entity_type, org_id, exc)
         mark_failed(job_id, exc)
-        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
+        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc), cluster_id=target_id)
     except TSInsufficientPrivilegesError as exc:
         # A privilege/org-access denial is NOT a dead session — the credentials
         # are valid, the account just can't reach this org (or lacks a privilege).
@@ -72,30 +91,27 @@ async def run_sync(*, entity_type: str, org_id: int, job_id: str) -> None:
         # pointless reconnect loop. Fail just this job with an actionable message.
         logger.warning("Sync denied for %s org=%s: %s", entity_type, org_id, exc)
         mark_failed(job_id, exc)
-        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
+        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc), cluster_id=target_id)
     except Exception as exc:
         logger.exception("Sync failed for %s org=%s: %s", entity_type, org_id, exc)
         mark_failed(job_id, exc)
-        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc))
+        _write_sync_log(entity_type, org_id, status="FAILED", error=str(exc), cluster_id=target_id)
     else:
         # A successful sync confirms the session is live.
-        cluster_id = _active_cluster_id()
-        if cluster_id:
-            connection_status.mark_connected(cluster_id)
+        if target_id:
+            connection_status.mark_connected(target_id)
 
 
 # ── Per-entity sync handlers ───────────────────────────────────────────────────
 
 
-async def _sync_users(*, org_id: int, job_id: str) -> None:
+async def _sync_users(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     from sqlmodel import select
 
-    from ts_admin.config import load_config
     from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
     from ts_admin.ts_client import ThoughtSpotClient
 
-    config = load_config()
-    cluster = config.active_cluster
+    cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
     start = datetime.now(timezone.utc)
 
@@ -164,24 +180,24 @@ async def _sync_users(*, org_id: int, job_id: str) -> None:
             update_progress(job_id, count)
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-    _write_sync_log("users", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)
+    _write_sync_log(
+        "users", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
+    )
     mark_complete(job_id, {"entity_type": "users", "record_count": count})
     logger.info("Synced %d users for cluster=%s org=%s", count, cluster_id, org_id)
 
 
-async def _sync_groups(*, org_id: int, job_id: str) -> None:
+async def _sync_groups(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     import json
 
     from sqlmodel import col, select
     from sqlmodel import delete as sql_delete
 
-    from ts_admin.config import load_config
     from ts_admin.models.cache.ts_group import CachedGroup
     from ts_admin.models.cache.ts_user import UserGroupMembership
     from ts_admin.ts_client import ThoughtSpotClient
 
-    config = load_config()
-    cluster = config.active_cluster
+    cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
     start = datetime.now(timezone.utc)
 
@@ -207,6 +223,7 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
                         existing.display_name = group.display_name
                         existing.description = group.description
                         existing.privileges = json.dumps(group.privileges)
+                        existing.author_guid = group.author_id
                         existing.created_at = group.created
                         existing.modified_at = group.modified
                         existing.synced_at = datetime.now(timezone.utc)
@@ -221,6 +238,7 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
                                 display_name=group.display_name,
                                 description=group.description,
                                 privileges=json.dumps(group.privileges),
+                                author_guid=group.author_id,
                                 created_at=group.created,
                                 modified_at=group.modified,
                                 synced_at=datetime.now(timezone.utc),
@@ -284,20 +302,20 @@ async def _sync_groups(*, org_id: int, job_id: str) -> None:
             session.commit()
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-    _write_sync_log("groups", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)
+    _write_sync_log(
+        "groups", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
+    )
     mark_complete(job_id, {"entity_type": "groups", "record_count": count})
     logger.info("Synced %d groups for cluster=%s org=%s", count, cluster_id, org_id)
 
 
-async def _sync_metadata(*, org_id: int, job_id: str) -> None:
+async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     import json
 
-    from ts_admin.config import load_config
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from ts_admin.ts_client import ThoughtSpotClient
 
-    config = load_config()
-    cluster = config.active_cluster
+    cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
     start = datetime.now(timezone.utc)
 
@@ -319,7 +337,7 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
     # preserve_progress: this marker says "a sync is running", not "a sync
     # finished with 0 rows just now". Keeping the previous synced_at/record_count
     # is what lets the UI still say when the cache was last known complete.
-    _write_sync_log("metadata", org_id, status="IN_PROGRESS", preserve_progress=True)
+    _write_sync_log("metadata", org_id, status="IN_PROGRESS", preserve_progress=True, cluster_id=cluster_id)
 
     # Delete all existing rows for this org before re-syncing so stale objects
     # (deleted in TS since last sync) don't linger in the cache.
@@ -361,26 +379,26 @@ async def _sync_metadata(*, org_id: int, job_id: str) -> None:
             update_progress(job_id, count)
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-    _write_sync_log("metadata", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)
+    _write_sync_log(
+        "metadata", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
+    )
     mark_complete(job_id, {"entity_type": "metadata", "record_count": count})
     logger.info("Synced %d metadata objects for cluster=%s org=%s", count, cluster_id, org_id)
 
 
-async def _sync_tags(*, org_id: int, job_id: str) -> None:
+async def _sync_tags(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     from sqlmodel import select
 
-    from ts_admin.config import load_config
     from ts_admin.models.cache.ts_tag import CachedTag
     from ts_admin.ts_client import ThoughtSpotClient
 
-    config = load_config()
-    cluster = config.active_cluster
+    cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
     start = datetime.now(timezone.utc)
 
     mark_running(job_id, total=0)
 
-    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy()) as client:
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
         tags = await client.search_tags()
 
     with get_session() as session:
@@ -411,19 +429,19 @@ async def _sync_tags(*, org_id: int, job_id: str) -> None:
 
     count = len(tags)
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-    _write_sync_log("tags", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms)
+    _write_sync_log(
+        "tags", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
+    )
     mark_complete(job_id, {"entity_type": "tags", "record_count": count})
 
 
-async def _sync_orgs(*, org_id: int, job_id: str) -> None:
+async def _sync_orgs(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     from sqlmodel import select
 
-    from ts_admin.config import load_config
     from ts_admin.models.cache.ts_org import CachedOrg
     from ts_admin.ts_client import ThoughtSpotClient
 
-    config = load_config()
-    cluster = config.active_cluster
+    cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
     start = datetime.now(timezone.utc)
 
@@ -462,11 +480,13 @@ async def _sync_orgs(*, org_id: int, job_id: str) -> None:
 
     count = len(orgs)
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-    _write_sync_log("orgs", org_id=0, status="SUCCESS", record_count=count, duration_ms=duration_ms)
+    _write_sync_log(
+        "orgs", org_id=0, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
+    )
     mark_complete(job_id, {"entity_type": "orgs", "record_count": count})
 
 
-async def _sync_dependencies(*, org_id: int, job_id: str) -> None:
+async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     """
     Build the Relationship Visualizer's lineage graph. Delegates to
     lineage_service; reuses run_sync's auth/privilege error handling verbatim.
@@ -475,11 +495,10 @@ async def _sync_dependencies(*, org_id: int, job_id: str) -> None:
     then enriches with the column map + connection/liveboard edges from TML.
     Never part of trigger_sync_all — explicitly gated per ADR-005.
     """
-    from ts_admin.config import load_config
     from ts_admin.services import lineage_service
     from ts_admin.services.job_service import mark_complete
 
-    cluster_id = load_config().active_cluster.id
+    cluster_id = _resolve_cluster(target_cluster_id).id
     has_column_pass = hasattr(lineage_service, "build_column_map")
 
     # Phase 1: object tier — commits edges + writes the "dependencies" SyncLog so
@@ -498,17 +517,22 @@ async def _sync_dependencies(*, org_id: int, job_id: str) -> None:
     # cluster to expired. A missing DATADOWNLOADING privilege (or any other error)
     # is swallowed: the object graph stands, columns just stay empty, job completes.
     column_count = 0
+    column_error: str | None = None
     try:
         column_count = await lineage_service.build_column_map(cluster_id=cluster_id, org_id=org_id, job_id=job_id)
     except TSAuthenticationError:
         raise
     except Exception as exc:
+        column_error = str(exc)
         logger.warning("Column-map pass failed (object tier kept): %s", exc)
 
-    mark_complete(
-        job_id,
-        {"entity_type": "dependencies", "record_count": edge_count, "column_count": column_count},
-    )
+    # A swallowed column failure used to be invisible: the job read COMPLETE and
+    # the graph just silently had no connection nodes and no column map. Carry
+    # the reason into the job result so the Jobs UI can show what was skipped.
+    result: dict = {"entity_type": "dependencies", "record_count": edge_count, "column_count": column_count}
+    if column_error:
+        result["column_error"] = column_error[:500]
+    mark_complete(job_id, result)
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -523,6 +547,7 @@ def _write_sync_log(
     duration_ms: int = 0,
     error: str | None = None,
     preserve_progress: bool = False,
+    cluster_id: str | None = None,
 ) -> None:
     """Upsert the single ``(cluster_id, org_id, entity_type)`` sync_log row.
 
@@ -537,10 +562,10 @@ def _write_sync_log(
     """
     from sqlmodel import select
 
-    from ts_admin.config import load_config
-
-    config = load_config()
-    cluster_id = config.active_cluster.id
+    # The row must be keyed by the cluster that was synced, not by whichever
+    # cluster happens to be marked active — otherwise a sync of cluster A
+    # stamps its freshness onto cluster B's row.
+    cluster_id = _resolve_cluster(cluster_id).id
 
     with get_session() as session:
         existing = session.exec(

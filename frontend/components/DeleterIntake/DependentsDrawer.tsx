@@ -12,20 +12,8 @@ import { AlertTriangle, X } from "lucide-react";
 import { deleterApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import type { DeleterResolveResponse, RootSearchItem } from "@/lib/types";
+import { TYPE_LABELS } from "@/lib/objectTypes";
 
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD:          "Liveboard",
-  ANSWER:             "Answer",
-  WORKSHEET:          "Worksheet",
-  LOGICAL_TABLE:      "Worksheet",
-  ONE_TO_ONE_LOGICAL: "Table",
-  TABLE:              "Table",
-  MODEL:              "Model",
-  VIEW:               "View",
-  AGGR_WORKSHEET:     "Agg Worksheet",
-  SQL_VIEW:           "SQL View",
-  USER_DEFINED:       "User Defined",
-};
 
 interface Props {
   object: RootSearchItem | null;

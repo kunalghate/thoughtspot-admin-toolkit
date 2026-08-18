@@ -8,12 +8,8 @@ import { useMemo, useState } from "react";
 
 import { theme } from "@/lib/theme";
 import type { SharingPreviewRow } from "@/lib/types";
+import { TYPE_LABELS } from "@/lib/objectTypes";
 
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD: "Liveboard", ANSWER: "Answer", WORKSHEET: "Worksheet",
-  LOGICAL_TABLE: "Table", ONE_TO_ONE_LOGICAL: "Table",
-  AGGR_WORKSHEET: "Agg WS", SQL_VIEW: "SQL View", USER_DEFINED: "User Def.",
-};
 
 const MODE_COLORS: Record<string, { bg: string; fg: string }> = {
   READ_ONLY: { bg: theme.color.successSoft, fg: theme.color.success },
@@ -111,7 +107,7 @@ export function SharingPreviewTable({ rows }: { rows: SharingPreviewRow[] }) {
                   borderRadius: 8, background: prev.bg, color: prev.fg,
                 }}>{r.previous_mode || "—"}</span>
               </div>
-              <div style={{ textAlign: "center", color: r.will_change ? theme.color.accent : theme.color.violetBorder }}>
+              <div style={{ textAlign: "center", color: r.will_change ? theme.color.accent : theme.color.textMuted }}>
                 →
               </div>
               <div style={{ textAlign: "center" }}>

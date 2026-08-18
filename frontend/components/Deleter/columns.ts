@@ -10,24 +10,12 @@ import type { ColDef } from "ag-grid-community";
 import React from "react";
 import { formatDate } from "@/lib/utils";
 import { theme } from "@/lib/theme";
+import { TYPE_LABELS } from "@/lib/objectTypes";
 
 // Type chip styling — mirrors /metadata. Covers both vocabularies that flow
 // through these grids: the metadata cache vocab (ONE_TO_ONE_LOGICAL, AGGR_*,
 // etc.) used by the Downstream picker, and the deleter-resolution vocab
 // (TABLE/MODEL/VIEW) emitted by the deletion-resolve services.
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD:          "Liveboard",
-  ANSWER:             "Answer",
-  WORKSHEET:          "Worksheet",
-  LOGICAL_TABLE:      "Worksheet",      // legacy cached records
-  ONE_TO_ONE_LOGICAL: "Table",
-  TABLE:              "Table",
-  MODEL:              "Model",
-  VIEW:               "View",
-  AGGR_WORKSHEET:     "Agg Worksheet",
-  SQL_VIEW:           "SQL View",
-  USER_DEFINED:       "User Defined",
-};
 
 const TYPE_COLORS: Record<string, { bg: string; fg: string }> = {
   LIVEBOARD:          { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // purple
@@ -36,6 +24,7 @@ const TYPE_COLORS: Record<string, { bg: string; fg: string }> = {
   LOGICAL_TABLE:      { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // blue (legacy)
   ONE_TO_ONE_LOGICAL: { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // cyan (Table)
   TABLE:              { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // cyan
+  DATASET:            { bg: theme.color.accentSoft, fg: theme.color.accent2 }, // cyan (Analyst Studio)
   MODEL:              { bg: theme.color.successSoft, fg: theme.color.success }, // green
   VIEW:               { bg: theme.color.warnSoft, fg: theme.color.warn }, // orange
   AGGR_WORKSHEET:     { bg: theme.color.successSoft, fg: theme.color.success }, // green
@@ -48,7 +37,7 @@ const TYPE_COLORS: Record<string, { bg: string; fg: string }> = {
 // objects like Liveboards/Answers. Mirrors /metadata's formatter rule.
 const DATA_OBJECT_TYPES = new Set([
   "WORKSHEET", "LOGICAL_TABLE", "ONE_TO_ONE_LOGICAL", "TABLE",
-  "MODEL", "VIEW",
+  "MODEL", "VIEW", "DATASET",
   "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED",
 ]);
 const isDataObject = (type: string | undefined) => !!type && DATA_OBJECT_TYPES.has(type);

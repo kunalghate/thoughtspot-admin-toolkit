@@ -192,6 +192,7 @@ export function TransferOwnershipModal({
                       width: "100%", padding: "8px 12px", fontSize: 13,
                       border: `1px solid ${theme.color.border}`, borderRadius: 6,
                       fontFamily: theme.font.mono,
+                      background: theme.color.surface, color: theme.color.textPrimary,
                     }}
                   />
                 </div>

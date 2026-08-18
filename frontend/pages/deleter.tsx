@@ -28,6 +28,7 @@ import { DownstreamPicker } from "@/components/DeleterIntake/DownstreamPicker";
 import { TagPicker } from "@/components/DeleterIntake/TagPicker";
 import { ListPaste } from "@/components/DeleterIntake/ListPaste";
 import { deleterApi } from "@/lib/api";
+import { typeLabel, typeLabelPlural } from "@/lib/objectTypes";
 import { theme } from "@/lib/theme";
 import type { DeleterItem, DeleterMode, DeleterResolveResponse, RootSearchItem } from "@/lib/types";
 
@@ -229,7 +230,7 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
   // ── Render ───────────────────────────────────────────────────────────────
 
   if (!activeCluster) {
-    return <EmptyState message="Select a cluster from the topbar to start." />;
+    return <EmptyState message="Select an instance from the topbar to start." />;
   }
 
   return (
@@ -382,7 +383,7 @@ function DeleterContent({ onViewHistory }: { onViewHistory: () => void }) {
             background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
             flexShrink: 0,
           }}>
-            <span style={{ fontSize: 13, color: theme.color.violetBorder }}>☑</span>
+            <span style={{ fontSize: 13, color: theme.color.textMuted }}>☑</span>
             <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
               Check rows to select objects — then{" "}
               <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
@@ -437,12 +438,8 @@ function ResolveSummary({
   byType: Record<string, number>;
   unrecognized: string[];
 }) {
-  const TYPE_LABELS: Record<string, string> = {
-    LIVEBOARD: "Liveboard", ANSWER: "Answer",
-    WORKSHEET: "Worksheet", TABLE: "Table", MODEL: "Model", VIEW: "View",
-  };
   const breakdown = Object.entries(byType)
-    .map(([t, n]) => `${n} ${TYPE_LABELS[t] ?? t}${n > 1 ? "s" : ""}`)
+    .map(([t, n]) => `${n} ${n > 1 ? typeLabelPlural(t) : typeLabel(t)}`)
     .join(", ");
 
   return (

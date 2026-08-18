@@ -35,7 +35,10 @@ export function ObjectList({
   const { recentRows, restRows } = useMemo(() => {
     const q = search.trim().toLowerCase();
     const matches = (i: TopologyItem) => {
-      if (subtype && i.subtype !== subtype) return false;
+      // Only when this tab shows the control — otherwise a subtype picked on the
+      // logical-tables tab would keep filtering (invisibly) on Answers/Liveboards,
+      // where no item carries it, and the list would read "No objects match."
+      if (showSubtypeFilter && subtype && i.subtype !== subtype) return false;
       if (q && !i.name.toLowerCase().includes(q) && !i.owner_name.toLowerCase().includes(q)) return false;
       return true;
     };
@@ -48,7 +51,7 @@ export function ObjectList({
       .filter((i) => matches(i) && !recentSet.has(i.ts_guid))
       .sort((a, b) => a.name.localeCompare(b.name));
     return { recentRows, restRows };
-  }, [items, search, subtype, recentGuids]);
+  }, [items, search, subtype, showSubtypeFilter, recentGuids]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>

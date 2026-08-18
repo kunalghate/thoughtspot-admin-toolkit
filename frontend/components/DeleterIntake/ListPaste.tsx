@@ -54,7 +54,7 @@ export function ListPaste({ onSubmit, onClear, hasResolved }: Props) {
           width: "100%", padding: "10px 12px", fontSize: 12,
           fontFamily: theme.font.mono,
           border: `1px solid ${theme.color.border}`, borderRadius: 6, outline: "none",
-          background: theme.color.surface, resize: "vertical",
+          background: theme.color.surface, color: theme.color.textPrimary, resize: "vertical",
         }}
       />
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, fontFamily: theme.font.sans }}>

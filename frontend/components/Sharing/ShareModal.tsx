@@ -232,6 +232,7 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
                 padding: "6px 10px", fontSize: 12, width: 180,
                 border: `1px solid ${theme.color.violetBorder}`, borderRadius: 4,
                 fontFamily: theme.font.mono,
+                background: theme.color.surface, color: theme.color.textPrimary,
               }}
             />
           )}

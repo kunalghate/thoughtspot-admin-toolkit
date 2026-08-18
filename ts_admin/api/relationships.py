@@ -2,7 +2,7 @@
 Relationship Visualizer API — data-lineage reads (all SQLite, 0 API calls).
 
   GET /relationships/topology
-      → the left-list universe: { logical_tables, answers, liveboards }
+      → the left-list universe: { logical_tables, answers, liveboards, connections }
   GET /relationships/{root_kind}/{guid}
       → a neighborhood-scoped LineageGraphResponse (root + capped nodes + edges)
   GET /relationships/{root_kind}/{guid}/consumers?type=&offset=&limit=
@@ -33,7 +33,7 @@ from ts_admin.ts_client.exceptions import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/relationships", tags=["Relationships"])
 
-_ROOT_KINDS = {"model", "answer", "liveboard"}
+_ROOT_KINDS = {"model", "answer", "liveboard", "connection"}
 
 
 def _resolve_cluster_id(cluster_id: str | None) -> str:
@@ -60,6 +60,7 @@ class TopologyResponse(BaseModel):
     logical_tables: list[TopologyItem]
     answers: list[TopologyItem]
     liveboards: list[TopologyItem]
+    connections: list[TopologyItem]
 
 
 class LineageNode(BaseModel):
@@ -229,7 +230,7 @@ def get_lineage_graph(
     if result is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Object {guid!r} not found in the metadata cache for this cluster/org.",
+            detail=f"Object {guid!r} not found in the metadata cache for this instance/org.",
         )
     return LineageGraphResponse(**result)
 

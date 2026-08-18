@@ -166,7 +166,7 @@ export function DeleteUsersModal({
 
           {missingLive.length > 0 && (
             <div style={{ ...hintStyle, marginTop: 10, color: theme.color.warn, background: theme.color.warnSoft, borderColor: theme.color.warnBorder }}>
-              <strong>{missingLive.length} user{missingLive.length === 1 ? "" : "s"} no longer exist on the cluster</strong>
+              <strong>{missingLive.length} user{missingLive.length === 1 ? "" : "s"} no longer exist on the instance</strong>
               {" "}— already deleted upstream; the delete will simply skip {missingLive.length === 1 ? "it" : "them"}:
               <pre style={{
                 marginTop: 6, padding: 6, background: theme.color.surface, borderRadius: 4,
@@ -207,6 +207,7 @@ export function DeleteUsersModal({
                   width: "100%", padding: "8px 12px", fontSize: 13,
                   border: `1px solid ${theme.color.border}`, borderRadius: 6,
                   fontFamily: theme.font.mono,
+                  background: theme.color.surface, color: theme.color.textPrimary,
                 }}
               />
             </div>

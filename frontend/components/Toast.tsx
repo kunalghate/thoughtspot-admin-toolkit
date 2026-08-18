@@ -3,7 +3,7 @@
  * simple). Wrap the app in <ToastProvider> once, then call useToast() anywhere:
  *
  *   const toast = useToast();
- *   toast.error("Sync failed", { hint: "Reconnect the cluster." });
+ *   toast.error("Sync failed", { hint: "Reconnect the instance." });
  *   toast.success("Saved");
  *
  * Toasts auto-dismiss (errors linger longer than successes) and can be

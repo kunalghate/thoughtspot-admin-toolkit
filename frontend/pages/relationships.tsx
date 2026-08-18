@@ -22,15 +22,21 @@ function RelationshipsContent({ syncVersion }: { syncVersion: number }) {
         height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
         fontSize: 14, color: theme.color.textMuted, fontFamily: theme.font.sans,
       }}>
-        Select a cluster from the topbar to start.
+        Select an instance from the topbar to start.
       </div>
     );
   }
 
+  const orgId = activeOrg?.org_id ?? 0;
+
   return (
+    // Keyed on the instance/org: selection, path trail and the graph cache are
+    // all scoped to one org's metadata cache, so switching must start clean
+    // rather than leave a stale object selected (its guid 404s in the new org).
     <RelationshipsView
+      key={`${activeCluster.id}:${orgId}`}
       clusterId={activeCluster.id}
-      orgId={activeOrg?.org_id ?? 0}
+      orgId={orgId}
       syncVersion={syncVersion}
     />
   );

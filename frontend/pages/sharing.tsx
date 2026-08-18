@@ -22,21 +22,14 @@ import { SharingHistoryTab } from "@/components/Sharing/HistoryTab";
 import { ShareModal } from "@/components/Sharing/ShareModal";
 import { metadataApi } from "@/lib/api";
 import { serializeFilterModel } from "@/lib/agGridFilters";
+import { metadataEmptyMessage, noRowsOverlay, withHiddenSuffix } from "@/lib/gridEmptyState";
 import { theme } from "@/lib/theme";
 import type { MetadataObject } from "@/lib/types";
+import { TYPE_LABELS } from "@/lib/objectTypes";
 
 const PAGE_SIZE = 200;
 
 const OBJECT_TYPES = ["LIVEBOARD", "ANSWER", "WORKSHEET", "ONE_TO_ONE_LOGICAL", "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED"];
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD:          "Liveboard",
-  ANSWER:             "Answer",
-  WORKSHEET:          "Worksheet",
-  ONE_TO_ONE_LOGICAL: "Table",
-  AGGR_WORKSHEET:     "Agg Worksheet",
-  SQL_VIEW:           "SQL View",
-  USER_DEFINED:       "User Defined",
-};
 
 type Tab = "share" | "history";
 
@@ -66,7 +59,7 @@ function SharingContent({ syncVersion }: { syncVersion: number }) {
       <div style={{
         height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
         fontSize: 14, color: theme.color.textMuted, fontFamily: theme.font.sans,
-      }}>Select a cluster from the topbar to start.</div>
+      }}>Select an instance from the topbar to start.</div>
     );
   }
 
@@ -115,6 +108,7 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
   const gridRef = useRef<AgGridReact<MetadataObject>>(null);
 
   const [total, setTotal] = useState<number | null>(null);
+  const [hiddenSystem, setHidden] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [selectedTypes, setTypes] = useState<string[]>([]);
@@ -178,6 +172,7 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
             page_size: PAGE_SIZE,
           });
           setTotal(res.total);
+          setHidden(res.hidden_system_count ?? 0);
           params.successCallback(res.items, res.total);
         } catch {
           params.failCallback();
@@ -214,7 +209,33 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
 
   const displayCount = total == null
     ? "Loading…"
-    : (selectedTypes.length > 0 || search ? `${total.toLocaleString()} results` : `${total.toLocaleString()} objects`);
+    : withHiddenSuffix(
+        selectedTypes.length > 0 || search ? `${total.toLocaleString()} results` : `${total.toLocaleString()} objects`,
+        hiddenSystem,
+      );
+
+  // Same empty-grid trap as the Metadata page: this list hides System User
+  // content, so an org holding only built-in content shows zero rows and looks
+  // like a failed sync. Explain it instead. (Infinite row model never raises the
+  // no-rows overlay by itself.)
+  const emptyMessage = useMemo(
+    () => metadataEmptyMessage({
+      hiddenSystem,
+      isFiltered: Boolean(search) || selectedTypes.length > 0 || Object.keys(colFiltersRef.current).length > 0,
+    }),
+    [hiddenSystem, search, selectedTypes],
+  );
+
+  useEffect(() => {
+    const api = gridRef.current?.api;
+    if (!api) return;
+    if (total === 0) {
+      api.setGridOption("overlayNoRowsTemplate", noRowsOverlay(emptyMessage));
+      api.showNoRowsOverlay();
+    } else {
+      api.hideOverlay();
+    }
+  }, [total, emptyMessage]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, padding: 24, gap: 12, overflow: "hidden", minHeight: 0 }}>
@@ -332,7 +353,7 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
           display: "flex", alignItems: "center", gap: 8, padding: "7px 12px",
           background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6, flexShrink: 0,
         }}>
-          <span style={{ fontSize: 13, color: theme.color.violetBorder }}>☑</span>
+          <span style={{ fontSize: 13, color: theme.color.textMuted }}>☑</span>
           <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
             Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Share selected</strong> to
             pick recipients and an access level, preview the diff, and apply.
@@ -359,7 +380,6 @@ function ShareTab({ syncVersion }: { syncVersion: number }) {
             gridRef.current?.api?.purgeInfiniteCache();
           }}
           onSelectionChanged={handleSelectionChanged}
-          overlayNoRowsTemplate="No content found. Sync metadata first."
         />
       </div>
 

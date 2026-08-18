@@ -83,6 +83,13 @@ READ_ENDPOINTS = [
         id="relationships-topology",
     ),
     pytest.param(
+        "/api/v1/sync?cluster_id={cluster}&org_id=0",
+        # Sync status is a flat list of per-entity rows; it became cluster-scoped
+        # when sync stopped implicitly targeting the active cluster.
+        lambda body: body,
+        id="sync-status",
+    ),
+    pytest.param(
         "/api/v1/dashboard?cluster_id={cluster}&org_id=0",
         # Aggregate read; the leak-sniffable rows are the jobs + activity feeds.
         # (Count scoping is asserted directly in test_dashboard_api.py.)

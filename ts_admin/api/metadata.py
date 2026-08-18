@@ -68,6 +68,11 @@ class MetadataListResponse(BaseModel):
     # allowed — this is a flag, not a refusal — but the UI must not present the
     # list as complete.
     cache_authoritative: bool = True
+    # How many cached objects in this cluster/org the System User filter hid.
+    # `total` is what the admin can act on; this is what was withheld. Without it
+    # an org holding only built-in content renders as an empty grid that looks
+    # identical to a failed sync.
+    hidden_system_count: int = 0
 
 
 class MetadataStatsResponse(BaseModel):
@@ -160,6 +165,7 @@ def list_metadata(
         page=record_offset // page_size + 1,
         page_size=page_size,
         cache_authoritative=MetadataService.cache_authoritative(cluster_id=cluster_id, org_id=org_id),
+        hidden_system_count=MetadataService.hidden_system_count(cluster_id=cluster_id, org_id=org_id),
     )
 
 

@@ -35,7 +35,7 @@ export default function ConnectionsPage() {
   useEffect(() => { reload(); }, []);
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Remove this cluster? This cannot be undone.")) return;
+    if (!confirm("Remove this instance? This cannot be undone.")) return;
     await clustersApi.delete(id);
     reload();
   };
@@ -54,7 +54,7 @@ export default function ConnectionsPage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div>
             <h2 style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, margin: 0 }}>
-              ThoughtSpot Clusters
+              ThoughtSpot Instances
             </h2>
             <p style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 4 }}>
               Connect to one or more ThoughtSpot instances. Credentials are stored securely in your OS keychain.
@@ -72,7 +72,7 @@ export default function ConnectionsPage() {
                 flexShrink: 0,
               }}
             >
-              <Plus size={14} /> Add cluster
+              <Plus size={14} /> Add instance
             </button>
           )}
         </div>
@@ -211,7 +211,7 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
         <button
           onClick={onEdit}
           style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: theme.color.textMuted }}
-          title="Edit cluster"
+          title="Edit instance"
         >
           <Pencil size={14} />
         </button>
@@ -220,7 +220,7 @@ function ClusterRow({ cluster, onDelete, onActivate, onEdit }: {
         <button
           onClick={onDelete}
           style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: theme.color.textMuted }}
-          title="Remove cluster"
+          title="Remove instance"
         >
           <Trash2 size={14} />
         </button>
@@ -244,7 +244,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       textAlign: "center",
     }}>
       <h3 style={{ fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans, margin: "0 0 8px" }}>
-        No clusters configured
+        No instances configured
       </h3>
       <p style={{ fontSize: 13, color: theme.color.textMuted, fontFamily: theme.font.sans, margin: "0 0 20px" }}>
         Add your first ThoughtSpot instance to get started.
@@ -258,7 +258,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
           fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: theme.font.sans,
         }}
       >
-        <Plus size={14} /> Add cluster
+        <Plus size={14} /> Add instance
       </button>
     </div>
   );
@@ -309,7 +309,7 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
       await clustersApi.create({ ...form, id });
       onSaved();
     } catch (e: any) {
-      setError(e.message ?? "Failed to save cluster");
+      setError(e.message ?? "Failed to save instance");
     } finally {
       setSaving(false);
     }
@@ -332,7 +332,7 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
         {/* Header */}
         <div style={{ padding: "20px 24px 16px", borderBottom: `1px solid ${theme.color.border}` }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
-            Add cluster
+            Add instance
           </h3>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
             Credentials are saved to your OS keychain.
@@ -409,7 +409,7 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
               opacity: !canSave || saving ? 0.5 : 1,
             }}
           >
-            {saving ? "Saving…" : "Save cluster"}
+            {saving ? "Saving…" : "Save instance"}
           </button>
         </div>
       </div>
@@ -472,7 +472,7 @@ function EditClusterPanel({ cluster, onClose, onSaved }: {
           overflowY: "auto", zIndex: 50, fontFamily: theme.font.sans,
         }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary }}>Edit cluster</h3>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary }}>Edit instance</h3>
             <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: theme.color.textMuted, fontSize: 18 }}>✕</button>
           </div>
 

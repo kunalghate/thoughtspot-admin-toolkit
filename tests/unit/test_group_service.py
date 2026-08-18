@@ -52,12 +52,14 @@ def seeded(in_memory_db):
                 auth_type="basic",
             )
         )
+        # author_guid covers the three states the creator column must handle:
+        # a cached user, a GUID with no cached user, and no creator recorded.
         groups = [
-            ("g-admins", "Administrator", "Admins", "Cluster admins", ["ADMINISTRATION"]),
-            ("g-analysts", "analysts", "Analysts", "Finance analysts", ["DATADOWNLOADING"]),
-            ("g-empty", "empty-group", "Empty", "No members here", []),
+            ("g-admins", "Administrator", "Admins", "Cluster admins", ["ADMINISTRATION"], "u-alice"),
+            ("g-analysts", "analysts", "Analysts", "Finance analysts", ["DATADOWNLOADING"], "u-ghost"),
+            ("g-empty", "empty-group", "Empty", "No members here", [], ""),
         ]
-        for guid, name, display, desc, privs in groups:
+        for guid, name, display, desc, privs, author in groups:
             session.add(
                 CachedGroup(
                     cluster_id=CLUSTER_ID,
@@ -67,6 +69,7 @@ def seeded(in_memory_db):
                     display_name=display,
                     description=desc,
                     privileges=json.dumps(privs),
+                    author_guid=author,
                     synced_at=now,
                 )
             )
@@ -124,6 +127,38 @@ class TestListGroups:
         items, _ = group_service.list_groups(cluster_id=CLUSTER_ID, sort_field="member_count", sort_order="asc")
         # coalesce: the zero-member group sorts as 0, not NULL-last.
         assert [i["ts_guid"] for i in items] == ["g-empty", "g-analysts", "g-admins"]
+
+    def test_created_by_resolves_cached_user_display_name(self, seeded):
+        items, _ = group_service.list_groups(cluster_id=CLUSTER_ID)
+        by_guid = {i["ts_guid"]: i["created_by"] for i in items}
+        assert by_guid["g-admins"] == "Alice"
+
+    def test_created_by_falls_back_to_guid_when_creator_not_cached(self, seeded):
+        """A deleted/unsynced creator must show the raw GUID, not an empty cell —
+        an empty cell would read as "nobody created this"."""
+        items, _ = group_service.list_groups(cluster_id=CLUSTER_ID)
+        by_guid = {i["ts_guid"]: i["created_by"] for i in items}
+        assert by_guid["g-analysts"] == "u-ghost"
+
+    def test_created_by_is_none_when_no_author_recorded(self, seeded):
+        items, _ = group_service.list_groups(cluster_id=CLUSTER_ID)
+        by_guid = {i["ts_guid"]: i["created_by"] for i in items}
+        assert by_guid["g-empty"] is None
+
+    def test_group_with_uncached_creator_still_lists(self, seeded):
+        """The creator join must be a LEFT JOIN — an inner join would silently
+        drop every group whose creator is missing from the users cache."""
+        _, total = group_service.list_groups(cluster_id=CLUSTER_ID)
+        assert total == 3
+
+    def test_sort_by_created_by(self, seeded):
+        items, _ = group_service.list_groups(cluster_id=CLUSTER_ID, sort_field="created_by", sort_order="desc")
+        assert items[0]["ts_guid"] == "g-admins"  # "Alice" is the only resolved name
+
+    def test_detail_resolves_created_by(self, seeded):
+        detail = group_service.get_group_detail(cluster_id=CLUSTER_ID, ts_guid="g-admins")
+        assert detail is not None
+        assert detail["created_by"] == "Alice"
 
     def test_unknown_sort_field_falls_back_to_name(self, seeded):
         items, _ = group_service.list_groups(cluster_id=CLUSTER_ID, sort_field="nope")

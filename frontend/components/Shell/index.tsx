@@ -134,7 +134,11 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   useEffect(() => {
     clustersApi.list().then((list) => {
       setClusters(list);
-      if (list.length > 0) setActiveCluster(list[0]);
+      // Pick the cluster the backend says is active — NOT list[0]. Every
+      // write path (sync especially) runs against the backend's active
+      // cluster, so seeding the shell from list order silently puts the UI on
+      // a different cluster than the one it operates on.
+      if (list.length > 0) setActiveCluster(list.find((c) => c.is_active) ?? list[0]);
       // Only redirect if no clusters AND not already on a settings page
       if (list.length === 0 && !router.pathname.startsWith("/settings")) {
         router.push("/settings/connections");
@@ -227,6 +231,14 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     ? syncLogs.find((l) => l.entity_type === entityType) ?? null
     : null;
 
+  // Lineage is DERIVED from the metadata cache, so the backend fails it closed
+  // until a metadata sync is certified complete. Say so on the button rather
+  // than letting the click queue a job that can only fail.
+  const blockedReason =
+    entityType === "dependencies" && syncLogs.find((l) => l.entity_type === "metadata")?.status !== "SUCCESS"
+      ? "Sync Metadata first — lineage is built from the metadata cache."
+      : null;
+
   const handleSync = useCallback(async () => {
     if (!activeCluster || !activeOrg || !entityType) return;
     setIsSyncing(true);
@@ -261,7 +273,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
             if (looksLikeAuthError(updated.error)) {
               setSessionExpired(true);
               toast.error("ThoughtSpot session expired", {
-                hint: "This cluster's login is no longer valid. Reconnect to continue.",
+                hint: "This instance's login is no longer valid. Reconnect to continue.",
                 action: { label: "Reconnect", onClick: () => router.push("/settings/connections") },
               });
             } else {
@@ -313,6 +325,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           orgs={orgs}
           syncLog={activeSyncLog}
           syncProgress={syncProgress}
+          blockedReason={blockedReason}
           onOrgChange={(org) => {
             setActiveOrg(org);
             if (activeCluster) _saveOrg(org, activeCluster.id);
@@ -338,7 +351,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           >
             <span style={{ fontWeight: 600 }}>ThoughtSpot session expired.</span>
             <span style={{ color: theme.color.danger }}>
-              This cluster's login is no longer valid — reads from cache still work, but syncs and live actions will
+              This instance's login is no longer valid — reads from cache still work, but syncs and live actions will
               fail until you reconnect.
             </span>
             <button

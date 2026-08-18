@@ -1,7 +1,7 @@
 /**
  * The 3-layer column map as an AG Grid (client-side row model — one object's
  * columns are bounded, so no infinite model). Columns:
- *   DB Table | DB Column | Table Column | Model Column | Used by
+ *   Connection | DB Table | DB Column | Table Column | Model Column | Used by
  * "Used by" renders clickable chips that jump to the consuming answer/liveboard.
  */
 import { useMemo } from "react";
@@ -74,6 +74,7 @@ export function ColumnsGrid({
   onJump: (guid: string, nodeType: string) => void;
 }) {
   const colDefs = useMemo<ColDef<ColumnLineageRow>[]>(() => [
+    { field: "connection_name", headerName: "Connection", flex: 1, minWidth: 130, valueFormatter: dash },
     { field: "db_table", headerName: "DB Table", flex: 1, minWidth: 120, valueFormatter: dash },
     { field: "db_column_name", headerName: "DB Column", flex: 1, minWidth: 120, valueFormatter: dash },
     { field: "table_column_name", headerName: "Table Column", flex: 1, minWidth: 120, cellRenderer: TableColumnCell },

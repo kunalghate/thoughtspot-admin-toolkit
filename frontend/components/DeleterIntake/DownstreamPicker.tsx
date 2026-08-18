@@ -16,30 +16,17 @@ import DependentsDrawer from "@/components/DeleterIntake/DependentsDrawer";
 import { metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import type { DeleterResolveResponse, MetadataObject, RootSearchItem } from "@/lib/types";
+import { OBJECT_TYPES, TYPE_LABELS, typeLabel } from "@/lib/objectTypes";
 
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD:          "Liveboard",
-  ANSWER:             "Answer",
-  WORKSHEET:          "Worksheet",
-  ONE_TO_ONE_LOGICAL: "Table",
-  AGGR_WORKSHEET:     "Agg Worksheet",
-  SQL_VIEW:           "SQL View",
-  USER_DEFINED:       "User Defined",
-};
 
 // Chip filters — mirrors /metadata's OBJECT_TYPES exactly so the picker
 // surface is consistent with the rest of the app. Picking a leaf type
 // (Liveboard/Answer) as a deletion root resolves to no dependents, which
 // the preview drawer reports honestly.
-const TYPE_CHIPS: { label: string; types: string[] }[] = [
-  { label: "Liveboard",     types: ["LIVEBOARD"] },
-  { label: "Answer",        types: ["ANSWER"] },
-  { label: "Worksheet",     types: ["WORKSHEET"] },
-  { label: "Table",         types: ["ONE_TO_ONE_LOGICAL"] },
-  { label: "Agg Worksheet", types: ["AGGR_WORKSHEET"] },
-  { label: "SQL View",      types: ["SQL_VIEW"] },
-  { label: "User Defined",  types: ["USER_DEFINED"] },
-];
+const TYPE_CHIPS: { label: string; types: string[] }[] = OBJECT_TYPES.map((t) => ({
+  label: typeLabel(t),
+  types: [t],
+}));
 
 const PICKER_TYPES = TYPE_CHIPS.flatMap((c) => c.types);
 
@@ -162,6 +149,7 @@ export function DownstreamPicker({ clusterId, orgId, pickedRoot, onPick }: Props
               width: "100%", padding: "9px 12px 9px 34px", fontSize: 13,
               border: `1px solid ${theme.color.border}`, borderRadius: 6,
               fontFamily: theme.font.sans, outline: "none", background: theme.color.surface,
+              color: theme.color.textPrimary,
             }}
           />
           {filter && (
