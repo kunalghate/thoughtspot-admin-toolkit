@@ -923,6 +923,29 @@ def _persist_column_map(
 # Saved-answer column usage is the largest TML set — never a mandatory crawl.
 # index_answer exports one answer on open (memoized); run_deep_index is the
 # opt-in "Build deep column index" that crawls all answers incrementally.
+#
+# `CachedColumnUsage.synced_at` on an ANSWER row is the DEEP INDEX's
+# certification stamp, not a generic "when was this written" field. Only
+# `build_answer_index` may set it. Two halves make the tier incremental, and
+# BOTH are load-bearing (removing either alone reintroduces a measured bug):
+#
+#   1. Lazy rows are written with `synced_at = None`. `index_answer` is a
+#      third-party writer fired by ordinary browsing (RelationshipsView opens an
+#      answer → one export). It used to stamp `synced_at = now`, and since the
+#      tier watermark is `max(synced_at)` over exactly those rows, ONE click set
+#      the watermark to "now" — every answer then read as unchanged, the
+#      changed-set was empty, and the deep index exported nothing while
+#      reporting COMPLETE, for the life of the install. SQL MAX ignores NULLs,
+#      so an unstamped lazy row cannot move the watermark.
+#   2. An answer with no certified rows counts as changed regardless of the
+#      watermark (`certified` below). This is what heals a DB already poisoned
+#      by (1) — the stale stamp survives our upgrade — and it is also the S28
+#      fix: `modified_at` reflects content edits, not permission grants or a
+#      late metadata sync, so a bare timestamp cannot express "never crawled".
+#
+# The watermark stays DERIVED from the data it certifies (S7): deleting the
+# deep rows resets it to NULL and forces a full re-crawl, whereas an independent
+# marker would survive the loss and skip the answers forever.
 
 
 def _usage_rows_from_answer(*, guid: str, name: str, body: dict, cluster_id: str, org_id: int) -> list:
@@ -951,6 +974,10 @@ async def index_answer(*, cluster_id: str, org_id: int, guid: str) -> int:
     Lazily index one saved answer's column usage (1 TML export, memoized). Called
     when an answer is opened. Returns rows written (0 if already indexed, not an
     answer, or inaccessible).
+
+    Rows are written with `synced_at = None` on purpose — see the section note
+    above: this is browsing, not a certified deep-index pass, and stamping it
+    here silently killed the deep index.
     """
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
     from ts_admin.services.archiver_service import _get_cluster
@@ -988,10 +1015,10 @@ async def index_answer(*, cluster_id: str, org_id: int, guid: str) -> int:
     rows = _usage_rows_from_answer(guid=guid, name=name_row or "", body=body, cluster_id=cluster_id, org_id=org_id)
     if not rows:
         return 0
-    now = datetime.now(timezone.utc)
     with get_session() as session:
         for row in rows:
-            row.synced_at = now
+            # NOT stamped: `synced_at` certifies a deep-index pass (section note).
+            row.synced_at = None
             session.add(row)
         session.commit()
     return len(rows)
@@ -1000,7 +1027,9 @@ async def index_answer(*, cluster_id: str, org_id: int, guid: str) -> int:
 async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incremental: bool = True) -> int:
     """
     Opt-in deep index: crawl ALL saved answers' column usage incrementally (the
-    largest TML set). Same modified_at skip logic as the liveboard pass.
+    largest TML set). Same modified_at skip logic as the liveboard pass, plus a
+    "never certified by a deep pass" disjunct — see the section note above for
+    why both halves are required.
     """
     from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
     from ts_admin.services.archiver_service import _get_cluster
@@ -1014,21 +1043,48 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
                 CachedMetadata.object_type == "ANSWER",
             )
         ).all()
+        # Watermark + certified set both read ONLY stamped rows: an unstamped row
+        # is a lazy `index_answer` write, which must not certify anything.
         last_built = session.exec(
             select(func.max(CachedColumnUsage.synced_at)).where(
                 CachedColumnUsage.cluster_id == cluster_id,
                 CachedColumnUsage.org_id == org_id,
                 CachedColumnUsage.consumer_type == "ANSWER",
+                col(CachedColumnUsage.synced_at).is_not(None),
             )
         ).first()
+        certified = set(
+            session.exec(
+                select(CachedColumnUsage.consumer_guid).where(
+                    CachedColumnUsage.cluster_id == cluster_id,
+                    CachedColumnUsage.org_id == org_id,
+                    CachedColumnUsage.consumer_type == "ANSWER",
+                    col(CachedColumnUsage.synced_at).is_not(None),
+                )
+            ).all()
+        )
 
-    def _changed(modified_at) -> bool:
-        return not incremental or last_built is None or modified_at is None or modified_at > last_built
+    def _changed(guid: str, modified_at) -> bool:
+        if not incremental or guid not in certified:
+            return True
+        return last_built is None or modified_at is None or modified_at > last_built
 
     names = {r[0]: r[1] for r in answer_rows}
-    answer_guids = [r[0] for r in answer_rows if _changed(r[2])]
+    answer_guids = [r[0] for r in answer_rows if _changed(r[0], r[2])]
     if not answer_guids:
-        mark_complete(job_id, {"entity_type": "answer_index", "record_count": 0})
+        # Distinguish "nothing to crawl" from "everything is already current":
+        # a record_count of 0 alone made the poisoned-watermark bug look healthy.
+        mark_complete(
+            job_id,
+            {
+                "entity_type": "answer_index",
+                "record_count": 0,
+                "answers_total": len(answer_rows),
+                "answers_crawled": 0,
+                "answers_skipped_unchanged": len(answer_rows),
+                "reason": "no_answers_cached" if not answer_rows else "all_answers_up_to_date",
+            },
+        )
         return 0
 
     mark_running(job_id, total=len(answer_guids))
@@ -1074,7 +1130,13 @@ async def build_answer_index(*, cluster_id: str, org_id: int, job_id: str, incre
             row.synced_at = now
             session.add(row)
         session.commit()
-    result: dict = {"entity_type": "answer_index", "record_count": len(all_rows)}
+    result: dict = {
+        "entity_type": "answer_index",
+        "record_count": len(all_rows),
+        "answers_total": len(answer_rows),
+        "answers_crawled": len(rebuilt_guids),
+        "answers_skipped_unchanged": len(answer_rows) - len(answer_guids),
+    }
     if failed_exports:
         result["failed_exports"] = len(failed_exports)
         logger.warning(
