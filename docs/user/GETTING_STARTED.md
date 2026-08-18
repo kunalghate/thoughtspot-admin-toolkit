@@ -14,23 +14,40 @@ everything is done through your browser.
 
 ## Step 1: Install
 
-You need Python 3.10 or later. To check:
+You don't need Python, and you don't need to install anything beforehand. You
+will use a terminal twice — once to install, once to start the app — and
+everything after that happens in your browser.
+
+**On a Mac or Linux machine**
+
+Open **Terminal** (on a Mac: press `Cmd + Space`, type `Terminal`, press Enter).
+Copy the line below, paste it in, and press Enter:
 
 ```bash
-python --version
+curl -LsSf https://raw.githubusercontent.com/kunalghate/thoughtspot-admin-toolkit/main/install.sh | sh
 ```
 
-If you don't have Python, download it from [python.org](https://python.org).
+**On Windows**
 
-Install the toolkit:
+Open **PowerShell** (press the Windows key, type `PowerShell`, press Enter).
+Copy the line below, paste it in, and press Enter:
 
-```bash
-pip install ts-admin-toolkit
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/kunalghate/thoughtspot-admin-toolkit/main/install.ps1 | iex"
 ```
+
+It takes a minute or two. When it finishes it prints `Done. The toolkit is
+installed.` and tells you what to type next.
+
+The installer puts the toolkit in its own isolated folder and brings its own
+copy of Python if your machine doesn't already have a suitable one. It does not
+change any other software on your computer.
 
 ---
 
 ## Step 2: Start the app
+
+In the same window, type:
 
 ```bash
 ts-admin-toolkit serve
@@ -38,6 +55,9 @@ ts-admin-toolkit serve
 
 This opens `http://localhost:8080` in your browser. Keep the terminal window open
 while you use the app — closing it stops the server.
+
+> If you see `command not found`, the terminal hasn't picked up the new install
+> yet. Close the window, open a new one, and try again.
 
 ---
 
@@ -152,9 +172,8 @@ Removing a cluster deletes its configuration and credential from the keychain. I
 
 ## Upgrading
 
-```bash
-pip install --upgrade ts-admin-toolkit
-```
+Run the same install command from [Step 1](#step-1-install) again. It upgrades
+the toolkit in place.
 
 Your local data and settings are preserved when upgrading.
 
@@ -172,6 +191,10 @@ Go to **Settings → Connections**, select your cluster, and update your credent
 **"Data looks out of date"**
 Click the **Refresh** button on any page to fetch the latest data from ThoughtSpot.
 
+**`command not found: ts-admin-toolkit`**
+The terminal window you're in was opened before the install finished, so it
+hasn't picked up the new command. Close it, open a new one, and try again.
+
 **App won't start**
-Make sure Python 3.10+ is installed and the `ts-admin-toolkit` package is installed.
-Try running `pip install --upgrade ts-admin-toolkit`.
+Re-run the install command from [Step 1](#step-1-install) — it repairs and
+upgrades an existing install.
