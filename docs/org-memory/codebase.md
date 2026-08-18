@@ -133,6 +133,64 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   purge keyed on **target** GUID, so an edge whose target is deleted while its
   source liveboard is unchanged outlives it (ghost node in the graph) — filed as S6.
 
+## Topbar header layout + frontend date/locale testing (S33)
+
+- 2026-08-18 (S33): **`vitest` executes on zero automated entry points.**
+  `.github/workflows/ci.yml` runs only `npm ci` → `npx tsc --noEmit` →
+  `npm run build`; `Makefile:20` `test:` is `pytest tests/ -v`. So a `*.test.tsx`
+  is enforced by CI ONLY where it produces a *type* error — which is why S33's
+  `Record<SyncStatus, SyncLog>` fixture map matters: a new union member is a
+  `tsc` TS2741 error, and `tsconfig.json` includes `**/*.tsx`. Filed as M12.
+- 2026-08-18 (S33): **CI runs `TZ=UTC`, which disarms every timezone assertion.**
+  The backend returns `synced_at` naive (`ts_admin/api/sync.py:91` re-attaches
+  `tzinfo=timezone.utc`), so `Topbar.helpers.ts:62,78` must parse
+  `new Date(log.synced_at + "Z")`. Under UTC, deleting that `+ "Z"` leaves the
+  whole suite green while rendering a 3h50m-old sync as "Synced just now" in
+  green — the S23 fail-open. `frontend/vitest.config.mts` therefore pins
+  `TZ=America/New_York` (non-UTC on purpose) + `en_US.UTF-8`.
+- 2026-08-18 (S33): **Node caches the default ICU locale at process start**, so
+  assigning `LC_ALL` at runtime — including via vitest's `test.env` — does NOT
+  change `toLocaleString()`; `TZ` *does* apply at runtime. The pin must live at
+  **config module scope** in `vitest.config.mts` (evaluated in the main process
+  before the worker pool forks). Without it, `LC_ALL=de_DE.UTF-8 npm test` is a
+  false red (`Syncing 1.500` vs `1,500`).
+- 2026-08-18 (S33): the Topbar header's shrink behaviour is a **two-part
+  coupling**, not one property. The title column needs `flex: 1` **+
+  `minWidth: 0`** to receive a narrow-viewport deficit at all — without it the
+  deficit goes to the last auto-basis sibling (the org selector) and clips it
+  off-screen (52/176/276px at 1024/900/800). With it, EVERY child of that column
+  must be shrinkable: a `flexShrink: 0` child in a zero-floor column paints on
+  top of the sync indicator. Both halves are load-bearing; removing either alone
+  reintroduces a measured bug. Comment at `Topbar.tsx:59-73` records it.
+- 2026-08-18 (S33): **`overflow: hidden` on a flex item silently zeroes its
+  `min-width: auto`** (CSS Flexbox §4.5 — the content-based automatic minimum
+  applies only while computed main-axis overflow is `visible`). It is never
+  harmless belt-and-braces; it duplicates `minWidth: 0`. Related: `min-width: 0`
+  on a `white-space: nowrap` child does NOT lower its parent's min-content
+  floor — the parent still contributes the full nowrap string.
+- 2026-08-18 (S33): **`next build` + `tsc` + vitest are all blind to layout.**
+  jsdom does not lay out, so a render test can only assert inline style strings.
+  Two CONFIRMED layout regressions shipped through a fully green five-gate bar
+  and were caught only by measuring a CSS replica in headless Chromium. Filed as
+  S35 (Playwright viewport guard).
+- 2026-08-18 (S33): the determinate `Syncing X / Y` branch is **effectively dead
+  code** — every sync calls `mark_running(..., total=0)`
+  (`ts_admin/services/sync_service.py:118,204,322,399,448`,
+  `lineage_service.py:171`) and `job_service.update_progress` never sets `total`.
+  `Syncing — N <noun>` is the normal running label for all entities, so its
+  wording must be entity-correct: `ENTITY_NOUNS` (`Topbar.helpers.ts:22`) gives
+  users/groups/tags their own noun, `objects` for metadata/dependencies/unmapped.
+- 2026-08-18 (S33): `Topbar.tsx` must export **only** its default component —
+  react-refresh's `isLikelyComponentType` requires `/^[A-Z]/`, so any
+  non-component export downgrades every Topbar edit under `make dev` to a full
+  page reload. That is why the helpers live in `Topbar.helpers.ts`.
+- 2026-08-18 (S33): `theme.color.*` are CSS `var(--…)` **strings** at runtime
+  (`frontend/lib/theme/tokens.ts:37-56`), so colour assertions compare by string
+  equality in jsdom with no `ThemeProvider` wrapper.
+- 2026-08-18 (S33, process): an `it.each` needs a companion length/membership
+  assertion on the array it iterates, or an empty fixture yields zero tests and a
+  green run — the same vacuity class as S27.
+
 ## Lineage cache — why a target-keyed purge is unsound (S6, rejected)
 
 - 2026-08-14 (S6): **Do not add a target-keyed delete to the lineage cache.** A
@@ -443,13 +501,30 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
 
 ## Local dev hazards (live, 2026-08-18)
 
-- 2026-08-18 (live, process): **`uvicorn` is run without `--reload`**, so backend
-  edits are invisible until the process is restarted. Two separate debugging dead
-  ends this session came from a UI action exercising stale code.
+- 2026-08-18 (live, process; amended 2026-08-18 S33): `make dev` DOES pass
+  `--reload` (`Makefile:9`), so the original blanket claim "uvicorn is run without
+  `--reload`" was wrong. The real hazard is a **hand-launched** `uvicorn` (which is
+  what was running live), where backend edits are invisible until restart. Check
+  `ps` for the actual flags before concluding a code path is stale.
 - 2026-08-18 (live, process): **running `npm run build` while `next dev` is live
   clobbers `.next/`** and takes :3000 down (500 on `/`, 404 on routes). Restart the
   dev server after. `npm run build` also does NOT refresh `ts_admin/static/` — only
   `make build` copies the export there, so :8000 keeps serving an older UI.
+- 2026-08-18 (S33): the `npm run build`-clobbers-`.next` hazard above now has an
+  OBSERVED instance and a diagnostic signature: **production-export artifacts
+  (`BUILD_ID`, `export-marker.json`, `export-detail.json`, `prerender-manifest`)
+  sitting in a dev checkout's `.next`** mean someone ran `npm run build` in the
+  shared tree. Observed mid-cycle: :3000 served 500 and `uvicorn` was gone from
+  `ps` entirely. Gate serialization must therefore cover **file writes into the
+  shared checkout**, not only port binding — that is M8's argument, now evidenced.
+- 2026-08-18 (S33): run cycle gates in an isolated worktree. `git worktree add
+  <path> <branch>` FAILS when the shared checkout already has that branch checked
+  out (the normal case for a cycle) — use `git worktree add --detach <path>
+  <branch>`. `.next` is per-worktree, so a build there cannot clobber the live dev
+  server; symlink only `frontend/node_modules`. That symlink shows as `??
+  frontend/node_modules` because `.gitignore`'s entry has a trailing slash and so
+  matches a directory but not a symlink — use `git status --untracked-files=no`
+  when checking revert-cleanliness.
 - 2026-08-18 (live): **nothing prevents concurrent dependency syncs for the same
   (cluster, org).** Three simultaneous TML crawls on ps-internal-prod produced
   sustained 30s export timeouts and retry backoff. Not corrupting — each pass is a
