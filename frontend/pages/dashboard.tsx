@@ -178,7 +178,7 @@ function DashboardContent() {
   if (error && !data) return <PageError message={error} />;
   if (!data) return <DashboardSkeleton />;
 
-  const { counts, synced, synced_at, deltas, attention } = data;
+  const { counts, synced, synced_at, attention } = data;
   const neverSynced = !synced.metadata && !synced.users;
   // Server-reported in-flight syncs, OR-ed with the local optimistic set. The
   // local set is per-mount React state, so it is empty after a reload/new tab
@@ -224,13 +224,13 @@ function DashboardContent() {
           Failed jobs are NOT a tile: that number already leads the attention
           band, and printing it twice makes the page read as two dashboards. */}
       <div className="dash-tiles">
-        <StatTile icon={Users} label="Users" value={counts.users} delta={deltas.users}
+        <StatTile icon={Users} label="Users" value={counts.users}
                   synced={synced.users} href="/users"
                   onSync={() => triggerSync("users")} syncing={isSyncing("users")} />
-        <StatTile icon={UsersRound} label="Groups" value={counts.groups} delta={deltas.groups}
+        <StatTile icon={UsersRound} label="Groups" value={counts.groups}
                   synced={synced.groups} href="/groups"
                   onSync={() => triggerSync("groups")} syncing={isSyncing("groups")} />
-        <StatTile icon={FolderSearch} label="Content objects" value={counts.objects_total} delta={deltas.metadata}
+        <StatTile icon={FolderSearch} label="Content objects" value={counts.objects_total}
                   synced={synced.metadata} href="/metadata"
                   onSync={() => triggerSync("metadata")} syncing={isSyncing("metadata")} />
         <StatTile icon={Archive} label="Archivable content" value={counts.archivable_total}
@@ -404,10 +404,9 @@ function RunningJobsBar({ jobs }: { jobs: DashboardSummary["running_jobs"] }) {
   );
 }
 
-function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, onSync, syncing }: {
+function StatTile({ icon: Icon, label, value, href, tone, synced, hint, onSync, syncing }: {
   icon: typeof Users; label: string; value: number; href: string;
   tone?: "warn" | "danger";
-  delta?: number;
   /** false → this entity has never synced, so `value` is unknown, not zero. */
   synced?: boolean;
   hint?: string;
@@ -446,14 +445,6 @@ function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, o
           <span style={{ fontSize: 26, fontWeight: 700, color: valueColor, fontFamily: theme.font.mono, lineHeight: 1 }}>
             {known ? value.toLocaleString() : "—"}
           </span>
-          {known && delta !== undefined && delta !== 0 && (
-            <span style={{
-              fontSize: 11.5, fontFamily: theme.font.mono,
-              color: delta > 0 ? theme.color.success : theme.color.warn,
-            }}>
-              {delta > 0 ? "+" : ""}{delta.toLocaleString()}
-            </span>
-          )}
         </div>
         {!known && (
           onSync ? (

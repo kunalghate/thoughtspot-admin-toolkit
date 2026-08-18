@@ -595,7 +595,6 @@ export interface DashboardSummary {
    *  "never synced". Optional: older backends omit it. */
   syncing?: Partial<Record<EntityType, boolean>>;
   /** Change in record count since the previous successful sync of each entity. */
-  deltas: Partial<Record<EntityType, number>>;
   attention: DashboardAttention;
   recent_jobs: DashboardJob[];
   running_jobs: DashboardRunningJob[];
