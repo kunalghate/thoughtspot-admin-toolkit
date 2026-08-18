@@ -49,6 +49,12 @@ dev = [
 [project.scripts]
 ts-admin-toolkit = "ts_admin.cli:main"
 
+[tool.hatch.build]
+# ts_admin/static/ is gitignored (it is a build output, committed only at
+# release time) and hatchling excludes VCS-ignored files by default. Without
+# this, the published wheel ships the backend with no UI.
+artifacts = ["ts_admin/static/**"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["ts_admin"]
 

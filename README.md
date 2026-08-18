@@ -56,19 +56,42 @@ on every page load. See [How sync works](docs/user/SYNC.md).
 
 ## Requirements
 
-- Python 3.10 or later
 - A ThoughtSpot instance (Cloud or Software)
 - Admin-level access (`ADMINISTRATION` privilege) on that instance
 
-No Node.js required for end users. The web UI is pre-built and bundled with the package.
+You do **not** need Python or Node.js. The installer below brings its own Python,
+and the web UI is pre-built and bundled with the package.
 
 ---
 
 ## Install
 
+**macOS / Linux** — paste this into Terminal:
+
 ```bash
-pip install ts-admin-toolkit
+curl -LsSf https://raw.githubusercontent.com/kunalghate/thoughtspot-admin-toolkit/main/install.sh | sh
 ```
+
+**Windows** — paste this into PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/kunalghate/thoughtspot-admin-toolkit/main/install.ps1 | iex"
+```
+
+That is the whole install. It sets up an isolated environment, downloads a Python
+for the toolkit if your machine doesn't have a suitable one, and installs
+everything. It changes nothing else on your system. Re-running it upgrades.
+
+<details>
+<summary>Already a Python user? Install it your own way</summary>
+
+```bash
+uv tool install ts-admin-toolkit     # recommended
+pipx install ts-admin-toolkit        # equivalent
+pip install ts-admin-toolkit         # needs a virtualenv on most systems
+```
+
+</details>
 
 ## Run
 
@@ -219,9 +242,8 @@ hot-reload. See [CONTRIBUTING.md](docs/dev/CONTRIBUTING.md) for the full develop
 
 ## Upgrading
 
-```bash
-pip install --upgrade ts-admin-toolkit
-```
+Run the same install command again — it upgrades in place and preserves your
+local data and settings.
 
 ---
 
