@@ -371,3 +371,67 @@ class TestExecuteDeletePartial:
         assert job.status == "PARTIAL"
         assert result["failed_tml_guids"] == ["ans-1"]
         assert result["reconciled"] is True
+
+
+class TestCachePurgeScoping:
+    def test_purge_only_touches_the_deleting_cluster_and_org(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+    ):
+        """
+        The post-delete CachedMetadata purge used to match on ts_guid alone, so
+        deleting `lb-1` in (c1, org 0) also wiped the (c1, org 5) and (c2, org 0)
+        rows — objects that still exist in ThoughtSpot. Dropping just cluster_id,
+        or just org_id, is enough to reintroduce the bug, so both are asserted.
+        """
+        from ts_admin.services.deletion_service import _execute_delete
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                Cluster(
+                    id="c2",
+                    name="Dev",
+                    url="https://dev.thoughtspot.cloud",
+                    username="admin",
+                    auth_type="basic",
+                )
+            )
+            for cluster_id, org_id in [("c1", 5), ("c2", 0)]:
+                s.add(
+                    CachedMetadata(
+                        cluster_id=cluster_id,
+                        org_id=org_id,
+                        ts_guid="lb-1",  # same GUID, different scope
+                        name="Sales",
+                        object_type="LIVEBOARD",
+                        owner_guid="u1",
+                        owner_name="Alice",
+                        tag_names=json.dumps([]),
+                        synced_at=now,
+                    )
+                )
+            s.commit()
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+        ]
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            rows = s.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == "lb-1")).all()
+
+        # Exactly one row removed — the (c1, org 0) one.
+        assert {(r.cluster_id, r.org_id) for r in rows} == {("c1", 5), ("c2", 0)}

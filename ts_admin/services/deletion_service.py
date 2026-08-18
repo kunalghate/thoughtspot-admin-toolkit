@@ -295,9 +295,20 @@ async def _execute_delete(
                     try:
                         await client.delete_metadata(object_ids=chunk, object_type=enum_type)
 
-                        # Remove from CachedMetadata cache
+                        # Remove from CachedMetadata cache. Scoped to
+                        # (cluster_id, org_id) like the sibling read in
+                        # `_fetch_objects_by_guids` — a GUID can exist in more
+                        # than one org and on more than one cluster, and an
+                        # unscoped purge wipes cache rows for objects that were
+                        # never deleted.
                         with Session(_db.get_engine()) as session:
-                            session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(chunk)))
+                            session.exec(
+                                sql_delete(CachedMetadata).where(
+                                    CachedMetadata.cluster_id == cluster_id,
+                                    CachedMetadata.org_id == org_id,
+                                    col(CachedMetadata.ts_guid).in_(chunk),
+                                )
+                            )
                             session.commit()
 
                         deleted.extend(chunk)
