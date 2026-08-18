@@ -229,7 +229,7 @@ function OrgDropdown({ orgs, activeOrg, onSelect, onClose }: {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildSyncLabel(
+export function buildSyncLabel(
   log: SyncLog | null,
   isSyncing: boolean,
   progress: { processed: number; total: number } | null,
@@ -262,7 +262,7 @@ function buildSyncLabel(
   return `Synced ${Math.floor(hours / 24)}d ago`;
 }
 
-function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): string {
+export function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): string {
   if (isSyncing) return theme.color.accent;
   if (!log || log.status === "NOT_SYNCED") return theme.color.danger;
   if (log.status === "FAILED") return theme.color.danger;
