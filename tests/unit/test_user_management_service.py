@@ -248,6 +248,15 @@ def seeded(in_memory_db):
         session.commit()
 
 
+@pytest.fixture
+def fast_retry(monkeypatch):
+    """Collapse the delete retry backoff so tests do not sleep through it."""
+    from ts_admin.services import user_management_service as svc
+
+    monkeypatch.setattr(svc, "DELETE_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(svc, "DELETE_RETRY_MAX_DELAY", 0.0)
+
+
 def _create_job(job_type: str, parameters: dict) -> str:
     import uuid
 
@@ -304,6 +313,28 @@ class TestGetUserDetail:
         admin = svc.get_user_detail(cluster_id="c1", ts_guid="u-admin")
         assert admin["is_admin"] is True
         assert "Administrator" in admin["groups"]
+
+    def test_owned_count_does_not_double_count_a_multi_org_object(self, in_memory_db, seeded):
+        from ts_admin.services import user_management_service as svc
+
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=1,
+                    ts_guid="lb-1",  # same object, second org
+                    name="Sales Liveboard",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-alice",
+                    owner_name="Alice",
+                    tag_names=json.dumps([]),
+                    synced_at=datetime.now(tz=timezone.utc),
+                )
+            )
+            s.commit()
+
+        detail = svc.get_user_detail(cluster_id="c1", ts_guid="u-alice")
+        assert detail["owned_object_count"] == 2
 
     def test_effective_privileges_are_deduped_union_of_groups(self, in_memory_db, seeded):
         from ts_admin.services import user_management_service as svc
@@ -477,7 +508,7 @@ class TestExecuteDelete:
             remaining = s.exec(select(CachedUser.username)).all()
             assert "bob" not in remaining
 
-    def test_failure_retries_then_gives_up_at_10(self, in_memory_db, patched_env, seeded):
+    def test_failure_retries_then_gives_up_at_10(self, in_memory_db, patched_env, seeded, fast_retry):
         from ts_admin.services.user_management_service import execute_delete
 
         _FakeClient.delete_user_should_fail = {"bob"}
@@ -499,6 +530,180 @@ class TestExecuteDelete:
             # User still in cache (we only remove on success)
             remaining = s.exec(select(CachedUser.username)).all()
             assert "bob" in remaining
+
+    def test_retry_rounds_are_spaced_by_backoff(self, in_memory_db, patched_env, seeded, monkeypatch):
+        """
+        The ten rounds used to fire back to back in milliseconds, so a transient
+        429/503 burned every attempt before the cluster could recover. Measured
+        on wall time rather than a patched asyncio.sleep so the assertion is
+        about behaviour, not about how the delay is spelled.
+        """
+        import time
+
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "DELETE_RETRY_BASE_DELAY", 0.01)
+        monkeypatch.setattr(svc, "DELETE_RETRY_MAX_DELAY", 0.02)
+
+        _FakeClient.delete_user_should_fail = {"bob"}
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        started = time.monotonic()
+        asyncio.run(
+            svc.execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob"],
+                user_identifiers=["bob"],
+            )
+        )
+        elapsed = time.monotonic() - started
+
+        # Non-vacuity: the loop really did run all ten rounds.
+        assert _FakeClient.delete_attempts.get("bob", 0) == 10
+        # 9 gaps between 10 rounds: 0.01 + 0.02 * 8 = 0.17s minimum.
+        assert elapsed >= 0.15
+
+    def test_admin_is_refused_without_confirmation_and_nothing_goes_live(
+        self, in_memory_db, patched_env, seeded, fast_retry
+    ):
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-admin"],
+                user_identifiers=["admin-user"],
+            )
+        )
+
+        assert _FakeClient.delete_attempts == {}  # refused before any live call
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            assert job.status == "FAILED"
+            assert "admin-user" in (job.error or "")
+            assert "confirm_admin_delete" in (job.error or "")
+            # No UserActionRecord written for a refusal
+            assert s.exec(select(UserActionRecord)).all() == []
+            # Still in the cache
+            assert "admin-user" in s.exec(select(CachedUser.username)).all()
+
+    def test_admin_delete_proceeds_with_explicit_confirmation(self, in_memory_db, patched_env, seeded, fast_retry):
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-admin"],
+                user_identifiers=["admin-user"],
+                confirm_admin_delete=True,
+            )
+        )
+
+        assert _FakeClient.delete_attempts.get("admin-user") == 1
+        with Session(in_memory_db) as s:
+            assert s.get(Job, job_id).status == "COMPLETE"
+
+    def test_self_delete_is_refused_even_with_confirmation(self, in_memory_db, patched_env, seeded, fast_retry):
+        """The cluster's configured username is what the toolkit authenticates as."""
+        from ts_admin.services.user_management_service import execute_delete
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedUser(
+                    cluster_id="c1",
+                    ts_guid="u-svc",
+                    username="admin",  # == ClusterConfig.username in patched_env
+                    display_name="Service Account",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            s.commit()
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-svc"],
+                user_identifiers=["admin"],
+                confirm_admin_delete=True,  # no override exists for this one
+            )
+        )
+
+        assert _FakeClient.delete_attempts == {}
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            assert job.status == "FAILED"
+            assert "authenticates as" in (job.error or "")
+            assert "admin" in s.exec(select(CachedUser.username)).all()
+
+    def test_self_delete_is_refused_even_when_the_account_is_not_in_the_cache(
+        self, in_memory_db, patched_env, seeded, fast_retry
+    ):
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=[],
+                user_identifiers=["ADMIN"],  # raw identifier, different case
+            )
+        )
+
+        assert _FakeClient.delete_attempts == {}
+        with Session(in_memory_db) as s:
+            assert s.get(Job, job_id).status == "FAILED"
+
+
+class TestPreviewDelete:
+    def test_owned_count_is_org_scoped_and_never_double_counted(self, in_memory_db, seeded):
+        """
+        An object present in two orgs used to be counted once per org, so the
+        pre-delete warning over-stated the blast radius.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            # lb-1 is the SAME object, visible in a second org.
+            s.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=1,
+                    ts_guid="lb-1",
+                    name="Sales Liveboard",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-alice",
+                    owner_name="Alice",
+                    tag_names=json.dumps([]),
+                    synced_at=now,
+                )
+            )
+            s.commit()
+
+        org0 = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)
+        assert org0["items"][0]["owned_object_count"] == 2  # lb-1 + ans-1
+
+        org1 = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=1)
+        assert org1["items"][0]["owned_object_count"] == 1  # lb-1 only
+
+        # No org given (the cache-only preview endpoint): cluster-wide, but
+        # still DISTINCT — 2, not the old 3.
+        unscoped = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
+        assert unscoped["items"][0]["owned_object_count"] == 2
 
 
 class TestDryRunDelete:

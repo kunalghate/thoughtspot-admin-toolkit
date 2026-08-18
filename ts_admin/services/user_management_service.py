@@ -17,6 +17,8 @@ Rules:
   - SQLite-only methods are sync; TS API methods are async.
   - Every write records a UserActionRecord row + AuditLog entry.
   - transfer-sharing refuses to target an admin (mirrors CS Tools behavior).
+  - delete refuses admins without an explicit confirmation, and ALWAYS refuses
+    the cluster's own configured service account.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import json
 import logging
 from typing import Literal
 
+from sqlalchemy import distinct
 from sqlmodel import Session, col, func, select
 
 import ts_admin.database as _db
@@ -45,6 +48,15 @@ logger = logging.getLogger(__name__)
 # Hard-coded admin group names (cluster admins). Matches CS Tools behavior of
 # refusing to push sharing onto admins who already see everything.
 ADMIN_GROUP_NAMES = {"Administrator", "System User"}
+
+# Delete retry loop. Rounds are retried with exponential backoff — the loop used
+# to fire all ten rounds back to back with no sleep, which turns a rate-limited
+# or briefly-unavailable cluster into ten hammering rounds and then a giving-up
+# "failed" that a single pause would have avoided. Module-level so tests can
+# collapse the delays.
+DELETE_MAX_ATTEMPTS = 10
+DELETE_RETRY_BASE_DELAY = 0.5  # seconds, doubled each round
+DELETE_RETRY_MAX_DELAY = 8.0  # seconds, ceiling per round
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -103,6 +115,64 @@ def _is_admin(session: Session, cluster_id: str, user_guid: str) -> bool:
         )
     ).all()
     return any(name in ADMIN_GROUP_NAMES for name in rows)
+
+
+def _delete_refusal(
+    *,
+    cluster_id: str,
+    service_username: str,
+    user_guids: list[str],
+    identifiers: list[str],
+    confirm_admin_delete: bool,
+) -> str | None:
+    """
+    Return an actionable refusal message for a proposed user delete, or None.
+
+    Both the GUIDs and the identifiers actually sent to ThoughtSpot are checked:
+    the caller may pass either form, and the self-delete guard in particular has
+    to catch a raw username string that may have no CachedUser row at all.
+    """
+    service = (service_username or "").strip().lower()
+
+    with Session(_db.get_engine()) as session:
+        targets: dict[str, CachedUser | None] = {}
+        for ident in [*user_guids, *identifiers]:
+            if ident not in targets:
+                targets[ident] = _resolve_user(session, cluster_id, ident)
+
+        # Self-delete: refused unconditionally, no override flag. This is the
+        # account the toolkit authenticates as — deleting it 401s the next
+        # operation and every credential in the keychain is dead.
+        for ident, user in targets.items():
+            names = {ident.strip().lower()}
+            if user is not None:
+                names.add((user.username or "").strip().lower())
+            if service and service in names:
+                return (
+                    f"Refusing to delete {service_username!r}: it is the account this toolkit "
+                    f"authenticates as on cluster {cluster_id!r}, so deleting it would break every "
+                    "stored credential. Remove it from the selection and retry."
+                )
+
+        if confirm_admin_delete:
+            return None
+
+        # preview_delete/dryrun_delete already compute is_admin and admin_count;
+        # execute has to enforce it, not just report it.
+        admins = sorted(
+            {
+                user.username or guid
+                for guid, user in targets.items()
+                if user is not None and _is_admin(session, cluster_id, user.ts_guid)
+            }
+        )
+
+    if admins:
+        return (
+            f"Refusing to delete cluster admin(s): {', '.join(admins)}. "
+            "Re-run with confirm_admin_delete=true if this is intended."
+        )
+    return None
 
 
 # ── List / detail (sync, SQLite) ──────────────────────────────────────────────
@@ -170,8 +240,11 @@ def get_user_detail(*, cluster_id: str, ts_guid: str) -> dict | None:
         if user is None:
             return None
 
+        # DISTINCT for the same reason preview_delete counts distinct GUIDs: an
+        # object visible in two orgs has a cache row per org, and this count is
+        # "objects owned by this user", not "cache rows".
         owned_count = session.exec(
-            select(func.count())
+            select(func.count(distinct(col(CachedMetadata.ts_guid))))
             .select_from(CachedMetadata)
             .where(
                 CachedMetadata.cluster_id == cluster_id,
@@ -373,12 +446,18 @@ async def execute_transfer(
                         new_owner_identifier=to_user_identifier,
                     )
                     succeeded += len(chunk)
-                    # Update CachedMetadata so the UI reflects new ownership immediately
+                    # Update CachedMetadata so the UI reflects new ownership
+                    # immediately. Org-scoped: the same GUID can hold a row per
+                    # org, and this transfer ran against exactly one org — a
+                    # cluster-only .first() rewrote whichever org came back
+                    # first, so the wrong org's cache showed the new owner and
+                    # the right one kept the old.
                     with Session(_db.get_engine()) as session:
                         for guid in chunk:
                             obj = session.exec(
                                 select(CachedMetadata).where(
                                     CachedMetadata.cluster_id == cluster_id,
+                                    CachedMetadata.org_id == org_id,
                                     CachedMetadata.ts_guid == guid,
                                 )
                             ).first()
@@ -704,8 +783,18 @@ async def execute_transfer_sharing(
 # ── Delete users ──────────────────────────────────────────────────────────────
 
 
-def preview_delete(*, cluster_id: str, user_guids: list[str]) -> dict:
-    """Snapshot users + owned-object counts so the UI can warn before delete."""
+def preview_delete(*, cluster_id: str, user_guids: list[str], org_id: int | None = None) -> dict:
+    """
+    Snapshot users + owned-object counts so the UI can warn before delete.
+
+    ``org_id`` scopes the owned-object count to the org the operation runs in.
+    It was cluster-scoped only, so an object present in two orgs was counted
+    twice and the warning over-stated the blast radius. When no org is given
+    (the cache-only preview endpoint, which has no org in its request) the count
+    falls back to distinct GUIDs across the cluster — still not double-counted,
+    just cluster-wide. The count is DISTINCT either way; scoping is what makes
+    it the number for *this* operation.
+    """
     with Session(_db.get_engine()) as session:
         users = session.exec(
             select(CachedUser).where(
@@ -718,13 +807,16 @@ def preview_delete(*, cluster_id: str, user_guids: list[str]) -> dict:
 
         items = []
         for u in users:
+            owned_conditions = [
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.owner_guid == u.ts_guid,
+            ]
+            if org_id is not None:
+                owned_conditions.append(CachedMetadata.org_id == org_id)
             owned = session.exec(
-                select(func.count())
+                select(func.count(distinct(col(CachedMetadata.ts_guid))))
                 .select_from(CachedMetadata)
-                .where(
-                    CachedMetadata.cluster_id == cluster_id,
-                    CachedMetadata.owner_guid == u.ts_guid,
-                )
+                .where(*owned_conditions)
             ).one()
             items.append(
                 {
@@ -762,7 +854,7 @@ async def dryrun_delete(
 
     try:
         # Cache snapshot: owned-object counts + admin flags (no live call needed).
-        snapshot = preview_delete(cluster_id=cluster_id, user_guids=user_guids)
+        snapshot = preview_delete(cluster_id=cluster_id, user_guids=user_guids, org_id=org_id)
 
         # Live existence check: page the org's users and build a lookup of what
         # actually exists upstream right now.
@@ -813,11 +905,26 @@ async def execute_delete(
     org_id: int,
     user_guids: list[str],
     user_identifiers: list[str] | None = None,
+    confirm_admin_delete: bool = False,
 ) -> None:
     """
-    Retry-to-10 delete loop, concurrency capped at 15. `user_identifiers`
-    is the list of usernames/GUIDs to send to the TS API — defaults to
-    user_guids if not provided (the caller is expected to pass either form).
+    Retry-to-10 delete loop with backoff, concurrency capped at 15.
+    `user_identifiers` is the list of usernames/GUIDs to send to the TS API —
+    defaults to user_guids if not provided (the caller is expected to pass
+    either form).
+
+    Two refusals fire BEFORE any live call, mirroring the admin-target refusal
+    in :func:`execute_transfer_sharing`:
+
+      - deleting a cluster admin requires ``confirm_admin_delete=True``;
+      - deleting the cluster's own configured ``username`` is refused
+        unconditionally. That account is what the toolkit authenticates as, so
+        deleting it 401s every subsequent operation and leaves every stored
+        credential dead. There is deliberately no override.
+
+    A refusal marks the job FAILED and returns — it never raises. The task runs
+    as a Starlette background task, i.e. after the 202 is on the wire, where a
+    raise is fail-silent and strands the Job row (S23).
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -843,6 +950,25 @@ async def execute_delete(
         ).all()
     snapshot = [{"ts_guid": u.ts_guid, "username": u.username, "display_name": u.display_name} for u in users]
 
+    # ── Refusals (before any live call, before any record is written) ─────────
+    try:
+        cluster = _get_cluster(cluster_id)
+    except ValueError as exc:
+        mark_failed(job_id, exc)
+        return
+
+    refusal = _delete_refusal(
+        cluster_id=cluster_id,
+        service_username=cluster.username,
+        user_guids=user_guids,
+        identifiers=identifiers,
+        confirm_admin_delete=confirm_admin_delete,
+    )
+    if refusal:
+        logger.warning("execute_delete job %s refused: %s", job_id, refusal)
+        mark_failed(job_id, refusal)
+        return
+
     record = UserActionRecord(
         cluster_id=cluster_id,
         job_id=job_id,
@@ -863,17 +989,25 @@ async def execute_delete(
     cancelled = False
 
     try:
-        cluster = _get_cluster(cluster_id)
         async with ThoughtSpotClient(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
             pending: dict[str, int] = {ident: 0 for ident in identifiers}
+            round_index = 0
 
             while pending and not cancelled:
                 if is_cancelled(job_id):
                     cancelled = True
                     break
+
+                # Back off before every round after the first. Without this the
+                # ten rounds fired back to back in milliseconds, so a transient
+                # 429/503 burned every attempt before the cluster recovered.
+                if round_index:
+                    delay = min(DELETE_RETRY_BASE_DELAY * (2 ** (round_index - 1)), DELETE_RETRY_MAX_DELAY)
+                    await asyncio.sleep(delay)
+                round_index += 1
 
                 # One identifier per call so per-user retries stay isolated.
                 # Concurrency cap of 15 mirrors the deleter pattern.
@@ -895,7 +1029,7 @@ async def execute_delete(
                         pending.pop(ident, None)
                     else:
                         pending[ident] = pending.get(ident, 0) + 1
-                        if pending[ident] >= 10:
+                        if pending[ident] >= DELETE_MAX_ATTEMPTS:
                             failed[ident] = str(err)[:300]
                             pending.pop(ident, None)
                 update_progress(job_id, succeeded)
