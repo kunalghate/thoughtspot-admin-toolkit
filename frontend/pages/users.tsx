@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { CellClickedEvent, ColDef, IDatasource, IGetRowsParams } from "ag-grid-community";
+import type { CellClickedEvent, ColDef } from "ag-grid-community";
 import { Users, History, ShieldCheck, Trash2, ArrowRightLeft } from "lucide-react";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
@@ -22,6 +22,7 @@ import { DeleteUsersModal } from "@/components/Users/DeleteUsersModal";
 import { UsersHistoryTab } from "@/components/Users/HistoryTab";
 import UserDetailDrawer from "@/components/Users/UserDetailDrawer";
 import { usersApi } from "@/lib/api";
+import { createGuardedDatasource } from "@/lib/gridDatasource";
 import { theme } from "@/lib/theme";
 import type { UserListItem } from "@/lib/types";
 
@@ -79,32 +80,21 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
     const sf = sortField;
     const so = sortOrder;
 
-    const loadId = ++loadIdRef.current;
-
-    const datasource: IDatasource = {
-      getRows: async (params: IGetRowsParams) => {
-        try {
-          const res = await usersApi.list({
-            cluster_id: clusterId,
-            org_id: orgId,
-            search: toolbarSearch,
-            status: toolbarStatus,
-            sort_field: sf,
-            sort_order: so,
-            record_offset: params.startRow,
-            page_size: PAGE_SIZE,
-          });
-          if (loadId !== loadIdRef.current) return; // superseded by a newer datasource
-          setTotal(res.total);
-          setError(null);
-          params.successCallback(res.items, res.total);
-        } catch (e) {
-          if (loadId !== loadIdRef.current) return;
-          setError(e instanceof Error ? e.message : String(e));
-          params.failCallback();
-        }
-      },
-    };
+    const datasource = createGuardedDatasource({
+      loadIdRef,
+      fetchPage: (startRow) => usersApi.list({
+        cluster_id: clusterId,
+        org_id: orgId,
+        search: toolbarSearch,
+        status: toolbarStatus,
+        sort_field: sf,
+        sort_order: so,
+        record_offset: startRow,
+        page_size: PAGE_SIZE,
+      }),
+      onLoaded: (res) => { setTotal(res.total); setError(null); },
+      onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+    });
     // New result set → drop any stale selection so an action can't target a row
     // that has scrolled out of the filtered view.
     gridRef.current?.api?.deselectAll();

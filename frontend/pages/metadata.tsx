@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { GridReadyEvent, IDatasource, IGetRowsParams, RowClickedEvent, SortChangedEvent } from "ag-grid-community";
+import type { GridReadyEvent, RowClickedEvent, SortChangedEvent } from "ag-grid-community";
 import { Download, Search, X } from "lucide-react";
 import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { createGuardedDatasource } from "@/lib/gridDatasource";
 import { serializeFilterModel } from "@/lib/agGridFilters";
 import { metadataEmptyMessage, noRowsOverlay, withHiddenSuffix } from "@/lib/gridEmptyState";
 import type { MetadataObject } from "@/lib/types";
@@ -64,41 +65,35 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
 
     const f = serializeFilterModel(colFilters);
 
-    const loadId = ++loadIdRef.current;
     setTotal(null); // "Loading…" until the first block lands — never a stale count
 
-    const datasource: IDatasource = {
-      getRows: async (params: IGetRowsParams) => {
-        try {
-          const res = await metadataApi.list({
-            cluster_id: clusterId,
-            org_id: orgId,
-            types:               f.types ?? toolbarTypes,
-            search:              f.search ?? toolbarSearch,
-            owner_name_search:   f.owner_name_search,
-            tag_search:          f.tag_search,
-            views_min:           f.views_min,
-            views_max:           f.views_max,
-            last_accessed_before: f.last_accessed_before,
-            last_accessed_after:  f.last_accessed_after,
-            modified_before:     f.modified_before,
-            modified_after:      f.modified_after,
-            created_before:      f.created_before,
-            created_after:       f.created_after,
-            sort_field: sortField,
-            sort_order: sortOrder,
-            record_offset: params.startRow,
-            page_size: PAGE_SIZE,
-          });
-          if (loadId !== loadIdRef.current) return; // superseded by a newer datasource
-          setTotal(res.total);
-          setHidden(res.hidden_system_count ?? 0);
-          params.successCallback(res.items, res.total);
-        } catch {
-          params.failCallback();
-        }
+    const datasource = createGuardedDatasource({
+      loadIdRef,
+      fetchPage: (startRow) => metadataApi.list({
+        cluster_id: clusterId,
+        org_id: orgId,
+        types:               f.types ?? toolbarTypes,
+        search:              f.search ?? toolbarSearch,
+        owner_name_search:   f.owner_name_search,
+        tag_search:          f.tag_search,
+        views_min:           f.views_min,
+        views_max:           f.views_max,
+        last_accessed_before: f.last_accessed_before,
+        last_accessed_after:  f.last_accessed_after,
+        modified_before:     f.modified_before,
+        modified_after:      f.modified_after,
+        created_before:      f.created_before,
+        created_after:       f.created_after,
+        sort_field: sortField,
+        sort_order: sortOrder,
+        record_offset: startRow,
+        page_size: PAGE_SIZE,
+      }),
+      onLoaded: (res) => {
+        setTotal(res.total);
+        setHidden(res.hidden_system_count ?? 0);
       },
-    };
+    });
 
     gridRef.current?.api?.setGridOption("datasource", datasource);
   }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder, colFilters]);

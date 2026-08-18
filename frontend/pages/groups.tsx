@@ -7,13 +7,14 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, IDatasource, IGetRowsParams, RowClickedEvent } from "ag-grid-community";
+import type { ColDef, RowClickedEvent } from "ag-grid-community";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import AppShell, { useShell } from "@/components/Shell";
 import GroupDetailDrawer from "@/components/Groups/GroupDetailDrawer";
 import { groupsApi } from "@/lib/api";
+import { createGuardedDatasource } from "@/lib/gridDatasource";
 import { theme } from "@/lib/theme";
 import type { GroupListItem } from "@/lib/types";
 
@@ -64,31 +65,20 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
     const sf = sortField;
     const so = sortOrder;
 
-    const loadId = ++loadIdRef.current;
-
-    const datasource: IDatasource = {
-      getRows: async (params: IGetRowsParams) => {
-        try {
-          const res = await groupsApi.list({
-            cluster_id: clusterId,
-            org_id: orgId,
-            search: toolbarSearch,
-            sort_field: sf,
-            sort_order: so,
-            record_offset: params.startRow,
-            page_size: PAGE_SIZE,
-          });
-          if (loadId !== loadIdRef.current) return; // superseded by a newer datasource
-          setTotal(res.total);
-          setError(null);
-          params.successCallback(res.items, res.total);
-        } catch (e) {
-          if (loadId !== loadIdRef.current) return;
-          setError(e instanceof Error ? e.message : String(e));
-          params.failCallback();
-        }
-      },
-    };
+    const datasource = createGuardedDatasource({
+      loadIdRef,
+      fetchPage: (startRow) => groupsApi.list({
+        cluster_id: clusterId,
+        org_id: orgId,
+        search: toolbarSearch,
+        sort_field: sf,
+        sort_order: so,
+        record_offset: startRow,
+        page_size: PAGE_SIZE,
+      }),
+      onLoaded: (res) => { setTotal(res.total); setError(null); },
+      onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+    });
     gridRef.current?.api?.setGridOption("datasource", datasource);
   }, [activeCluster?.id, activeOrg?.org_id, search, sortField, sortOrder]);
 
