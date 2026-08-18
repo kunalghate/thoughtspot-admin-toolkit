@@ -261,3 +261,113 @@ class TestExecuteDeletePartial:
         assert recs["ans-1"].tml_export_error and "missing edoc" in recs["ans-1"].tml_export_error
         assert job.status == "PARTIAL"
         assert (job.get_result() or {}).get("succeeded") == 1
+
+    def test_omitted_from_export_response_is_a_failure_not_a_silent_skip(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+    ):
+        """
+        Real clusters return an export response that simply OMITS objects they
+        cannot export — no entry, no error row. Iterating the response instead
+        of the request made those GUIDs vanish from every count: the job read
+        COMPLETE with succeeded=2/failed=0 while one object was never touched
+        and its ArchiveRecord stayed PENDING forever.
+        """
+        from ts_admin.services.deletion_service import _execute_delete
+
+        # ans-1 is requested but entirely absent from the response.
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+        ]
+
+        job_id = _create_job(
+            "bulk_delete",
+            {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]},
+        )
+
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        # Only the exported object was deleted.
+        called_ids = sorted(i for _, ids in _FakeClient.delete_calls for i in ids)
+        assert called_ids == ["lb-1"]
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+            audits = s.exec(select(AuditLog)).all()
+
+        # ── The job is PARTIAL, never COMPLETE
+        assert job.status == "PARTIAL"
+
+        # ── The omitted GUID is named in the result payload
+        result = job.get_result() or {}
+        assert result["failed_tml_export"] == 1
+        assert result["failed_tml_guids"] == ["ans-1"]
+
+        # ── Totals reconcile against the request
+        assert result["requested"] == 2
+        assert result["reconciled"] is True
+        assert (
+            result["succeeded"] + result["failed_tml_export"] + result["failed_delete"] + result["not_attempted"] == 2
+        )
+
+        # ── The audit row agrees
+        assert [a.status for a in audits if a.action_type == "bulk_delete"] == ["PARTIAL"]
+
+        # ── The omitted object is not stranded at PENDING
+        assert recs["ans-1"].tml_export_status == "FAILED"
+        assert "omitted" in (recs["ans-1"].tml_export_error or "")
+
+    def test_export_entry_without_an_id_does_not_swallow_a_requested_guid(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+        monkeypatch,
+    ):
+        """An `info` block with no id cannot be attributed to a request — the
+        requested GUID it was meant to answer for must still be accounted."""
+        from ts_admin.services.deletion_service import _execute_delete
+
+        class _NoIdClient(_FakeClient):
+            async def tml_export(self, *, object_ids):
+                return [
+                    {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+                    {"info": {}, "edoc": "answer:\n  name: Revenue\n"},  # unattributable
+                ]
+
+        monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", _NoIdClient)
+
+        job_id = _create_job(
+            "bulk_delete",
+            {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]},
+        )
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        called_ids = sorted(i for _, ids in _FakeClient.delete_calls for i in ids)
+        assert called_ids == ["lb-1"]
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+        result = job.get_result() or {}
+        assert job.status == "PARTIAL"
+        assert result["failed_tml_guids"] == ["ans-1"]
+        assert result["reconciled"] is True

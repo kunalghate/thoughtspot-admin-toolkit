@@ -81,15 +81,26 @@ async def _execute_delete(
     Phase A — TML Export:
       Export TML for every object. Objects whose export fails are excluded from
       deletion and marked FAILED in ArchiveRecord — they are never deleted.
+      The export RESPONSE is reconciled against the REQUEST: ThoughtSpot omits
+      objects it cannot export from the response entirely (no error row), so a
+      requested GUID with no matching response entry is an export failure, not
+      a success.
 
     Phase B — Delete (cancel-aware):
       Delete only objects whose TML export succeeded. Checks job.is_cancelled
-      before each chunk and stops cleanly if set.
+      before each chunk and stops cleanly if set. GUIDs left unattempted by a
+      cancellation are counted, not dropped.
 
     Phase C — Audit:
       Write AuditLog + structured log line. `action_type` differentiates the
       caller in the audit trail (e.g. "delete" for Archiver, "bulk_delete"
       for Bulk Deleter).
+
+    Accounting invariant: every requested GUID ends in exactly one bucket —
+    deleted, failed_tml, failed_delete or not_attempted — and
+    `succeeded + failed_tml + failed_delete + not_attempted == len(object_ids)`.
+    A run that does not reconcile, or that leaves any non-deleted GUID, is
+    PARTIAL. Only a fully reconciled, fully deleted run is COMPLETE.
     """
     from sqlmodel import col
     from sqlmodel import delete as sql_delete
@@ -108,13 +119,17 @@ async def _execute_delete(
     from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.ts_client.models import MetadataType
 
-    total = len(object_ids)
+    # Dedupe, keeping request order: the buckets below are per-GUID, so a
+    # repeated GUID would otherwise be counted twice and break reconciliation.
+    requested = list(dict.fromkeys(object_ids))
+    requested_set = set(requested)
+    total = len(requested)
     mark_running(job_id, total)
 
     try:
         # ── Fetch object metadata early (before any concurrent sync can wipe rows)
         with Session(_db.get_engine()) as session:
-            cached_objs = _fetch_objects_by_guids(session, object_ids, cluster_id, org_id)
+            cached_objs = _fetch_objects_by_guids(session, requested, cluster_id, org_id)
         obj_map = {o.ts_guid: o for o in cached_objs}
 
         # ── Create TML export directory for this job
@@ -124,7 +139,7 @@ async def _execute_delete(
         # ── Batch-insert ArchiveRecord rows as PENDING ────────────────────────
         now = datetime.now(timezone.utc)
         archive_rows: list[ArchiveRecord] = []
-        for guid in object_ids:
+        for guid in requested:
             obj = obj_map.get(guid)
             archive_rows.append(
                 ArchiveRecord(
@@ -168,6 +183,7 @@ async def _execute_delete(
         # ── Phase A: TML Export ───────────────────────────────────────────────
         delete_batch: list[str] = []  # GUIDs successfully exported
         failed_tml: list[str] = []
+        accounted: set[str] = set()  # requested GUIDs the export response covered
 
         cluster = _get_cluster(cluster_id)
 
@@ -175,12 +191,13 @@ async def _execute_delete(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
-            for chunk in _chunks(object_ids, 50):
+            for chunk in _chunks(requested, 50):
                 try:
                     tml_results = await client.tml_export(object_ids=chunk)
                 except Exception as exc:
                     logger.warning("TML export chunk failed: %s", exc)
                     for guid in chunk:
+                        accounted.add(guid)
                         failed_tml.append(guid)
                         _update_record(guid, tml_export_status="FAILED", tml_export_error=str(exc)[:500])
                     continue
@@ -191,7 +208,21 @@ async def _execute_delete(
                     edoc = item.get("edoc") or ""
 
                     if not guid:
+                        # Unattributable row — it cannot be matched to a requested
+                        # GUID. The reconciliation pass below still accounts for
+                        # whichever GUID it was meant to answer for.
+                        logger.warning("TML export returned an entry with no info.id — ignored")
                         continue
+
+                    if guid not in requested_set:
+                        logger.warning("TML export returned unrequested GUID %s — ignored", guid)
+                        continue
+
+                    if guid in accounted:
+                        logger.warning("TML export returned a duplicate entry for %s — ignored", guid)
+                        continue
+
+                    accounted.add(guid)
 
                     if edoc:
                         tml_path = job_tml_dir / f"{guid}.tml"
@@ -211,6 +242,21 @@ async def _execute_delete(
                             tml_export_error=error[:500],
                         )
 
+                # Reconcile response against request: a GUID TS silently omitted
+                # is an export failure. Without this it would land in no bucket
+                # at all — invisible in every count, and stranded at PENDING.
+                for guid in chunk:
+                    if guid in accounted:
+                        continue
+                    accounted.add(guid)
+                    failed_tml.append(guid)
+                    logger.warning("TML export response omitted requested GUID %s — treated as failed", guid)
+                    _update_record(
+                        guid,
+                        tml_export_status="FAILED",
+                        tml_export_error="TML export response omitted this object",
+                    )
+
             logger.info(
                 "%s job=%s TML export done: %d ok, %d failed",
                 action_type,
@@ -220,7 +266,7 @@ async def _execute_delete(
             )
 
             # ── Phase B: Delete (cancel-aware) ───────────────────────────────
-            succeeded = 0
+            deleted: list[str] = []
             failed_delete: list[str] = []
             cancelled = False
 
@@ -254,19 +300,60 @@ async def _execute_delete(
                             session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(chunk)))
                             session.commit()
 
-                        succeeded += len(chunk)
+                        deleted.extend(chunk)
                     except Exception as exc:
                         logger.warning("delete_metadata chunk failed: %s", exc)
                         failed_delete.extend(chunk)
 
-                    update_progress(job_id, succeeded)
+                    update_progress(job_id, len(deleted))
 
-        # ── Phase C: Audit ───────────────────────────────────────────────────
-        status = "PARTIAL" if (failed_tml or failed_delete or cancelled) else "COMPLETE"
+            succeeded = len(deleted)
+            # Exported objects a cancellation (or a skipped type group) never
+            # reached: neither deleted nor failed, but still requested.
+            attempted = set(deleted) | set(failed_delete)
+            not_attempted = [guid for guid in delete_batch if guid not in attempted]
+
+        # ── Phase C: Reconcile, then audit ───────────────────────────────────
+        # Every requested GUID must sit in exactly one bucket. `unaccounted`
+        # should always be empty — it is computed anyway so a future regression
+        # shows up as a PARTIAL job instead of a silent under-report.
+        bucketed = set(deleted) | set(failed_tml) | set(failed_delete) | set(not_attempted)
+        unaccounted = [guid for guid in requested if guid not in bucketed]
+        reconciled = succeeded + len(failed_tml) + len(failed_delete) + len(not_attempted) == total
+        if unaccounted or not reconciled:
+            logger.error(
+                "%s job=%s accounting mismatch: %d requested vs %d deleted + %d failed_tml + %d failed_delete "
+                "+ %d not_attempted (%d unaccounted)",
+                action_type,
+                job_id,
+                total,
+                succeeded,
+                len(failed_tml),
+                len(failed_delete),
+                len(not_attempted),
+                len(unaccounted),
+            )
+
+        # COMPLETE means "every requested object was deleted, and the numbers
+        # add up". Anything else is PARTIAL.
+        status = (
+            "COMPLETE"
+            if (succeeded == total and not failed_tml and not failed_delete and not cancelled and reconciled)
+            else "PARTIAL"
+        )
         result = {
             "succeeded": succeeded,
             "failed_tml_export": len(failed_tml),
             "failed_delete": len(failed_delete),
+            "not_attempted": len(not_attempted),
+            "requested": total,
+            "reconciled": reconciled and not unaccounted,
+            # GUID-level detail so an admin can see exactly which objects were
+            # left behind. Capped — the exact counts are the fields above.
+            "failed_tml_guids": failed_tml[:200],
+            "failed_delete_guids": failed_delete[:200],
+            "not_attempted_guids": not_attempted[:200],
+            "unaccounted_guids": unaccounted[:200],
             "cancelled": cancelled,
             "job_id": job_id,
             "tml_export_path": str(job_tml_dir),
@@ -282,7 +369,7 @@ async def _execute_delete(
             )
             entry.set_parameters(
                 {
-                    "object_ids": object_ids,
+                    "object_ids": requested,
                     **result,
                 }
             )
@@ -297,13 +384,14 @@ async def _execute_delete(
             mark_complete(job_id, result)
 
         logger.info(
-            "%s job=%s cluster=%s succeeded=%d failed_tml=%d failed_delete=%d cancelled=%s",
+            "%s job=%s cluster=%s succeeded=%d failed_tml=%d failed_delete=%d not_attempted=%d cancelled=%s",
             action_type,
             job_id,
             cluster_id,
             succeeded,
             len(failed_tml),
             len(failed_delete),
+            len(not_attempted),
             cancelled,
         )
 
