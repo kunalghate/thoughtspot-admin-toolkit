@@ -13,6 +13,7 @@ import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import { useShell } from "@/components/Shell";
 import { theme } from "@/lib/theme";
+import { formatRelative } from "@/lib/utils";
 import { diagnosticsApi, jobsApi } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/types";
 
@@ -35,22 +36,6 @@ const STATUS_COLORS: Record<JobStatus, { bg: string; fg: string }> = {
   PARTIAL:  { bg: theme.color.warnSoft, fg: theme.color.warn },
   FAILED:   { bg: theme.color.dangerSoft, fg: theme.color.danger },
 };
-
-function relativeDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-  if (days === 0) {
-    const mins = Math.floor((Date.now() - d.getTime()) / 60_000);
-    if (mins < 1) return "just now";
-    if (mins < 60) return `${mins}m ago`;
-    return `${Math.floor(mins / 60)}h ago`;
-  }
-  if (days === 1) return "Yesterday";
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-  return `${Math.floor(days / 365)}y ago`;
-}
 
 function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
   return [
@@ -117,14 +102,14 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     width: 130,
     sortable: true,
     sort: "desc",
-    valueFormatter: (p) => relativeDate(p.value),
+    valueFormatter: (p) => formatRelative(p.value),
   },
   {
     field: "completed_at",
     headerName: "Completed",
     width: 130,
     sortable: true,
-    valueFormatter: (p) => relativeDate(p.value),
+    valueFormatter: (p) => formatRelative(p.value),
   },
   {
     field: "error",

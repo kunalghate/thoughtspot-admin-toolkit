@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { usersApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { formatAbsolute } from "@/lib/utils";
 import type { UserHistoryItem } from "@/lib/types";
 
 const ACTION_LABELS: Record<string, string> = {
@@ -126,7 +127,7 @@ export function UsersHistoryTab({
                 padding: "10px 14px", fontSize: 12, alignItems: "center",
                 borderBottom: `1px solid ${theme.color.bg}`, fontFamily: theme.font.sans,
               }}>
-                <div style={{ color: theme.color.textMuted }}>{new Date(r.executed_at).toLocaleString()}</div>
+                <div style={{ color: theme.color.textMuted }}>{formatAbsolute(r.executed_at)}</div>
                 <div style={{ color: theme.color.textPrimary }}>{ACTION_LABELS[r.action_type] ?? r.action_type}</div>
                 <div style={{ color: theme.color.textPrimary }}>
                   {r.from_display_name || r.from_username || "—"}

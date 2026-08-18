@@ -24,6 +24,7 @@ import UserDetailDrawer from "@/components/Users/UserDetailDrawer";
 import { usersApi } from "@/lib/api";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
 import { theme } from "@/lib/theme";
+import { formatDay } from "@/lib/utils";
 import type { UserListItem } from "@/lib/types";
 
 const PAGE_SIZE = 200;
@@ -151,7 +152,7 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
     },
     {
       field: "created_at", headerName: "Created", width: 140,
-      valueFormatter: (p) => p.value ? new Date(p.value as string).toLocaleDateString() : "",
+      valueFormatter: (p) => formatDay(p.value as string),
     },
   ], []);
 

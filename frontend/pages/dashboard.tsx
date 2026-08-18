@@ -22,6 +22,7 @@ import {
 import AppShell, { useShell } from "@/components/Shell";
 import { dashboardApi, syncApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { parseUtc } from "@/lib/utils";
 import { typeLabelPlural } from "@/lib/objectTypes";
 import type { DashboardSummary, EntityType } from "@/lib/types";
 
@@ -73,11 +74,6 @@ const IDLE_POLL_MS = 60_000;
 function retryableEntity(jobType: string): EntityType | null {
   const entity = jobType.startsWith("sync:") ? jobType.slice(5) : null;
   return SYNCABLE_ENTITIES.includes(entity as EntityType) ? (entity as EntityType) : null;
-}
-
-/** Backend sends naive-UTC ISO; parse it as UTC rather than local time. */
-function parseUtc(iso: string): Date {
-  return new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z");
 }
 
 /** Whole minutes since `iso`, or null when it never happened. */

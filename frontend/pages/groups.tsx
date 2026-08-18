@@ -16,6 +16,7 @@ import GroupDetailDrawer from "@/components/Groups/GroupDetailDrawer";
 import { groupsApi } from "@/lib/api";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
 import { theme } from "@/lib/theme";
+import { formatDay } from "@/lib/utils";
 import type { GroupListItem } from "@/lib/types";
 
 const PAGE_SIZE = 200;
@@ -122,7 +123,7 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
     },
     {
       field: "modified_at", headerName: "Modified", width: 140,
-      valueFormatter: (p) => p.value ? new Date(p.value as string).toLocaleDateString() : "",
+      valueFormatter: (p) => formatDay(p.value as string),
     },
   ], []);
 

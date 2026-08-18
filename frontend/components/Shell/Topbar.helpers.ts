@@ -1,5 +1,6 @@
 import { theme } from "@/lib/theme";
 import type { EntityType, SyncLog } from "@/lib/types";
+import { parseUtc } from "@/lib/utils";
 
 /**
  * Pure helpers for the Topbar sync indicator.
@@ -59,7 +60,7 @@ export function buildSyncLabel(
   if (log.status === "IN_PROGRESS") return "Syncing…";
   if (!log.synced_at) return "Unknown";
 
-  const minutes = Math.floor((now - new Date(log.synced_at + "Z").getTime()) / 60_000);
+  const minutes = Math.floor((now - parseUtc(log.synced_at).getTime()) / 60_000);
   if (minutes < 2)  return "Synced just now";
   if (minutes < 60) return `Synced ${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -75,7 +76,7 @@ export function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: num
   if (log.status === "IN_PROGRESS") return theme.color.accent;
   if (!log.synced_at) return theme.color.textMuted;
 
-  const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;
+  const hours = (now - parseUtc(log.synced_at).getTime()) / 3_600_000;
   if (hours < 1) return theme.color.success;
   if (hours < 6) return theme.color.textMuted;
   return theme.color.warn;
