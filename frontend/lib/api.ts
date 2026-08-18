@@ -359,7 +359,7 @@ export const archiverApi = {
     if (params.sort_order)          q.set("sort_order", params.sort_order);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)           q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiverItem>>(`/archiver/results?${q}`);
+    return request<OffsetPaginatedResponse<ArchiverItem>>(`/archiver/results?${q}`);
   },
 
   tags: (params: {
@@ -393,7 +393,7 @@ export const archiverApi = {
     q.set("cluster_id", params.cluster_id);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiverItem>>(`/archiver/dryrun/${job_id}/objects?${q}`);
+    return request<OffsetPaginatedResponse<ArchiverItem>>(`/archiver/dryrun/${job_id}/objects?${q}`);
   },
 
   execute: (body: {
@@ -420,7 +420,7 @@ export const archiverApi = {
     q.set("org_id", String(params.org_id));
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiveSessionSummary>>(`/archiver/history?${q}`);
+    return request<OffsetPaginatedResponse<ArchiveSessionSummary>>(`/archiver/history?${q}`);
   },
 
   historySession: (job_id: string, params: {
@@ -432,7 +432,7 @@ export const archiverApi = {
     q.set("cluster_id", params.cluster_id);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiveRecord>>(`/archiver/history/${job_id}?${q}`);
+    return request<OffsetPaginatedResponse<ArchiveRecord>>(`/archiver/history/${job_id}?${q}`);
   },
 
   restore: (body: { cluster_id: string; org_id: number; archive_record_ids: string[] }) =>
@@ -531,7 +531,7 @@ export const deleterApi = {
     q.set("cluster_id", params.cluster_id);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<DeleterItem>>(`/deleter/dryrun/${job_id}/objects?${q}`);
+    return request<OffsetPaginatedResponse<DeleterItem>>(`/deleter/dryrun/${job_id}/objects?${q}`);
   },
 
   execute: (body: { cluster_id: string; org_id: number; object_ids: string[] }) =>
@@ -563,7 +563,7 @@ export const usersApi = {
     if (params.sort_order)              q.set("sort_order", params.sort_order);
     if (params.record_offset != null)  q.set("record_offset", String(params.record_offset));
     if (params.page_size)               q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<UserListItem>>(`/users?${q}`);
+    return request<OffsetPaginatedResponse<UserListItem>>(`/users?${q}`);
   },
 
   get: (ts_guid: string, cluster_id: string) =>
@@ -654,7 +654,7 @@ export const usersApi = {
     if (params.action_type)            q.set("action_type", params.action_type);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)              q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<UserHistoryItem>>(`/users/history?${q}`);
+    return request<OffsetPaginatedResponse<UserHistoryItem>>(`/users/history?${q}`);
   },
 };
 
@@ -756,7 +756,7 @@ export const sharingApi = {
     if (params.org_id != null)        q.set("org_id", String(params.org_id));
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)              q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<SharingHistoryItem>>(`/sharing/history?${q}`);
+    return request<OffsetPaginatedResponse<SharingHistoryItem>>(`/sharing/history?${q}`);
   },
 };
 

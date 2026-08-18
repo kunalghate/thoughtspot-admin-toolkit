@@ -79,6 +79,8 @@ export function RelationshipsView({
   const toast = useToast();
   const graphCache = useRef<Map<string, LineageGraphResponse>>(new Map());
   const indexedAnswers = useRef<Set<string>>(new Set());
+  // Generation counter for in-flight graph loads — see loadGraph.
+  const graphLoadIdRef = useRef(0);
   const guidToItem = useMemo(() => {
     const m = new Map<string, TopologyItem>();
     if (topology) {
@@ -110,7 +112,13 @@ export function RelationshipsView({
   }, [clusterId, orgId, version]);
 
   // ── Load the selected object's graph (cached per guid+version) ──
+  //
+  // Generation-guarded: a cold object can take seconds (an uncached answer runs
+  // a TML export first), and clicking a warm one meanwhile resolves instantly.
+  // Without the guard the slow response lands last and paints A's graph while
+  // the header, the path trail and the impact count all still name B.
   const loadGraph = useCallback(async (item: TopologyItem) => {
+    const loadId = ++graphLoadIdRef.current;
     const rootKind: RootKind = rootKindFor(item.node_type);
     const key = `${version}:${rootKind}:${item.ts_guid}`;
     const cached = graphCache.current.get(key);
@@ -125,13 +133,17 @@ export function RelationshipsView({
         try { await relationshipsApi.indexAnswer(item.ts_guid, clusterId, orgId); } catch { /* keep object-level view */ }
       }
       const g = await relationshipsApi.graph(rootKind, item.ts_guid, clusterId, orgId);
+      // Cache it either way — the work is done and it is keyed by guid, so a
+      // superseded response still saves the next visit a round-trip.
       graphCache.current.set(key, g);
+      if (loadId !== graphLoadIdRef.current) return;
       setGraph(g);
     } catch (e) {
+      if (loadId !== graphLoadIdRef.current) return;
       setGraph(null);
       setGraphError(e instanceof Error ? e.message : String(e));
     } finally {
-      setGraphLoading(false);
+      if (loadId === graphLoadIdRef.current) setGraphLoading(false);
     }
   }, [clusterId, orgId, version]);
 

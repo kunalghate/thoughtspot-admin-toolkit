@@ -315,6 +315,9 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   // would close the open filter popup mid-typing). On filter change we purge
   // the infinite cache; the existing getRows closure reads the ref.
   const colFiltersRef = useRef<Record<string, any>>({});
+  // Live job pollers, so unmount can stop them — an interval left running after
+  // navigation calls showToast/reloadGrid on a dead tree.
+  const pollersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
 
   // DryRunModal state
   const [dryRunOpen, setDryRunOpen] = useState(false);
@@ -487,19 +490,38 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
     }
   };
 
-  const pollUntilDone = (jobId: string, onDone: (job: Job) => void) => {
+  // Poll a tag/untag job to a terminal state.
+  //
+  // A single failing tick used to clear the interval and return silently: no
+  // toast, no grid reload, no way for the admin to tell whether a 500-object
+  // tag landed. Tolerate transient failures the way AppShell.handleSync does,
+  // and when we do give up, say so. Registered in `pollersRef` so navigating
+  // away cannot leave an interval calling showToast on an unmounted tree.
+  const pollUntilDone = useCallback((jobId: string, onDone: (job: Job) => void) => {
+    let errors = 0;
     const iv = setInterval(async () => {
       try {
         const job = await jobsApi.get(jobId);
+        errors = 0;
         if (job.status === "COMPLETE" || job.status === "FAILED" || job.status === "PARTIAL") {
           clearInterval(iv);
+          pollersRef.current.delete(iv);
           onDone(job);
         }
       } catch {
+        if (++errors < 5) return;
         clearInterval(iv);
+        pollersRef.current.delete(iv);
+        showToast("Lost track of the job — check the Jobs page for its status.", false);
       }
     }, 2000);
-  };
+    pollersRef.current.add(iv);
+  }, [showToast]);
+
+  useEffect(() => () => {
+    for (const iv of pollersRef.current) clearInterval(iv);
+    pollersRef.current.clear();
+  }, []);
 
   const handleDeleteSelected = () => {
     if (!selectedGuids.size) return;

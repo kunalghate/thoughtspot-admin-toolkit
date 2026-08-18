@@ -3,6 +3,7 @@ import { ChevronDown, RefreshCw, WifiOff } from "lucide-react";
 import { theme } from "@/lib/theme";
 import UpdatePill from "./UpdatePill";
 import { buildSyncColor, buildSyncLabel } from "./Topbar.helpers";
+import type { SyncLogOrUnknown } from "./Topbar.helpers";
 import type { EntityType, Org, SyncLog } from "@/lib/types";
 
 /** Full offline sentence — rendered AND used as the badge's hover title, since
@@ -23,7 +24,7 @@ interface TopbarProps {
   clusterName: string;
   activeOrg: Org | null;
   orgs: Org[];
-  syncLog: SyncLog | null;
+  syncLog: SyncLogOrUnknown;
   syncProgress: { processed: number; total: number } | null;
   /** Non-null when a prerequisite is unmet — disables sync and explains why. */
   blockedReason?: string | null;

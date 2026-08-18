@@ -160,6 +160,11 @@ export interface MetadataListResponse extends PaginatedResponse<MetadataObject> 
   hidden_system_count: number;
 }
 
+/**
+ * Page-numbered envelope. Only `/metadata` uses this — every other paginated
+ * endpoint sends `record_offset` and wants `OffsetPaginatedResponse`. Declaring
+ * `page` on those made the type promise a field that arrives `undefined`.
+ */
 export interface PaginatedResponse<T> {
   items: T[];
   total: number;

@@ -19,7 +19,7 @@ import { X, Loader2, AlertTriangle, Share2, CheckCircle, XCircle, AlertCircle } 
 
 import { jobsApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
-import type { DeleterItem, DryRunSummary, Job, PaginatedResponse } from "@/lib/types";
+import type { DeleterItem, DryRunSummary, Job, OffsetPaginatedResponse } from "@/lib/types";
 import { OBJECT_COLUMNS } from "./columns";
 
 type ModalState = "polling" | "ready" | "running" | "complete";
@@ -31,7 +31,7 @@ export interface DeleteApiAdapter {
   dryrunObjects: (
     job_id: string,
     params: { cluster_id: string; record_offset?: number; page_size?: number },
-  ) => Promise<PaginatedResponse<DeleterItem>>;
+  ) => Promise<OffsetPaginatedResponse<DeleterItem>>;
   /** Start the actual delete job; returns its id. */
   execute: (body: { cluster_id: string; org_id: number; object_ids: string[] }) => Promise<{ job_id: string }>;
 }
