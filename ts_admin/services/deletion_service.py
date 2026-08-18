@@ -17,15 +17,25 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from sqlmodel import Session
 
 import ts_admin.database as _db
 from ts_admin.models.cache.ts_metadata import CachedMetadata
+from ts_admin.services.lineage_service import _export_tml_resilient
+from ts_admin.ts_client.exceptions import TSAdminError
 
 logger = logging.getLogger(__name__)
 
 # TML backup directory: ~/.ts-admin/tml-exports/{job_id}/{guid}.tml
 TML_EXPORT_DIR = Path.home() / ".ts-admin" / "tml-exports"
+
+# ThoughtSpot's built-in content owner. Both tag-intake paths — the Bulk
+# Deleter's `deleter_service.resolve_tag` and Bulk Sharing's
+# `bulk_sharing_service.resolve_tag_to_guids` — exclude it, so the same tag name
+# yields the same set in both features. Kept here (the module both import) so the
+# literal cannot drift apart again.
+SYSTEM_OWNER_NAME = "System User"
 
 
 # ── Generic helpers ────────────────────────────────────────────────────────────
@@ -64,6 +74,42 @@ def _fetch_objects_by_guids(
     return results
 
 
+class _BackupExporter:
+    """
+    Client adapter that lets the delete path reuse `_export_tml_resilient`.
+
+    `metadata/tml/export` is all-or-nothing with no per-object status, and every
+    real cluster carries a few dozen un-exportable objects (measured: 43 on
+    se-demo, 36 on ps-internal-prod). `lineage_service._export_tml_resilient`
+    already bisects a failing batch until the offender is isolated to a batch of
+    one; this path needs the identical algorithm, so it wraps the client instead
+    of forking the bisect. Two things have to be adapted:
+
+      - **Request body.** `_export_tml_resilient` passes `edoc_format="JSON"`
+        because it `json.loads` the edoc. The delete path writes the edoc
+        verbatim into the `.tml` backup, so its request must keep sending no
+        `edoc_format` at all (see `ThoughtSpotClient.tml_export`). The kwarg is
+        absorbed here and never forwarded.
+      - **Per-object errors.** `_export_tml_resilient` records failures as bare
+        GUIDs. A batch of one is exactly one object's failure, so the exception
+        raised at that size IS that object's own error — captured here so the
+        ArchiveRecord shows it instead of the poison object's error being
+        stamped on all 49 innocent objects in its batch.
+    """
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self.errors: dict[str, str] = {}
+
+    async def tml_export(self, *, object_ids: list[str], edoc_format: str | None = None) -> list[dict]:
+        try:
+            return await self._client.tml_export(object_ids=object_ids)
+        except (TSAdminError, httpx.HTTPError) as exc:
+            if len(object_ids) == 1:
+                self.errors[object_ids[0]] = str(exc)
+            raise
+
+
 # ── Phase 5: Delete with mandatory TML safety net ─────────────────────────────
 
 
@@ -78,13 +124,18 @@ async def _execute_delete(
     """
     Permanently delete objects with a mandatory TML backup before each deletion.
 
-    Phase A — TML Export:
+    Phase A — TML Export (resilient):
       Export TML for every object. Objects whose export fails are excluded from
       deletion and marked FAILED in ArchiveRecord — they are never deleted.
       The export RESPONSE is reconciled against the REQUEST: ThoughtSpot omits
       objects it cannot export from the response entirely (no error row), so a
       requested GUID with no matching response entry is an export failure, not
       a success.
+      A batch that raises is BISECTED (`_export_tml_resilient` via
+      `_BackupExporter`) until each un-exportable object is isolated to a batch
+      of one, so one poison GUID costs only itself and its 49 batch-mates are
+      still exported and still deleted. Only a whole-cluster failure (auth,
+      privileges, or the job-wide failure budget) fails a chunk wholesale.
 
     Phase B — Delete (cancel-aware):
       Delete only objects whose TML export succeeded. Checks job.is_cancelled
@@ -185,22 +236,44 @@ async def _execute_delete(
         failed_tml: list[str] = []
         accounted: set[str] = set()  # requested GUIDs the export response covered
 
+        def _fail_export(guid: str, error: str) -> None:
+            """Bucket one GUID as an export failure. Idempotent per GUID."""
+            if guid in accounted:
+                return
+            accounted.add(guid)
+            failed_tml.append(guid)
+            _update_record(guid, tml_export_status="FAILED", tml_export_error=error[:500])
+
         cluster = _get_cluster(cluster_id)
 
         async with ThoughtSpotClient(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
+            exporter = _BackupExporter(client)
+            # Shared across chunks so `TML_EXPORT_FAILURE_BUDGET` is a job-wide
+            # ceiling: a cluster failing wholesale stops the bisect instead of
+            # burning one call per object.
+            isolated_failures: list[str] = []
+
             for chunk in _chunks(requested, 50):
+                seen = len(isolated_failures)
+                tml_results: list[dict] = []
+                batch_error: str | None = None
                 try:
-                    tml_results = await client.tml_export(object_ids=chunk)
-                except Exception as exc:
+                    tml_results = await _export_tml_resilient(exporter, chunk, isolated_failures)
+                except (TSAdminError, httpx.HTTPError) as exc:
+                    # Not an isolatable object: an auth/privilege failure (a
+                    # whole-cluster condition `_export_tml_resilient` deliberately
+                    # re-raises) or the failure budget running out. The rest of
+                    # this chunk is unexportable and is bucketed below.
                     logger.warning("TML export chunk failed: %s", exc)
-                    for guid in chunk:
-                        accounted.add(guid)
-                        failed_tml.append(guid)
-                        _update_record(guid, tml_export_status="FAILED", tml_export_error=str(exc)[:500])
-                    continue
+                    batch_error = str(exc)
+
+                # Objects the bisect isolated: each gets ITS OWN error, so one
+                # poison object never stamps its error on its batch-mates.
+                for guid in isolated_failures[seen:]:
+                    _fail_export(guid, exporter.errors.get(guid) or "TML export failed for this object")
 
                 for item in tml_results:
                     info = item.get("info") or {}
@@ -245,17 +318,14 @@ async def _execute_delete(
                 # Reconcile response against request: a GUID TS silently omitted
                 # is an export failure. Without this it would land in no bucket
                 # at all — invisible in every count, and stranded at PENDING.
+                # Whatever is still unaccounted after a whole-chunk failure lands
+                # here too, carrying that batch's error.
                 for guid in chunk:
                     if guid in accounted:
                         continue
-                    accounted.add(guid)
-                    failed_tml.append(guid)
-                    logger.warning("TML export response omitted requested GUID %s — treated as failed", guid)
-                    _update_record(
-                        guid,
-                        tml_export_status="FAILED",
-                        tml_export_error="TML export response omitted this object",
-                    )
+                    if batch_error is None:
+                        logger.warning("TML export response omitted requested GUID %s — treated as failed", guid)
+                    _fail_export(guid, batch_error or "TML export response omitted this object")
 
             logger.info(
                 "%s job=%s TML export done: %d ok, %d failed",

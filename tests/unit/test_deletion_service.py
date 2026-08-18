@@ -373,6 +373,241 @@ class TestExecuteDeletePartial:
         assert result["reconciled"] is True
 
 
+class TestPoisonObjectIsolation:
+    """
+    `metadata/tml/export` is all-or-nothing with no per-object status, and every
+    real cluster carries a few dozen objects it refuses to export (43 on
+    se-demo, 36 on ps-internal-prod). Before this, one poison GUID in a chunk of
+    50 raised, and the handler marked all 50 FAILED with the *poison object's*
+    error, deleted none, and failed the job — so an admin cleaning up 300 stale
+    liveboards was stopped dead on the first batch.
+    """
+
+    @pytest.fixture
+    def four_liveboards(self, in_memory_db):
+        with Session(in_memory_db) as s:
+            s.add(
+                Cluster(
+                    id="c1",
+                    name="Prod",
+                    url="https://prod.thoughtspot.cloud",
+                    username="admin",
+                    auth_type="basic",
+                )
+            )
+            now = datetime.now(tz=timezone.utc)
+            for i in range(1, 5):
+                s.add(
+                    CachedMetadata(
+                        cluster_id="c1",
+                        org_id=0,
+                        ts_guid=f"lb-{i}",
+                        name=f"Board {i}",
+                        object_type="LIVEBOARD",
+                        owner_guid="u1",
+                        owner_name="Alice",
+                        tag_names=json.dumps([]),
+                        synced_at=now,
+                    )
+                )
+            s.commit()
+
+    def test_one_unexportable_object_costs_only_itself(
+        self,
+        in_memory_db,
+        patched_env,
+        four_liveboards,
+        monkeypatch,
+    ):
+        from ts_admin.services.deletion_service import _execute_delete
+        from ts_admin.ts_client.exceptions import TSServerError
+
+        class _PoisonClient(_FakeClient):
+            async def tml_export(self, *, object_ids):
+                if "lb-3" in object_ids:
+                    # The message encodes the batch size, so the assertion below
+                    # can tell "the error from the batch of 4" apart from "the
+                    # error from the isolated retry of this one object".
+                    raise TSServerError(status_code=500, body=f"No value present (batch of {len(object_ids)})")
+                return [{"info": {"id": g}, "edoc": f"liveboard:\n  name: {g}\n"} for g in object_ids]
+
+        monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", _PoisonClient)
+
+        guids = ["lb-1", "lb-2", "lb-3", "lb-4"]
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": guids})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=guids,
+                action_type="bulk_delete",
+            )
+        )
+
+        # ── The three healthy objects were still deleted
+        deleted_ids = sorted(i for _, ids in _FakeClient.delete_calls for i in ids)
+        assert deleted_ids == ["lb-1", "lb-2", "lb-4"]
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+            job = s.get(Job, job_id)
+            remaining = {r.ts_guid for r in s.exec(select(CachedMetadata)).all()}
+
+        # ── Exactly one FAILED record, and it is the poison object
+        failed = [g for g, r in recs.items() if r.tml_export_status == "FAILED"]
+        assert failed == ["lb-3"]
+        assert sorted(g for g, r in recs.items() if r.tml_export_status == "SUCCESS") == ["lb-1", "lb-2", "lb-4"]
+
+        # ── It carries the error from ITS OWN isolated export, not the batch's
+        assert "batch of 1" in (recs["lb-3"].tml_export_error or "")
+        assert "batch of 4" not in (recs["lb-3"].tml_export_error or "")
+
+        # ── The poison object survives in the cache; the rest are purged
+        assert remaining == {"lb-3"}
+
+        # ── Reconciliation still holds: every requested GUID in exactly one bucket
+        result = job.get_result() or {}
+        assert job.status == "PARTIAL"
+        assert result["requested"] == 4
+        assert result["succeeded"] == 3
+        assert result["failed_tml_export"] == 1
+        assert result["failed_tml_guids"] == ["lb-3"]
+        assert result["reconciled"] is True
+        assert result["unaccounted_guids"] == []
+        assert (
+            result["succeeded"] + result["failed_tml_export"] + result["failed_delete"] + result["not_attempted"] == 4
+        )
+
+    def test_two_poison_objects_each_record_their_own_error(
+        self,
+        in_memory_db,
+        patched_env,
+        four_liveboards,
+        monkeypatch,
+    ):
+        """Two un-exportable objects in one batch must not share one error string."""
+        from ts_admin.services.deletion_service import _execute_delete
+        from ts_admin.ts_client.exceptions import TSInvalidParametersError, TSServerError
+
+        class _TwoPoisonClient(_FakeClient):
+            async def tml_export(self, *, object_ids):
+                if "lb-2" in object_ids:
+                    raise TSServerError(status_code=500, body="No value present")
+                if "lb-3" in object_ids:
+                    raise TSInvalidParametersError("Invalid parameter values: metadata_identifiers")
+                return [{"info": {"id": g}, "edoc": f"liveboard:\n  name: {g}\n"} for g in object_ids]
+
+        monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", _TwoPoisonClient)
+
+        guids = ["lb-1", "lb-2", "lb-3", "lb-4"]
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": guids})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=guids,
+                action_type="bulk_delete",
+            )
+        )
+
+        deleted_ids = sorted(i for _, ids in _FakeClient.delete_calls for i in ids)
+        assert deleted_ids == ["lb-1", "lb-4"]
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+
+        assert "No value present" in (recs["lb-2"].tml_export_error or "")
+        assert "metadata_identifiers" in (recs["lb-3"].tml_export_error or "")
+        assert recs["lb-2"].tml_export_error != recs["lb-3"].tml_export_error
+
+    def test_a_whole_cluster_failure_is_not_bisected(
+        self,
+        in_memory_db,
+        patched_env,
+        four_liveboards,
+        monkeypatch,
+    ):
+        """
+        A 403 is a whole-cluster condition — bisecting would just repeat the same
+        failure once per object. `_export_tml_resilient` re-raises it, and the
+        delete path must fail the chunk cleanly rather than crash the job.
+        """
+        from ts_admin.services.deletion_service import _execute_delete
+        from ts_admin.ts_client.exceptions import TSInsufficientPrivilegesError
+
+        calls: list[int] = []
+
+        class _ForbiddenClient(_FakeClient):
+            async def tml_export(self, *, object_ids):
+                calls.append(len(object_ids))
+                raise TSInsufficientPrivilegesError("Insufficient privileges for POST /metadata/tml/export")
+
+        monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", _ForbiddenClient)
+
+        guids = ["lb-1", "lb-2", "lb-3", "lb-4"]
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": guids})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=guids,
+                action_type="bulk_delete",
+            )
+        )
+
+        assert calls == [4], "a privilege error must not be bisected"
+        assert _FakeClient.delete_calls == []
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            recs = s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()
+
+        assert job.status == "FAILED"
+        assert {r.tml_export_status for r in recs} == {"FAILED"}
+        assert all("Insufficient privileges" in (r.tml_export_error or "") for r in recs)
+
+    def test_backup_export_never_sends_edoc_format(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+        monkeypatch,
+    ):
+        """
+        The `.tml` backup is the edoc written verbatim, so the delete path's
+        request body must stay byte-identical — no `edoc_format`. The resilient
+        helper it now shares with lineage passes `edoc_format="JSON"`;
+        `_BackupExporter` has to absorb that kwarg, not forward it.
+        """
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _sentinel = object()
+        seen: list[object] = []
+
+        class _FormatSpyClient(_FakeClient):
+            async def tml_export(self, *, object_ids, edoc_format=_sentinel):
+                seen.append(edoc_format)
+                return [{"info": {"id": g}, "edoc": "liveboard:\n  name: x\n"} for g in object_ids]
+
+        monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", _FormatSpyClient)
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        assert seen == [_sentinel]
+
+
 class TestCachePurgeScoping:
     def test_purge_only_touches_the_deleting_cluster_and_org(
         self,
