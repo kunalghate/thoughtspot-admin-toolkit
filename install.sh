@@ -85,9 +85,17 @@ fi
 # satisfies requires-python, which is the common case on stock macOS.
 # --force makes a re-run replace the existing install rather than no-op, which
 # is what makes this script double as the upgrade path.
+# uv writes a PATH advisory to stderr on success, which reads as an error to a
+# non-technical user. Hold stderr back and show it only if the install fails,
+# where it carries the actual reason.
 say "Installing the toolkit..."
-"$UV" tool install --force --python "$PYTHON_VERSION" "$WHEEL_URL" >/dev/null \
-    || die "could not install the toolkit from ${WHEEL_URL}"
+ERR_LOG="$(mktemp)"
+if ! "$UV" tool install --force --python "$PYTHON_VERSION" "$WHEEL_URL" >/dev/null 2>"$ERR_LOG"; then
+    cat "$ERR_LOG" >&2
+    rm -f "$ERR_LOG"
+    die "could not install the toolkit from ${WHEEL_URL}"
+fi
+rm -f "$ERR_LOG"
 
 # Adds uv's shim directory to the shell profile if it is not already there.
 # Failure is not fatal — we fall back to telling the user the full path.
@@ -99,7 +107,12 @@ say ""
 say "Done. The toolkit is installed."
 say ""
 
-if command -v ts-admin-toolkit >/dev/null 2>&1; then
+# Check that `ts-admin-toolkit` resolves to the shim we just installed, not to
+# some other copy already on PATH — telling the user to run a command that
+# launches a different install is worse than telling them to open a new window.
+RESOLVED="$(command -v ts-admin-toolkit 2>/dev/null || true)"
+
+if [ "$RESOLVED" = "${UV_BIN_DIR}/ts-admin-toolkit" ]; then
     say "To start it, run:"
     say ""
     say "    ts-admin-toolkit serve"

@@ -121,7 +121,7 @@ class TestConnectionTestUpdatesStatus:
 # ── Global exception handlers ──────────────────────────────────────────────────
 
 
-def _app_with_probes(monkeypatch):
+def _app_with_probes(monkeypatch, tmp_path):
     """Build a real app (handlers registered) plus throwaway routes that raise."""
     from ts_admin.config import AppConfig, ClusterConfig
     from ts_admin.main import create_app
@@ -138,6 +138,14 @@ def _app_with_probes(monkeypatch):
     )
     monkeypatch.setattr("ts_admin.config.load_config", lambda: config)
 
+    # These probe routes are attached after create_app(), so they land *after*
+    # any StaticFiles mount at "/" and would be shadowed by it — the probes
+    # would 404 instead of raising. Point STATIC_DIR at an empty directory so
+    # no mount is created, and the suite behaves the same whether or not the
+    # developer has run `make build`. (Real API routers register before the
+    # mount inside create_app(), so production routing is unaffected.)
+    monkeypatch.setattr("ts_admin.main.STATIC_DIR", tmp_path)
+
     app = create_app()
 
     @app.get("/api/v1/_probe/auth")
@@ -152,8 +160,8 @@ def _app_with_probes(monkeypatch):
 
 
 class TestGlobalExceptionHandlers:
-    def test_ts_admin_error_returns_consistent_shape(self, monkeypatch):
-        app = _app_with_probes(monkeypatch)
+    def test_ts_admin_error_returns_consistent_shape(self, monkeypatch, tmp_path):
+        app = _app_with_probes(monkeypatch, tmp_path)
         client = TestClient(app, raise_server_exceptions=False)
 
         r = client.get("/api/v1/_probe/auth")
@@ -163,17 +171,17 @@ class TestGlobalExceptionHandlers:
         assert "Reconnect" in body["hint"]
         assert body["error_type"] == "TSAuthenticationError"
 
-    def test_auth_error_flips_active_cluster_to_expired(self, monkeypatch):
+    def test_auth_error_flips_active_cluster_to_expired(self, monkeypatch, tmp_path):
         from ts_admin.services import connection_status
 
-        app = _app_with_probes(monkeypatch)
+        app = _app_with_probes(monkeypatch, tmp_path)
         client = TestClient(app, raise_server_exceptions=False)
 
         client.get("/api/v1/_probe/auth")
         assert connection_status.get("c1").state.value == "expired"
 
-    def test_unexpected_error_is_generic_500_no_leak(self, monkeypatch):
-        app = _app_with_probes(monkeypatch)
+    def test_unexpected_error_is_generic_500_no_leak(self, monkeypatch, tmp_path):
+        app = _app_with_probes(monkeypatch, tmp_path)
         client = TestClient(app, raise_server_exceptions=False)
 
         r = client.get("/api/v1/_probe/boom")
