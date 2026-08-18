@@ -636,6 +636,9 @@ export const usersApi = {
     org_id: number;
     user_guids: string[];
     user_identifiers?: string[];
+    /** Required to delete a ThoughtSpot admin — the server refuses otherwise.
+     *  There is no override for deleting the account the toolkit signs in as. */
+    confirm_admin_delete?: boolean;
   }) =>
     request<{ job_id: string; total: number }>("/users/delete/execute", {
       method: "POST", body: JSON.stringify(body),
