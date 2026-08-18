@@ -53,8 +53,11 @@ export default function Topbar({
       padding: "0 24px", gap: 12, flexShrink: 0,
     }}>
       {/* Page title + optional offline badge */}
-      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10 }}>
-        <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
+        <h1 style={{
+          margin: 0, fontSize: 15, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.sans,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
           {pageTitle}
         </h1>
         {isOffline && (
@@ -63,6 +66,7 @@ export default function Topbar({
             padding: "3px 10px", borderRadius: 20,
             background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
             fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
+            whiteSpace: "nowrap", flexShrink: 0,
           }}>
             <WifiOff size={11} />
             Instance offline — showing cached data
@@ -75,7 +79,7 @@ export default function Topbar({
           "Never synced" pill and a dead button there is just misleading. */}
       {entityType && (
         <>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 96 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 96, flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: syncColor }} />
               <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
@@ -97,6 +101,7 @@ export default function Topbar({
               cursor: syncDisabled ? "default" : "pointer",
               fontSize: 12, fontWeight: 600, fontFamily: theme.font.sans,
               opacity: syncDisabled ? 0.5 : 1,
+              whiteSpace: "nowrap", flexShrink: 0,
             }}
           >
             <RefreshCw size={12} style={{ animation: isSyncing ? "spin 1s linear infinite" : "none" }} />
@@ -233,7 +238,9 @@ function buildSyncLabel(
   if (isSyncing) {
     if (progress && progress.total > 0) return `Syncing ${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()}`;
     // No grand total from the TS API — show the live running count instead.
-    if (progress && progress.processed > 0) return `Syncing ${progress.processed.toLocaleString()}…`;
+    // Not `Syncing 6,400…`: a number followed by an ellipsis reads as a number
+    // that got truncated, not as a sync still in flight.
+    if (progress && progress.processed > 0) return `Syncing — ${progress.processed.toLocaleString()} objects`;
     return "Syncing…";
   }
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
