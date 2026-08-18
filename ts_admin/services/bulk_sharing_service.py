@@ -337,6 +337,124 @@ async def preview_share(
     }
 
 
+# ── Dry-run → execute binding ─────────────────────────────────────────────────
+
+# The job_type a `dryrun_job_id` must name. A share must never be authorised by
+# some other feature's job row.
+DRYRUN_JOB_TYPE = "bulk_share_dryrun"
+
+# Reason codes from `load_dryrun_selection`. The service stays HTTP-agnostic;
+# `api/sharing.py` owns the mapping onto status codes.
+DRYRUN_NOT_FOUND = "dryrun_not_found"
+DRYRUN_WRONG_TYPE = "dryrun_wrong_type"
+DRYRUN_NOT_COMPLETE = "dryrun_not_complete"
+DRYRUN_MISMATCH = "dryrun_mismatch"
+DRYRUN_NOT_PREVIEWED = "dryrun_not_previewed"
+
+
+def load_dryrun_selection(
+    *,
+    dryrun_job_id: str,
+    cluster_id: str,
+    org_id: int,
+    principal_guids: list[str],
+    mode: str,
+    requested_guids: list[str] | None = None,
+) -> tuple[list[str], str | None, str]:
+    """
+    Return the GUID set a completed dry-run resolved, for execute to act on.
+
+    Preview, dry-run and execute each used to resolve `tag_name` independently,
+    so nothing linked an execute to the dry-run the admin approved: any
+    tag/untag job, metadata sync or second admin in between silently changed the
+    set. For `mode=NO_ACCESS` that meant execute revoking access on objects that
+    were never previewed.
+
+    The dry-run's `Job.parameters["object_guids"]` — resolved once, at dry-run
+    time — is the approved set, and it is the CEILING for the execute:
+
+      - `tag_name` on the execute request is ignored outright; re-resolving it
+        is the bug.
+      - explicit `requested_guids` may only NARROW the set (the admin deselected
+        rows after reviewing the dry-run). A GUID outside the approved set is
+        refused, never shared.
+
+    Everything that identifies *what was approved* must match: cluster, org,
+    mode and the principal set. A READ_ONLY dry-run can never authorise a
+    NO_ACCESS execute.
+
+    Returns `(object_guids, reason, detail)`. `reason` is None on success;
+    otherwise it is one of the `DRYRUN_*` codes and `object_guids` is empty.
+    """
+    from ts_admin.models.job import Job
+
+    with Session(_db.get_engine()) as session:
+        job = session.get(Job, dryrun_job_id)
+        if job is None:
+            return [], DRYRUN_NOT_FOUND, f"Dry-run job {dryrun_job_id!r} not found"
+        job_type = job.job_type
+        job_status = job.status
+        params = job.get_parameters()
+
+    if job_type != DRYRUN_JOB_TYPE:
+        return (
+            [],
+            DRYRUN_WRONG_TYPE,
+            f"Job {dryrun_job_id!r} is a {job_type!r} job, not a share dry-run",
+        )
+    if job_status != "COMPLETE":
+        return (
+            [],
+            DRYRUN_NOT_COMPLETE,
+            f"Dry-run {dryrun_job_id!r} is {job_status} — wait for it to complete before executing",
+        )
+
+    if params.get("cluster_id") != cluster_id or params.get("org_id") != org_id:
+        return (
+            [],
+            DRYRUN_MISMATCH,
+            "The dry-run was run against a different cluster or org",
+        )
+    if params.get("mode") != mode:
+        return (
+            [],
+            DRYRUN_MISMATCH,
+            f"The dry-run approved mode {params.get('mode')!r}, not {mode!r}",
+        )
+    if set(params.get("principal_guids") or []) != set(principal_guids):
+        return (
+            [],
+            DRYRUN_MISMATCH,
+            "The dry-run approved a different set of principals",
+        )
+
+    approved = list(dict.fromkeys(params.get("object_guids") or []))
+    if not approved:
+        return (
+            [],
+            DRYRUN_MISMATCH,
+            f"Dry-run {dryrun_job_id!r} resolved 0 objects — nothing was approved",
+        )
+
+    if requested_guids:
+        approved_set = set(approved)
+        unapproved = [g for g in dict.fromkeys(requested_guids) if g not in approved_set]
+        if unapproved:
+            return (
+                [],
+                DRYRUN_NOT_PREVIEWED,
+                (
+                    f"{len(unapproved)} object(s) are not in dry-run {dryrun_job_id!r} "
+                    f"(first: {unapproved[0]}) — re-run the dry-run"
+                ),
+            )
+        requested_set = set(requested_guids)
+        # Order comes from the dry-run, so the audit trail reads the same way.
+        return [g for g in approved if g in requested_set], None, ""
+
+    return approved, None, ""
+
+
 # ── Dry run ──────────────────────────────────────────────────────────────────
 
 

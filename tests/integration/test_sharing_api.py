@@ -382,3 +382,328 @@ class TestHistory:
         assert items[0]["succeeded"] == 2
         assert items[0]["failed"] == 1
         assert items[0]["status"] == "PARTIAL"
+
+
+class TestExecuteBindsToTheApprovedDryRun:
+    """
+    Preview, dry-run and execute each used to resolve `tag_name` independently,
+    and the dry-run's stored `object_guids` were ignored — so nothing linked an
+    execute to the approval it followed. Any tag/untag job, metadata sync or
+    second admin in between changed the set, and for `mode=NO_ACCESS` execute
+    then REVOKED access on objects that were never previewed.
+    """
+
+    @pytest.fixture
+    def captured_execute(self, monkeypatch):
+        """Capture what execute_share is handed, without running the share."""
+        seen: dict = {}
+
+        async def _capture(**kwargs):
+            seen.update(kwargs)
+
+        from ts_admin.services import bulk_sharing_service as svc
+
+        monkeypatch.setattr(svc, "execute_share", _capture)
+        return seen
+
+    def _dryrun_a_tag(self, client, monkeypatch, mode="NO_ACCESS", tag="finance"):
+        async def _noop(*args, **kwargs):
+            return None
+
+        from ts_admin.services import bulk_sharing_service as svc
+
+        monkeypatch.setattr(svc, "dryrun_share", _noop)
+
+        r = client.post(
+            "/api/v1/sharing/dryrun",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": tag,
+                "principal_guids": ["g-finance"],
+                "mode": mode,
+            },
+        )
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+        # The BG task is stubbed, so complete the job the way a real dry-run would.
+        from ts_admin.services.job_service import mark_complete
+
+        mark_complete(job_id, {"total": 1, "will_change_count": 1})
+        return job_id
+
+    def _tag(self, engine, guid: str, tags: list[str]) -> None:
+        from sqlmodel import select
+
+        with Session(engine) as s:
+            row = s.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == guid)).one()
+            row.tag_names = json.dumps(tags)
+            s.add(row)
+            s.commit()
+
+    def test_execute_ignores_objects_tagged_after_the_dryrun(
+        self,
+        client,
+        seeded,
+        in_memory_db,
+        monkeypatch,
+        captured_execute,
+    ):
+        # Dry-run resolves `finance` → {lb-1}.
+        dryrun_job_id = self._dryrun_a_tag(client, monkeypatch)
+
+        # Someone tags ans-1 `finance` between the dry-run and the execute.
+        self._tag(in_memory_db, "ans-1", ["finance"])
+        from ts_admin.services import bulk_sharing_service as svc
+
+        assert set(svc.resolve_tag_to_guids(cluster_id="c1", org_id=0, tag_name="finance")) == {"lb-1", "ans-1"}
+
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": dryrun_job_id,
+            },
+        )
+        assert r.status_code == 202, r.text
+
+        # ans-1 was never previewed, so it is never handed to the share pipeline.
+        assert captured_execute["object_guids"] == ["lb-1"]
+        assert "ans-1" not in captured_execute["object_guids"]
+        assert r.json()["total"] == 1
+
+    def test_without_a_dryrun_job_id_the_tag_is_still_re_resolved(
+        self,
+        client,
+        seeded,
+        in_memory_db,
+        monkeypatch,
+        captured_execute,
+    ):
+        """Backward compatibility: an old client that sends no dryrun_job_id works."""
+        self._tag(in_memory_db, "ans-1", ["finance"])
+
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "READ_ONLY",
+            },
+        )
+        assert r.status_code == 202, r.text
+        assert sorted(captured_execute["object_guids"]) == ["ans-1", "lb-1"]
+
+    def test_execute_may_narrow_the_approved_set_but_never_widen_it(
+        self,
+        client,
+        seeded,
+        in_memory_db,
+        monkeypatch,
+        captured_execute,
+    ):
+        self._tag(in_memory_db, "ans-1", ["finance"])
+        # Dry-run now approves {lb-1, ans-1}.
+        dryrun_job_id = self._dryrun_a_tag(client, monkeypatch)
+
+        # Admin deselects ans-1 after reading the dry-run — narrowing is allowed.
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "object_guids": ["lb-1"],
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": dryrun_job_id,
+            },
+        )
+        assert r.status_code == 202, r.text
+        assert captured_execute["object_guids"] == ["lb-1"]
+
+        # Naming a GUID the dry-run never covered is refused outright.
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "object_guids": ["lb-1", "lb-never-previewed"],
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": dryrun_job_id,
+            },
+        )
+        assert r.status_code == 409, r.text
+        assert "lb-never-previewed" in r.json()["detail"]
+
+    def test_a_read_only_dryrun_cannot_authorise_a_no_access_execute(
+        self,
+        client,
+        seeded,
+        monkeypatch,
+        captured_execute,
+    ):
+        dryrun_job_id = self._dryrun_a_tag(client, monkeypatch, mode="READ_ONLY")
+
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": dryrun_job_id,
+            },
+        )
+        assert r.status_code == 409, r.text
+        assert "READ_ONLY" in r.json()["detail"]
+        assert captured_execute == {}
+
+    def test_a_different_principal_set_is_refused(self, client, seeded, monkeypatch, captured_execute):
+        dryrun_job_id = self._dryrun_a_tag(client, monkeypatch)
+
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance", "u-bob"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": dryrun_job_id,
+            },
+        )
+        assert r.status_code == 409, r.text
+        assert captured_execute == {}
+
+    def test_an_unfinished_dryrun_cannot_authorise_an_execute(
+        self,
+        client,
+        seeded,
+        monkeypatch,
+        captured_execute,
+    ):
+        async def _noop(*args, **kwargs):
+            return None
+
+        from ts_admin.services import bulk_sharing_service as svc
+
+        monkeypatch.setattr(svc, "dryrun_share", _noop)
+
+        r = client.post(
+            "/api/v1/sharing/dryrun",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+            },
+        )
+        job_id = r.json()["job_id"]  # left QUEUED
+
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": job_id,
+            },
+        )
+        assert r.status_code == 409, r.text
+        assert captured_execute == {}
+
+    def test_an_unknown_dryrun_job_id_is_404_and_writes_nothing(
+        self,
+        client,
+        seeded,
+        captured_execute,
+    ):
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": "no-such-job",
+            },
+        )
+        assert r.status_code == 404, r.text
+        assert captured_execute == {}
+
+    def test_another_features_job_cannot_authorise_a_share(
+        self,
+        client,
+        seeded,
+        in_memory_db,
+        captured_execute,
+    ):
+        from ts_admin.models.job import Job
+
+        job = Job(id="delete-job", cluster_id="c1", job_type="bulk_delete_dryrun", status="COMPLETE")
+        job.set_parameters(
+            {
+                "cluster_id": "c1",
+                "org_id": 0,
+                "object_guids": ["lb-1"],
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+            }
+        )
+        with Session(in_memory_db) as s:
+            s.add(job)
+            s.commit()
+
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": "delete-job",
+            },
+        )
+        assert r.status_code == 422, r.text
+        assert captured_execute == {}
+
+    def test_the_execute_job_records_which_dryrun_authorised_it(
+        self,
+        client,
+        seeded,
+        in_memory_db,
+        monkeypatch,
+        captured_execute,
+    ):
+        from ts_admin.models.job import Job
+
+        dryrun_job_id = self._dryrun_a_tag(client, monkeypatch)
+        r = client.post(
+            "/api/v1/sharing/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "tag_name": "finance",
+                "principal_guids": ["g-finance"],
+                "mode": "NO_ACCESS",
+                "dryrun_job_id": dryrun_job_id,
+            },
+        )
+        assert r.status_code == 202, r.text
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, r.json()["job_id"])
+        assert job.get_parameters()["dryrun_job_id"] == dryrun_job_id
