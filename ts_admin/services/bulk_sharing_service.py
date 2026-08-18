@@ -12,6 +12,11 @@ Pipeline:
   execute_share() — bucket calls by object_type, issue one share_objects
                     request per (type, principal-set, mode) tuple, write a
                     ShareRecord per pair + a single AuditLog at the end.
+
+Both stages resolve the requested GUIDs through `_resolve_object_map`, so they
+operate on the *identical* set: execute never touches an object the preview did
+not show, and a GUID with no cache row is reported as skipped by both rather
+than shared under a guessed object_type.
 """
 
 from __future__ import annotations
@@ -130,6 +135,47 @@ def resolve_tag_to_guids(*, cluster_id: str, org_id: int, tag_name: str) -> list
     return [r.ts_guid for r in rows if tag_name in r.get_tag_names()]
 
 
+# ── Object resolution ─────────────────────────────────────────────────────────
+
+
+def _resolve_object_map(
+    session: Session,
+    *,
+    cluster_id: str,
+    org_id: int,
+    object_guids: list[str],
+) -> tuple[dict[str, CachedMetadata], list[dict]]:
+    """
+    Resolve requested GUIDs against CachedMetadata for `(cluster_id, org_id)`.
+
+    Returns `(obj_map, skipped)` where `skipped` holds one row per GUID with no
+    cache entry for this cluster + org. Such an object has no known
+    `object_type`, and `share_objects` takes exactly one type per call — sharing
+    it under a guessed type would send it in the wrong bucket. It is therefore
+    excluded, and reported, rather than guessed at.
+
+    Preview and execute both go through here so the admin approves exactly the
+    set that gets shared.
+    """
+    objs = session.exec(
+        select(CachedMetadata).where(
+            CachedMetadata.cluster_id == cluster_id,
+            CachedMetadata.org_id == org_id,
+            col(CachedMetadata.ts_guid).in_(object_guids),
+        )
+    ).all()
+    obj_map = {o.ts_guid: o for o in objs}
+    skipped = [
+        {
+            "object_guid": guid,
+            "reason": "Not found in the local metadata cache for this cluster and org",
+        }
+        for guid in dict.fromkeys(object_guids)  # dedupe, keep request order
+        if guid not in obj_map
+    ]
+    return obj_map, skipped
+
+
 # ── Preview ────────────────────────────────────────────────────────────────────
 
 
@@ -149,9 +195,12 @@ async def preview_share(
     Concurrency capped to 10 to avoid hammering the cluster.
 
     Refuses on a non-authoritative metadata cache: `object_guids` are resolved
-    against the cache and any GUID missing from it is silently skipped (`if g in
-    obj_map`), so a truncated cache would quietly drop objects from the preview —
-    and from the share the user then approves.
+    against the cache, so a truncated cache would quietly drop objects from the
+    preview — and from the share the user then approves.
+
+    GUIDs with no cache row are excluded from the rows AND listed under
+    `skipped`, and `execute_share` excludes exactly the same set — the preview
+    is a faithful description of what execute will do.
     """
     from ts_admin.services.sync_status import require_authoritative_metadata
 
@@ -161,14 +210,12 @@ async def preview_share(
     from ts_admin.ts_client import ThoughtSpotClient
 
     with Session(_db.get_engine()) as session:
-        objs = session.exec(
-            select(CachedMetadata).where(
-                CachedMetadata.cluster_id == cluster_id,
-                CachedMetadata.org_id == org_id,
-                col(CachedMetadata.ts_guid).in_(object_guids),
-            )
-        ).all()
-        obj_map = {o.ts_guid: o for o in objs}
+        obj_map, skipped = _resolve_object_map(
+            session,
+            cluster_id=cluster_id,
+            org_id=org_id,
+            object_guids=object_guids,
+        )
 
         # Principal display names for the preview
         user_map = {
@@ -222,7 +269,7 @@ async def preview_share(
     for guid in object_guids:
         obj = obj_map.get(guid)
         if obj is None:
-            continue
+            continue  # already reported in `skipped`; execute drops it too
         for pid in principal_guids:
             previous = current_acl.get((guid, pid), "")
             changing = previous != mode
@@ -252,7 +299,22 @@ async def preview_share(
                 }
             )
 
-    return {"items": rows, "total": len(rows), "will_change_count": will_change}
+    if skipped:
+        logger.warning(
+            "preview_share cluster=%s org=%s: %d of %d GUIDs are not in the metadata cache — excluded",
+            cluster_id,
+            org_id,
+            len(skipped),
+            len(object_guids),
+        )
+
+    return {
+        "items": rows,
+        "total": len(rows),
+        "will_change_count": will_change,
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+    }
 
 
 # ── Dry run ──────────────────────────────────────────────────────────────────
@@ -289,6 +351,10 @@ async def dryrun_share(
             "total": preview["total"],
             "will_change_count": preview["will_change_count"],
             "items": preview["items"][:500],  # cap the stored sample
+            # Surfaced verbatim so the dry-run tells the admin what execute will
+            # NOT touch, instead of leaving the omission to be discovered later.
+            "skipped": preview.get("skipped", []),
+            "skipped_count": preview.get("skipped_count", 0),
         }
         mark_complete(job_id, result)
         logger.info(
@@ -323,6 +389,11 @@ async def execute_share(
     `object_type` read from the cache, so a truncated cache drops objects from
     the share entirely — silently, and for NO_ACCESS revokes that means access
     the admin believes was removed is still live.
+
+    GUIDs with no cache row are excluded — the same set `preview_share` excludes
+    — and reported in `Job.result["skipped"]` plus the audit log. A run with any
+    skipped GUID is PARTIAL, never SUCCESS: the admin asked for something that
+    did not happen.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -348,19 +419,15 @@ async def execute_share(
         mark_failed(job_id, exc)
         return
 
-    total_pairs = len(object_guids) * len(principal_guids)
-    mark_running(job_id, total_pairs)
-
-    # Resolve to display data for ShareRecord
+    # Resolve to display data for ShareRecord — and to the exact set the preview
+    # showed. Anything not in the cache is dropped here, before any live call.
     with Session(_db.get_engine()) as session:
-        objs = session.exec(
-            select(CachedMetadata).where(
-                CachedMetadata.cluster_id == cluster_id,
-                CachedMetadata.org_id == org_id,
-                col(CachedMetadata.ts_guid).in_(object_guids),
-            )
-        ).all()
-        obj_map = {o.ts_guid: o for o in objs}
+        obj_map, skipped = _resolve_object_map(
+            session,
+            cluster_id=cluster_id,
+            org_id=org_id,
+            object_guids=object_guids,
+        )
         users = session.exec(
             select(CachedUser).where(
                 CachedUser.cluster_id == cluster_id,
@@ -389,6 +456,26 @@ async def execute_share(
     for pid in principal_guids:
         principal_meta.setdefault(pid, {"name": pid, "type": "USER"})
 
+    # The resolved set — identical to the preview rows' object_guids.
+    resolved_guids = [guid for guid in object_guids if guid in obj_map]
+    requested_pairs = len(object_guids) * len(principal_guids)
+    total_pairs = len(resolved_guids) * len(principal_guids)
+    mark_running(job_id, total_pairs)
+
+    if skipped:
+        logger.warning(
+            "execute_share job=%s: %d of %d GUIDs are not in the metadata cache — excluded from the share",
+            job_id,
+            len(skipped),
+            len(object_guids),
+        )
+    if not resolved_guids:
+        mark_failed(
+            job_id,
+            f"0 of {len(object_guids)} objects resolved in the metadata cache — nothing was shared",
+        )
+        return
+
     succeeded_pairs = 0
     failed_records: list[dict] = []
     cancelled = False
@@ -401,11 +488,12 @@ async def execute_share(
 
     try:
         cluster = _get_cluster(cluster_id)
-        # Bucket objects by type — one share_objects call per (type, principals, mode)
+        # Bucket objects by type — one share_objects call per (type, principals,
+        # mode). Types come from the cache only; there is no fallback type,
+        # because guessing would send e.g. an ANSWER inside a LIVEBOARD call.
         type_groups: dict[str, list[str]] = {}
-        for guid in object_guids:
-            t = obj_map.get(guid).object_type if guid in obj_map else "LIVEBOARD"
-            type_groups.setdefault(t, []).append(guid)
+        for guid in resolved_guids:
+            type_groups.setdefault(obj_map[guid].object_type, []).append(guid)
 
         async with ThoughtSpotClient(
             url=cluster.url,
@@ -431,7 +519,6 @@ async def execute_share(
                         with Session(_db.get_engine()) as session:
                             for guid in chunk:
                                 for pid in principal_guids:
-                                    obj = obj_map.get(guid)
                                     meta = principal_meta.get(pid, {"name": pid, "type": "USER"})
                                     session.add(
                                         ShareRecord(
@@ -439,7 +526,7 @@ async def execute_share(
                                             job_id=job_id,
                                             org_id=org_id,
                                             object_guid=guid,
-                                            object_name=obj.name if obj else "",
+                                            object_name=obj_map[guid].name,
                                             object_type=obj_type,
                                             principal_guid=pid,
                                             principal_name=meta["name"],
@@ -455,7 +542,6 @@ async def execute_share(
                         with Session(_db.get_engine()) as session:
                             for guid in chunk:
                                 for pid in principal_guids:
-                                    obj = obj_map.get(guid)
                                     meta = principal_meta.get(pid, {"name": pid, "type": "USER"})
                                     session.add(
                                         ShareRecord(
@@ -463,7 +549,7 @@ async def execute_share(
                                             job_id=job_id,
                                             org_id=org_id,
                                             object_guid=guid,
-                                            object_name=obj.name if obj else "",
+                                            object_name=obj_map[guid].name,
                                             object_type=obj_type,
                                             principal_guid=pid,
                                             principal_name=meta["name"],
@@ -476,7 +562,9 @@ async def execute_share(
                             session.commit()
                     update_progress(job_id, succeeded_pairs)
 
-        status = "PARTIAL" if (failed_records or cancelled) else "SUCCESS"
+        # A skipped GUID means the admin asked for something that did not happen,
+        # so the job can never report a clean SUCCESS.
+        status = "PARTIAL" if (failed_records or cancelled or skipped) else "SUCCESS"
         with Session(_db.get_engine()) as session:
             audit = AuditLog(
                 cluster_id=cluster_id,
@@ -493,7 +581,9 @@ async def execute_share(
                     "notify": notify,
                     "succeeded_pairs": succeeded_pairs,
                     "total_pairs": total_pairs,
+                    "requested_pairs": requested_pairs,
                     "failed": failed_records,
+                    "skipped": skipped,
                     "cancelled": cancelled,
                 }
             )
@@ -504,6 +594,9 @@ async def execute_share(
             "succeeded_pairs": succeeded_pairs,
             "failed_pairs": total_pairs - succeeded_pairs,
             "total_pairs": total_pairs,
+            "requested_pairs": requested_pairs,
+            "skipped": skipped,
+            "skipped_count": len(skipped),
             "cancelled": cancelled,
         }
         if status == "PARTIAL":
@@ -513,11 +606,12 @@ async def execute_share(
         else:
             mark_complete(job_id, result)
         logger.info(
-            "bulk_share job=%s cluster=%s succeeded=%d failed=%d cancelled=%s",
+            "bulk_share job=%s cluster=%s succeeded=%d failed=%d skipped=%d cancelled=%s",
             job_id,
             cluster_id,
             succeeded_pairs,
             total_pairs - succeeded_pairs,
+            len(skipped),
             cancelled,
         )
     except Exception as exc:
