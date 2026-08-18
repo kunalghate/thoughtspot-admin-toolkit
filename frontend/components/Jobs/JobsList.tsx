@@ -56,14 +56,27 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     headerName: "Status",
     width: 120,
     sortable: true,
-    cellRenderer: (p: { value: JobStatus }) => {
-      const c = STATUS_COLORS[p.value] ?? { bg: theme.color.surface3, fg: theme.color.textSecondary };
+    cellRenderer: (p: { value: JobStatus; data?: Job }) => {
+      // A cancelled job is RUNNING with `is_cancelled` true until the in-flight
+      // ThoughtSpot call returns, then lands PARTIAL — which is the same status
+      // a half-failed run gets. Without this the admin cannot tell "I stopped
+      // this" from "this went wrong", and sees a stale RUNNING pill in between.
+      const cancelled = p.data?.is_cancelled === true;
+      const label = cancelled
+        ? (p.value === "RUNNING" || p.value === "QUEUED" || p.value === "PENDING" ? "CANCELLING" : "CANCELLED")
+        : p.value;
+      const c = cancelled
+        ? { bg: theme.color.surface3, fg: theme.color.textSecondary }
+        : STATUS_COLORS[p.value] ?? { bg: theme.color.surface3, fg: theme.color.textSecondary };
       return (
-        <span style={{
-          padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
-          fontFamily: theme.font.sans, letterSpacing: "0.02em",
-          background: c.bg, color: c.fg,
-        }}>{p.value}</span>
+        <span
+          title={cancelled ? `Cancelled by an admin — job status ${p.value}` : undefined}
+          style={{
+            padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+            fontFamily: theme.font.sans, letterSpacing: "0.02em",
+            background: c.bg, color: c.fg,
+          }}
+        >{label}</span>
       );
     },
   },

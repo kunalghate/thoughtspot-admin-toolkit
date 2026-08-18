@@ -743,6 +743,20 @@ export const sharingApi = {
     principal_guids: string[];
     mode: SharePermissionMode;
     notify?: boolean;
+    /**
+     * `job_id` of a completed `/sharing/dryrun`. When present the server acts on
+     * the GUID set that dry-run resolved and IGNORES `tag_name`, so a tag whose
+     * membership changed between approval and execution cannot widen the write.
+     * The approved set is a ceiling: `object_guids` may narrow it, but a GUID
+     * outside it is a 409.
+     *
+     * The share modal does not send this today and does not need to — it always
+     * passes explicit `object_guids` from the grid selection and never a
+     * `tag_name`, so it has nothing to re-resolve. This exists for tag-based
+     * callers; wiring the modal to it would mean replacing its live `preview`
+     * with a polled dry-run job, which is a UX change, not a bug fix.
+     */
+    dryrun_job_id?: string;
   }) =>
     request<{ job_id: string; total: number }>("/sharing/execute", {
       method: "POST", body: JSON.stringify(body),

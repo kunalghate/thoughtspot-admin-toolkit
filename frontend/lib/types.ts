@@ -53,6 +53,10 @@ export interface Job {
   error: string | null;
   error_type: string | null;
   error_traceback: string | null;
+  /** Cancellation was requested. Flips before the job stops — the crawl loops
+   *  check it at page/chunk boundaries, so a cancelled job is RUNNING with this
+   *  true until the in-flight call to ThoughtSpot returns, then lands PARTIAL. */
+  is_cancelled: boolean;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
