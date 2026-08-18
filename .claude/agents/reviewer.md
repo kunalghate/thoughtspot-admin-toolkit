@@ -42,6 +42,24 @@ Use `Bash` read-only to trace and reproduce reasoning — but **do not run the
 port-binding gates** (`make dev`, Playwright, uvicorn). QA owns those; running them
 in parallel collides on ports 8000/3000.
 
+## Test vacuity (check this on every diff that adds or changes a test)
+
+A green test is not evidence until you know it can go red. For each test the
+diff touches, ask:
+
+1. **Would it fail if the fix were reverted?** If you cannot say which line's
+   deletion turns it red, say so — that is a finding.
+2. **Is it placed on a path that rebuilds what it guards?** A "spares X" test on
+   a code path that delete-alls and re-inserts X is vacuous (this is M4).
+3. **Does its fixture describe a state a real writer can produce?** Measured: a
+   dashboard delta test passed for months by hand-inserting two `sync_log`
+   rows — a shape no writer in the codebase can create, because the writer
+   upserts one row per key. The field it "covered" was always 0 in production.
+   Drive the real writer instead of hand-seeding its output.
+4. **Would it survive the environment CI actually runs in?** CI runs `TZ=UTC`,
+   which silently disarms every timezone assertion. A test that only holds
+   under one timezone must pin the timezone itself.
+
 ## Memory-worthy hand-back
 
 End with **Memory-worthy**: any durable gotcha worth recording in

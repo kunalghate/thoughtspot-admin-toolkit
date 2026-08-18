@@ -30,6 +30,34 @@ the sharing flow, the lineage cache) through a single **lens**.
   blocking I/O in async paths, missing pagination, redundant DB round-trips,
   frontend bundle/asset weight.
 
+## Cross-cutting checks (apply within whatever lens you were given)
+
+These are classes of bug this org has shipped to production and missed in
+review. Run them against your hunting ground before you report it clean.
+
+- **Third-party contracts.** When our code short-circuits inside a callback a
+  library gave us — an early `return` in an AG Grid `getRows`, a `useEffect`
+  cleanup, an async iterator — check what the LIBRARY requires before deciding
+  the guard is correct. Measured: the superseded-datasource guard on three
+  grids returned without calling `successCallback` **or** `failCallback`; AG
+  Grid's block loader only frees a concurrency slot when the block completes
+  either way, so after two superseded loads the grid stopped fetching entirely
+  and sorting was dead. Reading only our code, the guard looks right — a
+  previous hunt graded those exact files "clean".
+- **Fields that are structurally always the same value.** Trace a payload field
+  back to its WRITER, not just its reader. Measured: every dashboard sync delta
+  was 0 because `sync_log` upserts one row per key and the delta needed two.
+- **Timestamps.** Backend datetimes cross the wire naive-UTC (SQLite drops
+  tzinfo). `new Date(iso)` parses that as LOCAL. CI runs `TZ=UTC`, which makes
+  every such bug invisible to the gates. Measured: a job that finished a minute
+  ago rendered "-1d ago" in eight places.
+- **Preview vs. execute.** Anywhere a destructive feature resolves its input set
+  twice, check the two paths resolve identically. Measured: bulk share
+  previewed 1 object and shared 2.
+- **Responses treated as if they were the request.** Iterating a ThoughtSpot
+  bulk response and assuming it covers every requested id silently drops the
+  ones it omits — and live clusters DO omit them.
+
 ## Every finding needs
 
 - A concrete **failure scenario**: inputs/state → wrong result or crash, with

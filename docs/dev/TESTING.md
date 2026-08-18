@@ -173,3 +173,50 @@ missing coverage before commit.
 If you intentionally relax one of the four guard tests, leave a comment on
 the changed line citing the reason and the issue/PR. Reviewers should treat a
 weakened guard the same as a security review.
+
+## A green test is not evidence until you know it can go red
+
+Four ways a test in this repo has been vacuous in production. Check all four
+before you count a test as coverage.
+
+**1. It never asserts the predicate it guards.** A "spares X" test placed on a
+code path that delete-alls and re-inserts X passes with its entire predicate
+deleted. Falsify every guard test by deleting the thing it guards and watching
+it fail. (This is backlog row M4.)
+
+**2. Its fixture is a state no writer can produce.** A dashboard test asserted a
+`record_count` trend by hand-inserting two `sync_log` rows. No writer in the
+codebase can create that shape — `_write_sync_log` upserts a single row per
+`(cluster_id, org_id, entity_type)` — so the field it "covered" was
+structurally `0` in production for the life of the feature, behind a green
+test. **Drive the real writer** and assert on what it leaves behind; do not
+hand-seed its output.
+
+**3. It runs in an environment that disarms it.** CI runs `TZ=UTC`. Under UTC a
+naive-UTC timestamp parses to the same instant with or without a `Z`, so every
+timezone assertion passes with the bug present. `frontend/vitest.config.mts`
+pins `TZ=America/New_York` at config-module scope for exactly this reason — it
+must be set before the worker pool forks. A test whose subject is a timestamp
+must pin its own timezone.
+
+**4. It patches a name the code no longer reads.** A module-level dispatch dict
+binds function objects at import time, so `monkeypatch.setattr(module,
+"_handler", ...)` swaps the module attribute while the dict still points at the
+original — the test then silently exercises the real handler. Measured: hoisting
+`run_sync`'s handler dict to a constant broke 4 tests this way. Dispatch tables
+that tests patch must be built per call (`sync_service.sync_handlers()`).
+
+## Timestamps
+
+Backend datetimes reach the browser **naive-UTC**: the models set
+`datetime.now(timezone.utc)`, SQLite drops the tzinfo on read, and FastAPI
+serializes with no `Z` and no offset. ECMAScript parses a date-time with no
+offset as **local**, so `new Date(iso)` is wrong by the viewer's UTC offset —
+west of Greenwich that puts recent timestamps in the future. Always parse
+through `parseUtc` in `frontend/lib/utils.ts`, and format through `formatDate` /
+`formatRelative` / `formatAbsolute` / `formatDay`, which are built on it.
+
+On the Python side, assert timestamps read back from SQLite against naive UTC
+(`datetime.now(tz=timezone.utc).replace(tzinfo=None)`), never against
+`datetime.now()` — the latter passes in the Americas and fails east of
+Greenwich.
