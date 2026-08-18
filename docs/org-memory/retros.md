@@ -137,3 +137,26 @@ One line per cycle on process friction. Format:
   regression lens had not caught it. Conflict-avoidance is not a safety constraint
   and must yield to one; I lifted it mid-cycle. No process row filed — the rule was
   mine for this cycle, not a standing one.
+
+- **S33 — Topbar sync-label coverage (2026-08-18).** The agent briefs caused no
+  friction; the department pipeline worked. Two things are worth carrying forward.
+  **(1) M8 is environmental, not hypothetical.** A concurrent writer modified two
+  unrelated files in the shared checkout mid-cycle AND ran `npm run build` in it,
+  taking both dev servers down and making any gate run in the shared tree
+  untrustworthy. Isolating QA and both review lenses into `--detach` worktrees is
+  what kept the evidence honest; that should be the DEFAULT recipe in the agent
+  briefs, not a per-cycle improvisation I remembered to specify.
+  **(2) M5 landed on the CEO's own work.** The cycle's product change was a UI fix
+  I wrote before dispatching, on a wrong initial diagnosis (I read a literal `…` in
+  the label as CSS truncation). A fully green five-gate bar — ruff, 313+152 pytest,
+  tsc, build, 30 vitest — said nothing about a header that renders two overlapping
+  unreadable strings. Only the review board caught it, and only because one lens
+  built a CSS replica and MEASURED rather than reasoned. Two lessons: a visual
+  change needs a visual verification artifact, and the CEO writing product code
+  before the pipeline runs means the riskiest diff in the cycle is the one no
+  researcher or architect ever looked at.
+  **(3) A spec can be confidently wrong.** I told the implementer to add
+  `overflow: hidden` as "belt-and-braces"; it measured that this zeroes
+  `min-width: auto` (Flexbox §4.5) and reproduces the exact bug, and pushed back
+  with numbers. The deviation was right. Briefs should ask for the invariant and
+  the measurement, not prescribe the CSS property.
