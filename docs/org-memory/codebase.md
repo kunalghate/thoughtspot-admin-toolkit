@@ -530,3 +530,36 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   sustained 30s export timeouts and retry backoff. Not corrupting — each pass is a
   full delete-and-rebuild scoped to (cluster, org), so last writer wins with a
   complete set — but it is self-inflicted load. Filed as S34.
+
+## ThoughtSpot REST v2 — facts established against the official reference
+
+Established 2026-08-18 by querying the ThoughtSpot REST API v2 reference
+(SpotterCode MCP) and confirming against a live cluster — not from training
+data, and not by reading our own client back to ourselves. Re-check with the
+same tool rather than assuming these still hold.
+
+- **A bearer token's org context is fixed at creation time and cannot be
+  re-scoped per request.** `auth/token/full` returns `scope: {access_type,
+  org_id}`; `auth/token/object`'s request documents `org_id` as "ID of the Org
+  context to log in to … if the Org ID is not specified and secret key is
+  provided then user will be logged into the org corresponding to the secret
+  key, and if secret key is not provided then user will be logged in to the Org
+  context of their previous login session." Consequence for us: `BearerTokenAuth`
+  dropping `org_id` (S37) is NOT fixable by adding an `org_id` field — the token
+  is what it is, and minting a new one needs username+password or a secret key,
+  the very credentials bearer auth exists to avoid.
+- **The org a session is really operating in IS observable, for every auth
+  type.** `GET /api/rest/2.0/auth/session/user` returns `current_org: {id,
+  name}` alongside the user's `orgs` list. Measured live on se-demo:
+  `current_org = {id: 0, name: "Primary"}` with ~190 orgs listed. This is the
+  mechanism for an auth-type-agnostic org guard (S42).
+- **`GET /api/rest/2.0/auth/session/token` does NOT carry an org scope.**
+  Measured live: it returns `token`, `creation_time_in_millis`,
+  `expiration_time_in_millis`, `valid_for_user_id`, `valid_for_username` — no
+  `scope` object, despite `scope` appearing in the token-*creation* responses.
+  So token introspection is not a route to "which org is this token for".
+- **Caveat on `orgs` vs `current_org`:** the reference warns that a user with
+  cluster administration privileges can access all Orgs, but the `orgs` list in
+  the session response includes only the Primary Org unless the admin was
+  explicitly added to each Org. Any org check must read `current_org`, never
+  membership.
