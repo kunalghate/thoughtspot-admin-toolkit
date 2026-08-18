@@ -210,7 +210,15 @@ async def get_permissions(
             detail=f"Metadata object {ts_guid!r} not found in cache. Sync first.",
         )
 
-    cluster = config.active_cluster
+    # The cluster the CALLER asked for, not whichever one config happens to have
+    # marked active. This is the only endpoint that took a `cluster_id`, scoped
+    # its cache read by it, and then made the live call against a different
+    # cluster — see the note in frontend/lib/api.ts: the shell can be displaying
+    # one cluster while another is active in config.
+    cluster = config.clusters.get(cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail=f"Unknown cluster {cluster_id!r}.")
+
     # Org context comes from the auth token — without org_id, objects living in
     # a non-default org 400 with "invalid parameters" on fetch-permissions.
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:

@@ -232,14 +232,16 @@ class TestGetPermissions:
         """Patch load_config + ThoughtSpotClient; record the org_id the auth was built for."""
         from types import SimpleNamespace
 
-        calls = SimpleNamespace(auth_org_ids=[], fetch_kwargs=[])
+        calls = SimpleNamespace(auth_org_ids=[], auth_cluster_ids=[], fetch_kwargs=[])
 
         class FakeCluster:
-            id = "c1"
-            url = "https://prod.thoughtspot.cloud"
+            def __init__(self, cluster_id, url):
+                self.id = cluster_id
+                self.url = url
 
             def build_auth_strategy(self, org_id=None):
                 calls.auth_org_ids.append(org_id)
+                calls.auth_cluster_ids.append(self.id)
                 return object()
 
         class FakeClient:
@@ -266,7 +268,16 @@ class TestGetPermissions:
         import ts_admin.config as config_module
         import ts_admin.ts_client as ts_client_module
 
-        monkeypatch.setattr(config_module, "load_config", lambda: SimpleNamespace(active_cluster=FakeCluster()))
+        # Two configured clusters, and the ACTIVE one is deliberately not the one
+        # the tests below ask for — the shell can be displaying one cluster while
+        # another is marked active in config.
+        c1 = FakeCluster("c1", "https://prod.thoughtspot.cloud")
+        other = FakeCluster("other", "https://other.thoughtspot.cloud")
+        monkeypatch.setattr(
+            config_module,
+            "load_config",
+            lambda: SimpleNamespace(active_cluster=other, clusters={"c1": c1, "other": other}),
+        )
         monkeypatch.setattr(ts_client_module, "ThoughtSpotClient", FakeClient)
         return calls
 
@@ -310,6 +321,24 @@ class TestGetPermissions:
         r = client.get("/api/v1/metadata/tbl-42/permissions?cluster_id=c1&org_id=42")
         assert r.status_code == 200
         assert fake_ts.auth_org_ids == [42]
+
+    def test_live_call_goes_to_the_requested_cluster_not_the_active_one(self, client, seeded, fake_ts):
+        """
+        This endpoint scoped its CACHE read by `cluster_id` and then built the
+        LIVE client from `config.active_cluster` — the only endpoint in the app
+        that took a cluster_id and then talked to a different cluster. The shell
+        can be displaying one cluster while another is active in config (see
+        lib/api.ts), so the permissions drawer could report another instance's
+        ACL for the object on screen.
+        """
+        r = client.get("/api/v1/metadata/lb-1/permissions?cluster_id=c1&org_id=0")
+        assert r.status_code == 200, r.text
+        assert fake_ts.auth_cluster_ids == ["c1"]
+
+    def test_unknown_cluster_is_a_404_not_a_silent_fallback(self, client, seeded, fake_ts):
+        r = client.get("/api/v1/metadata/lb-1/permissions?cluster_id=nope&org_id=0")
+        assert r.status_code == 404
+        assert fake_ts.auth_cluster_ids == []
 
     def test_404_if_not_in_cache(self, client, seeded, fake_ts):
         r = client.get("/api/v1/metadata/nope/permissions?cluster_id=c1&org_id=0")
