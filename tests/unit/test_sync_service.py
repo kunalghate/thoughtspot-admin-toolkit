@@ -923,3 +923,34 @@ async def test_run_sync_rejects_an_unknown_cluster_id(monkeypatch, in_memory_db,
     assert called is False
     status, _ = _job_status(job_id)
     assert status == "FAILED"
+
+
+def test_sync_log_keeps_no_history_so_there_is_no_record_count_trend(in_memory_db, patched_config):
+    """
+    `sync_log` is a CURRENT-STATE table, not a time series.
+
+    Every writer upserts the single (cluster_id, org_id, entity_type) row and
+    none append, so "the two most recent successful syncs" is never two rows.
+    `dashboard_service` used to diff exactly that and therefore reported a delta
+    of 0 unconditionally — the Dashboard's trend indicator never rendered once.
+    The dead field is gone; this test is why it cannot come back as a second
+    query. Restoring it needs a stored previous count, not more SELECTs.
+
+    (The bound also matters on its own: `sync_log` has only single-column
+    indexes, which is acceptable only because it stays clusters x orgs x
+    entities in size.)
+    """
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+    from ts_admin.services.sync_service import _write_sync_log
+
+    for count in (356, 360, 411):
+        _write_sync_log("users", 0, status="SUCCESS", record_count=count, cluster_id=CLUSTER_ID)
+
+    with get_session() as session:
+        rows = session.exec(select(SyncLog).where(SyncLog.entity_type == "users")).all()
+
+    assert len(rows) == 1, "a writer started appending — sync_log is no longer bounded"
+    assert rows[0].record_count == 411  # anti-vacuity: the writes DID happen
