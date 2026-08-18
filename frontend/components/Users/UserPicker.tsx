@@ -106,6 +106,7 @@ export function UserPicker({
             style={{
               flex: 1, fontSize: 13, fontFamily: theme.font.sans,
               border: "none", outline: "none", background: "transparent",
+              color: theme.color.textPrimary,
             }}
           />
         </div>

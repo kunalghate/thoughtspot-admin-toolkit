@@ -81,7 +81,12 @@ class MetadataType(StrEnum):
     ONE_TO_ONE_LOGICAL = "ONE_TO_ONE_LOGICAL"  # subtype: physical table
     AGGR_WORKSHEET = "AGGR_WORKSHEET"  # subtype: materialized view / agg worksheet
     SQL_VIEW = "SQL_VIEW"  # subtype: SQL view
-    USER_DEFINED = "USER_DEFINED"  # subtype: user-defined data source
+    USER_DEFINED = "USER_DEFINED"  # subtype: user-defined data source (CSV/Excel upload)
+    # Not a ThoughtSpot API type. An Analyst Studio dataset is an ONE_TO_ONE_LOGICAL
+    # table whose connection reports dataSourceTypeEnum == RDBMS_MODE (Analyst Studio
+    # is built on Mode). The API exposes no subtype for it, so search_metadata()
+    # derives this effective type and we store it like any other.
+    DATASET = "DATASET"
 
 
 class UserStatus(StrEnum):
@@ -133,6 +138,9 @@ class TSGroup(TSBaseModel):
     privileges: list[str] = Field(default_factory=list)
     member_users: list[str] = Field(default_factory=list)
     sub_groups: list[str] = Field(default_factory=list)
+    # GUID of the user who created the group. groups/search returns it as
+    # `author_id`; the ThoughtSpot UI does not surface it anywhere.
+    author_id: str = Field(default="")
     created: datetime | None = None
     modified: datetime | None = None
 

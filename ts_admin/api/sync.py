@@ -37,23 +37,43 @@ class SyncTriggeredResponse(BaseModel):
     job_id: str
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+def _resolve_cluster_id(cluster_id: str | None) -> str:
+    """The caller's cluster, falling back to the active one.
+
+    Mirrors ``users.py::_resolve_cluster_id`` — cluster identity lives in config
+    while callers address clusters by id, so the id is taken at face value here.
+    An id that names no configured cluster is caught by ``run_sync``, which fails
+    the job rather than syncing the wrong cluster.
+    """
+    from ts_admin.config import load_config
+
+    if cluster_id:
+        return cluster_id
+    return load_config().active_cluster.id
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 
 @router.get("", response_model=list[EntitySyncStatus])
-async def get_sync_status(org_id: int = 0) -> list[EntitySyncStatus]:
+async def get_sync_status(org_id: int = 0, cluster_id: str | None = None) -> list[EntitySyncStatus]:
     """
-    Return the sync status for every entity type for the active cluster + org.
+    Return the sync status for every entity type for a cluster + org.
     Used by the Settings → Sync page and the per-page sync indicators.
+
+    ``cluster_id`` defaults to the active cluster, but callers should send the
+    cluster they are actually displaying — the UI can be pointed at one cluster
+    while another is marked active.
     """
     from sqlmodel import select
 
-    from ts_admin.config import load_config
     from ts_admin.database import get_session
     from ts_admin.models.sync_log import SyncLog
 
-    config = load_config()
-    cluster_id = config.active_cluster.id
+    cluster_id = _resolve_cluster_id(cluster_id)
     now = datetime.now(timezone.utc)
 
     with get_session() as session:
@@ -88,6 +108,7 @@ async def trigger_sync(
     entity_type: str,
     background_tasks: BackgroundTasks,
     org_id: int = 0,
+    cluster_id: str | None = None,
 ) -> SyncTriggeredResponse:
     """
     Trigger a background sync for a specific entity type.
@@ -102,15 +123,18 @@ async def trigger_sync(
     from ts_admin.services.job_service import create_job
     from ts_admin.services.sync_service import run_sync
 
+    cluster_id = _resolve_cluster_id(cluster_id)
+
     job_id = create_job(
         job_type=f"sync:{entity_type}",
         parameters={
             "entity_type": entity_type,
             "org_id": org_id,
+            "cluster_id": cluster_id,
         },
     )
 
-    background_tasks.add_task(run_sync, entity_type=entity_type, org_id=org_id, job_id=job_id)
+    background_tasks.add_task(run_sync, entity_type=entity_type, org_id=org_id, job_id=job_id, cluster_id=cluster_id)
 
     return SyncTriggeredResponse(entity_type=entity_type, job_id=job_id)
 
@@ -119,11 +143,13 @@ async def trigger_sync(
 async def trigger_sync_all(
     background_tasks: BackgroundTasks,
     org_id: int = 0,
+    cluster_id: str | None = None,
 ) -> list[SyncTriggeredResponse]:
     """Trigger sync for all standard entities (excludes permissions — too heavy)."""
     from ts_admin.services.job_service import create_job
     from ts_admin.services.sync_service import run_sync
 
+    cluster_id = _resolve_cluster_id(cluster_id)
     standard_entities = {"users", "groups", "metadata", "tags", "orgs"}
     results = []
 
@@ -133,9 +159,10 @@ async def trigger_sync_all(
             parameters={
                 "entity_type": entity,
                 "org_id": org_id,
+                "cluster_id": cluster_id,
             },
         )
-        background_tasks.add_task(run_sync, entity_type=entity, org_id=org_id, job_id=job_id)
+        background_tasks.add_task(run_sync, entity_type=entity, org_id=org_id, job_id=job_id, cluster_id=cluster_id)
         results.append(SyncTriggeredResponse(entity_type=entity, job_id=job_id))
 
     return results

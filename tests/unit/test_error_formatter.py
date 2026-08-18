@@ -44,7 +44,7 @@ from ts_admin.ts_client.exceptions import (
         (TMLValidationError(["bad column"]), "TML validation", "TMLValidationError"),
         (TMLConflictError("dupe"), "TML import conflict", "TMLConflictError"),
         (KeyringError("locked"), "keychain", "KeyringError"),
-        (ConfigNotFoundError("no config"), "No ThoughtSpot cluster", "ConfigNotFoundError"),
+        (ConfigNotFoundError("no config"), "No ThoughtSpot instance", "ConfigNotFoundError"),
         (ConfigInvalidError("bad config"), "configuration is invalid", "ConfigInvalidError"),
         (JobInterruptedError("j1", 5, 10), "interrupted", "JobInterruptedError"),
         (StaleCacheError("metadata", "IN_PROGRESS"), "cache is incomplete", "StaleCacheError"),

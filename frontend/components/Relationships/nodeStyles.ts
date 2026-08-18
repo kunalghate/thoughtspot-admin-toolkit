@@ -43,13 +43,15 @@ export function styleFor(nodeType: string): NodeStyle {
 export function rootKindFor(nodeType: string): RootKind {
   if (nodeType === "ANSWER") return "answer";
   if (nodeType === "LIVEBOARD") return "liveboard";
+  if (nodeType === "CONNECTION") return "connection";
   return "model";
 }
 
-export type ExplorerTab = "logical_tables" | "answers" | "liveboards";
+export type ExplorerTab = "logical_tables" | "answers" | "liveboards" | "connections";
 
 export function tabForNodeType(nodeType: string): ExplorerTab {
   if (nodeType === "ANSWER") return "answers";
   if (nodeType === "LIVEBOARD") return "liveboards";
+  if (nodeType === "CONNECTION") return "connections";
   return "logical_tables";
 }

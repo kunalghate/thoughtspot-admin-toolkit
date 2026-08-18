@@ -56,10 +56,17 @@ class TSInsufficientPrivilegesError(TSAdminError):
 class TSObjectNotFoundError(TSAdminError):
     """The requested ThoughtSpot object does not exist (HTTP 404)."""
 
-    def __init__(self, object_type: str, identifier: str) -> None:
+    def __init__(self, object_type: str, identifier: str, detail: str = "") -> None:
         self.object_type = object_type
         self.identifier = identifier
-        super().__init__(f"{object_type} not found: {identifier!r}")
+        # ThoughtSpot puts the *reason* for a 404 in the response body (an unknown
+        # org identifier, a missing GUID). Without it a support bundle only shows
+        # the path, which is never enough to tell those apart.
+        self.detail = detail
+        msg = f"{object_type} not found: {identifier!r}"
+        if detail:
+            msg = f"{msg} — {detail}"
+        super().__init__(msg)
 
 
 class TSRateLimitError(TSAdminError):

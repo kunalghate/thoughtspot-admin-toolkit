@@ -3,6 +3,7 @@ import React from "react";
 import type { MetadataObject } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 import { theme } from "@/lib/theme";
+import { TYPE_LABELS } from "@/lib/objectTypes";
 
 // ── Type chip styling (shared with Archiver) ─────────────────────────────
 const TYPE_COLORS: Record<string, { bg: string; fg: string }> = {
@@ -102,17 +103,7 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
   },
 ];
 
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD:          "Liveboard",
-  ANSWER:             "Answer",
-  LOGICAL_TABLE:      "Worksheet",      // legacy cached records
-  WORKSHEET:          "Worksheet",
-  ONE_TO_ONE_LOGICAL: "Table",
-  AGGR_WORKSHEET:     "Agg Worksheet",
-  SQL_VIEW:           "SQL View",
-  USER_DEFINED:       "User Defined",
-};
 
-const DATA_OBJECT_TYPES = new Set(["WORKSHEET", "ONE_TO_ONE_LOGICAL", "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED", "LOGICAL_TABLE"]);
+const DATA_OBJECT_TYPES = new Set(["WORKSHEET", "ONE_TO_ONE_LOGICAL", "DATASET", "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED", "LOGICAL_TABLE"]);
 const isDataObject = (type: string | undefined) => !!type && DATA_OBJECT_TYPES.has(type);
 

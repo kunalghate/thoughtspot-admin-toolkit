@@ -379,3 +379,79 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   **not** isolate a scratch script from the live cluster (credentials resolve via
   `config.py`/keyring) — one agent unintentionally issued ~9 read calls against the
   user's production cluster that way. Use the repo's `patched_config` fixture.
+
+## TML export is all-or-nothing (live, 2026-08-18)
+
+- 2026-08-18 (live): **`metadata/tml/export` has no per-object status and no skip
+  flag** — confirmed against the `exportMetadataTML` spec. One un-exportable object
+  fails the whole request, so bisecting the batch is the only way to salvage it.
+  `lineage_service._export_tml_resilient` halves a failing chunk until the offender
+  is isolated to a batch of one, records it, and skips it. Auth/privilege errors are
+  deliberately **not** caught (whole-cluster conditions — bisecting just repeats the
+  same failure per object), and `TML_EXPORT_FAILURE_BUDGET` stops the bisect when a
+  cluster is failing wholesale.
+- 2026-08-18 (live): **Two poison shapes exist on real clusters**, both observed:
+  500 `{"debug": "[\"No value present\"]"}` (server can't serialize the object) and
+  400 `Invalid parameter values: metadata_identifiers` (a GUID the metadata cache
+  holds that TS no longer accepts). 43 on se-demo, 36 inaccessible stubs on
+  ps-internal-prod. A cluster of any size WILL have these — treat a clean run as the
+  exception, not the norm.
+- 2026-08-18 (live): the same all-or-nothing flaw was present in
+  `build_answer_index`; it now uses the same resilient export.
+
+## Connections are never metadata rows (live, 2026-08-18)
+
+- 2026-08-18 (live): **Connections do not exist in `ts_metadata`.** They come from
+  TML `connection.fqn`/`.name`, not the metadata API, so their only identity is the
+  denormalized `target_guid`/`target_name` on a CONNECTS edge. Consequences, all
+  live in `lineage_service`: `get_topology` builds its `connections` group from
+  distinct CONNECTS endpoints; `get_lineage_graph` falls back to that edge when the
+  root has no `CachedMetadata` row; `_enrich_from_metadata` exempts CONNECTIONs from
+  the accessible check. Do NOT "fix" this by syncing connections into `ts_metadata`
+  — that table feeds Metadata Explorer counts, archiver, and sharing.
+- 2026-08-18 (live): the fallback must stay narrow — a GUID that is neither an object
+  nor a CONNECTS target must still 404, or every bad GUID renders an empty graph.
+  Guarded by `test_a_guid_that_is_neither_object_nor_connection_is_still_404`.
+
+## TML kind → object type (live, 2026-08-18)
+
+- 2026-08-18 (live): **TML `view` is a ThoughtSpot View (`AGGR_WORKSHEET`) and is
+  DERIVED, not physical** — `tables[].fqn` + `view_columns[].search_output_column`,
+  no `connection`, no `db_table`. It was listed in `_SOURCE_KINDS`, so every View on
+  a cluster produced zero column rows AND registered a bogus `physical_by_name` entry
+  keyed on its own name that any model referencing that name would resolve against.
+  Now in `_MODEL_KINDS`. 68 of 95 columnless models on ps-internal-prod were this.
+- 2026-08-18 (live): **MODEL-kind TML keys its columns off `model_tables[].alias`**,
+  which is the table name **lowercased** (`fact_supply_chain::date_fk`). Indexing only
+  `name`/`id` left every Model-kind object with empty `table_guid`+`db_table` — the
+  shape a modern cluster has most of. See `_model_alias_map`.
+- 2026-08-18 (live): the remaining columnless models are `TS: …`-prefixed system
+  objects absent from the metadata cache, so they are never exported. Expected, not a bug.
+
+## Lineage graph layout (live, 2026-08-18)
+
+- 2026-08-18 (live): **`LineageFlow` lays out by longest path FROM THE ROOT, not by
+  node type.** Type-based layering (`_layer()`) put a model built on other models in
+  one column with its own parents, forcing those edges to loop backwards around the
+  cards — unreadable, and it read as if the dependency ran the wrong way. The
+  backend still sends `layer` (pipeline depth by type); the graph ignores it for x.
+- 2026-08-18 (live): edges are bezier (`type: "default"`), **not** `smoothstep`.
+  Smoothstep routes every edge between the same two columns through a vertical
+  segment at the *same* midpoint x, so a fan-out of four collapsed onto one
+  indistinguishable rail. `X_GAP` must also stay well above the node `maxWidth`
+  (190) — at 230 there was a 40px gutter and edges ran along the card borders.
+
+## Local dev hazards (live, 2026-08-18)
+
+- 2026-08-18 (live, process): **`uvicorn` is run without `--reload`**, so backend
+  edits are invisible until the process is restarted. Two separate debugging dead
+  ends this session came from a UI action exercising stale code.
+- 2026-08-18 (live, process): **running `npm run build` while `next dev` is live
+  clobbers `.next/`** and takes :3000 down (500 on `/`, 404 on routes). Restart the
+  dev server after. `npm run build` also does NOT refresh `ts_admin/static/` — only
+  `make build` copies the export there, so :8000 keeps serving an older UI.
+- 2026-08-18 (live): **nothing prevents concurrent dependency syncs for the same
+  (cluster, org).** Three simultaneous TML crawls on ps-internal-prod produced
+  sustained 30s export timeouts and retry backoff. Not corrupting — each pass is a
+  full delete-and-rebuild scoped to (cluster, org), so last writer wins with a
+  complete set — but it is self-inflicted load. Filed as S34.

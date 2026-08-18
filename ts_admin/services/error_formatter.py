@@ -47,7 +47,7 @@ class FormattedError:
 
 
 _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
-    (TSAuthenticationError, "ThoughtSpot login expired", "Reconnect this cluster from Settings → Clusters."),
+    (TSAuthenticationError, "ThoughtSpot login expired", "Reconnect this instance from Settings → Connections."),
     (
         TSInsufficientPrivilegesError,
         "Not enough ThoughtSpot privileges",
@@ -56,19 +56,19 @@ _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
     (
         TSTimeoutError,
         "ThoughtSpot didn't respond in time",
-        "The cluster may be slow or under load. Try again, or run with smaller batches.",
+        "The instance may be slow or under load. Try again, or run with smaller batches.",
     ),
     (TSRateLimitError, "ThoughtSpot rate-limited the request", "Wait a minute and retry, or run with smaller batches."),
     (
         TSSSLError,
         "TLS/SSL certificate problem reaching ThoughtSpot",
-        "Verify the cluster URL uses https and the certificate chain is trusted.",
+        "Verify the instance URL uses https and the certificate chain is trusted.",
     ),
-    (TSConnectionError, "Couldn't reach ThoughtSpot", "Check the cluster URL and your network."),
+    (TSConnectionError, "Couldn't reach ThoughtSpot", "Check the instance URL and your network."),
     (
         TSServerError,
         "ThoughtSpot returned a server error",
-        "ThoughtSpot is failing internally. Wait a moment and retry, or check the cluster status.",
+        "ThoughtSpot is failing internally. Wait a moment and retry, or check the instance status.",
     ),
     (
         TSResponseParseError,
@@ -104,14 +104,18 @@ _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
     (
         KeyringError,
         "Couldn't read credentials from the OS keychain",
-        "Reopen the keychain, or reconnect this cluster from Settings → Clusters.",
+        "Reopen the keychain, or reconnect this instance from Settings → Connections.",
     ),
     (
         ConfigNotFoundError,
-        "No ThoughtSpot cluster configured",
-        "Add a cluster from Settings → Clusters before running this action.",
+        "No ThoughtSpot instance configured",
+        "Add an instance from Settings → Connections before running this action.",
     ),
-    (ConfigInvalidError, "Cluster configuration is invalid", "Re-enter the cluster details from Settings → Clusters."),
+    (
+        ConfigInvalidError,
+        "Instance configuration is invalid",
+        "Re-enter the instance details from Settings → Connections.",
+    ),
     (
         StaleCacheError,
         "Local cache is incomplete",
@@ -144,7 +148,7 @@ def format_error(exc: BaseException) -> FormattedError:
     if module.startswith("httpx") and "ConnectError" in error_type:
         return FormattedError(
             title="Couldn't reach ThoughtSpot",
-            hint="Check the cluster URL and your network.",
+            hint="Check the instance URL and your network.",
             error_type=error_type,
         )
 

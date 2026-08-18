@@ -53,6 +53,10 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
 
   const gridRef = useRef<AgGridReact<UserListItem>>(null);
+  // Generation counter for the active datasource — see the same guard on the
+  // Groups page. Drops responses from a superseded datasource so a slow
+  // org-less first fetch can't overwrite `total` with the cluster-wide count.
+  const loadIdRef = useRef(0);
   const [selected, setSelected] = useState<UserListItem[]>([]);
   const [action, setAction] = useState<ActionKind>(null);
   const [detailUser, setDetailUser] = useState<UserListItem | null>(null);
@@ -75,6 +79,8 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
     const sf = sortField;
     const so = sortOrder;
 
+    const loadId = ++loadIdRef.current;
+
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
@@ -88,10 +94,12 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
           });
+          if (loadId !== loadIdRef.current) return; // superseded by a newer datasource
           setTotal(res.total);
           setError(null);
           params.successCallback(res.items, res.total);
         } catch (e) {
+          if (loadId !== loadIdRef.current) return;
           setError(e instanceof Error ? e.message : String(e));
           params.failCallback();
         }
@@ -169,7 +177,7 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
   }, []);
 
   if (!activeCluster) {
-    return <EmptyState message="Select a cluster from the topbar to start." />;
+    return <EmptyState message="Select an instance from the topbar to start." />;
   }
 
   return (
@@ -215,7 +223,7 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
               style={{
                 flex: 1, padding: "7px 12px", fontSize: 13, fontFamily: theme.font.sans,
                 border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
-                outline: "none",
+                color: theme.color.textPrimary, outline: "none",
               }}
             />
             <select
@@ -224,7 +232,7 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
               style={{
                 padding: "7px 10px", fontSize: 13, fontFamily: theme.font.sans,
                 border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
-                cursor: "pointer",
+                color: theme.color.textPrimary, cursor: "pointer",
               }}
             >
               <option value="">All statuses</option>

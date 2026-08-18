@@ -164,6 +164,46 @@ class TestMetadataServiceSearch:
         assert len(items) == 3
 
 
+class TestSystemUserContent:
+    """A fresh ThoughtSpot org contains only built-in "System User" content.
+    search() hides it (admins cannot act on it), so the count of what was hidden
+    has to be reachable — otherwise that org renders as a blank grid that is
+    indistinguishable from a failed sync."""
+
+    def test_search_hides_system_user_content(self, session, cluster):
+        _make_obj(session, guid="sys", name="TS: Embrace Query Worksheet", owner_name="System User")
+        _make_obj(session, guid="mine", name="My Liveboard", owner_name="Alice")
+        items, total = MetadataService.search(cluster_id="test-cluster", org_id=0)
+        assert total == 1
+        assert items[0].name == "My Liveboard"
+
+    def test_hidden_count_matches_what_search_dropped(self, session, cluster):
+        for i in range(3):
+            _make_obj(session, guid=f"sys-{i}", name=f"TS: Builtin {i}", owner_name="System User")
+        _make_obj(session, guid="mine", name="My Liveboard", owner_name="Alice")
+        _, total = MetadataService.search(cluster_id="test-cluster", org_id=0)
+        assert total == 1
+        assert MetadataService.hidden_system_count(cluster_id="test-cluster", org_id=0) == 3
+
+    def test_hidden_count_explains_an_all_system_org(self, session, cluster):
+        """The reported bug: sync SUCCESS, 24 rows cached, grid shows zero."""
+        for i in range(24):
+            _make_obj(session, guid=f"sys-{i}", name=f"TS: Builtin {i}", owner_name="System User")
+        _, total = MetadataService.search(cluster_id="test-cluster", org_id=0)
+        assert total == 0
+        assert MetadataService.hidden_system_count(cluster_id="test-cluster", org_id=0) == 24
+
+    def test_hidden_count_is_zero_without_system_content(self, session, cluster):
+        _make_obj(session, guid="mine", name="My Liveboard", owner_name="Alice")
+        assert MetadataService.hidden_system_count(cluster_id="test-cluster", org_id=0) == 0
+
+    def test_hidden_count_isolates_by_cluster_and_org(self, session, cluster):
+        _make_obj(session, guid="a", name="Sys", owner_name="System User", cluster_id="test-cluster", org_id=0)
+        _make_obj(session, guid="b", name="Sys", owner_name="System User", cluster_id="test-cluster", org_id=1)
+        _make_obj(session, guid="c", name="Sys", owner_name="System User", cluster_id="other-cluster", org_id=0)
+        assert MetadataService.hidden_system_count(cluster_id="test-cluster", org_id=0) == 1
+
+
 class TestMetadataServiceGet:
     def test_returns_object_by_guid(self, session, cluster):
         _make_obj(session, guid="abc-123", name="My Liveboard")

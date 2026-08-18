@@ -9,18 +9,26 @@
  *
  * Loaded via next/dynamic({ ssr: false }) — React Flow needs the DOM.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ReactFlow, Background, Controls, Panel, Handle, Position, MarkerType, type Node, type Edge, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Crosshair, Users, MoveRight } from "lucide-react";
+import { Crosshair, Users, MoveRight, ChevronsLeftRight } from "lucide-react";
 import { theme } from "@/lib/theme";
 import type { LineageGraphResponse } from "@/lib/types";
 import { styleFor } from "./nodeStyles";
 
-const X_GAP = 230;
+// X_GAP must exceed the node maxWidth (190) by enough to leave a real gutter —
+// edges are drawn in that space, and at the old 230 they ran along the box
+// borders and read as if they touched the cards.
+const X_GAP = 320;
 const Y_GAP = 84;
 // Consumer types with more than this many members collapse into one count node.
 const COLLAPSE_THRESHOLD = 8;
+// Source layers wider than this collapse into one expandable node. A model with
+// 20 source tables is a 1,700px ladder otherwise, and "20 DB Tables → Model" is
+// the more useful first read anyway. Unlike consumers (which page through a
+// drawer) every source is already in the response, so expanding is local state.
+const SOURCE_COLLAPSE_THRESHOLD = 8;
 
 interface LineageNodeData extends Record<string, unknown> {
   label: string;
@@ -34,6 +42,11 @@ interface CountNodeData extends Record<string, unknown> {
   label: string;
   nodeType: string;
   consumerType: string;
+}
+interface MoreNodeData extends Record<string, unknown> {
+  label: string;
+  nodeType: string;
+  layer: number;
 }
 
 function LineageNodeCard({ data }: NodeProps<Node<LineageNodeData>>) {
@@ -114,11 +127,38 @@ function CountNodeCard({ data }: NodeProps<Node<CountNodeData>>) {
   );
 }
 
+function MoreNodeCard({ data }: NodeProps<Node<MoreNodeData>>) {
+  const s = styleFor(data.nodeType);
+  const Icon = s.Icon;
+  return (
+    <div
+      className="rv-node rv-node--clickable"
+      title="Click to show every one of these sources"
+      style={{
+        position: "relative", minWidth: 150, padding: "9px 12px", borderRadius: theme.radius.control,
+        fontFamily: theme.font.sans, textAlign: "center",
+        background: s.soft, color: theme.color.textPrimary,
+        border: `1px dashed ${s.border}`, boxShadow: theme.shadow.xs,
+      }}
+    >
+      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13, fontWeight: 700, color: s.color }}>
+        <Icon size={12} style={{ flexShrink: 0 }} /> {data.label}
+      </div>
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: theme.color.textMuted, marginTop: 2 }}>
+        <ChevronsLeftRight size={9} /> Click to expand
+      </div>
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+    </div>
+  );
+}
+
 // Hoisted (stable identity) per React Flow's perf guidance.
-const nodeTypes = { lineage: LineageNodeCard, count: CountNodeCard };
+const nodeTypes = { lineage: LineageNodeCard, count: CountNodeCard, more: MoreNodeCard };
 
 function buildFlow(
   data: LineageGraphResponse,
+  expandedGroups: Set<string>,
 ): { nodes: Node[]; edges: Edge[] } {
   const rootGuid = data.root.guid;
   const nodeByGuid = new Map(data.nodes.map((n) => [n.guid, n]));
@@ -157,12 +197,8 @@ function buildFlow(
     } satisfies LineageNodeData,
   }));
 
-  const countNodeLayer: Record<string, number> = {};
   for (const type of collapsedTypes) {
-    const sampleGuid = consumersByType.get(type)?.[0];
-    const layer = (sampleGuid ? nodeByGuid.get(sampleGuid)?.layer : undefined) ?? 4;
     const total = data.consumer_totals[type] ?? consumersByType.get(type)?.length ?? 0;
-    countNodeLayer[`count-${type}`] = layer;
     flowNodes.push({
       id: `count-${type}`,
       type: "count",
@@ -171,20 +207,94 @@ function buildFlow(
     });
   }
 
-  // ── Layered layout: x by layer, y by index-in-layer ──
-  const layerOf = (id: string): number => {
-    if (id.startsWith("count-")) return countNodeLayer[id] ?? 4;
-    return nodeByGuid.get(id)?.layer ?? 2;
-  };
-  const byLayer = new Map<number, Node[]>();
+  // ── Layered layout: x by DISTANCE FROM THE ROOT, y by index-in-layer ──
+  //
+  // Layering by pipeline type put every MODEL in one column, so a model built on
+  // other models drew its edges *inside* that column — they had to loop backward
+  // around the cards, which is unreadable and suggests a relationship that runs
+  // the wrong way. Layer by longest path instead: the root is 0, and an ancestor
+  // sits one column further left than the furthest node it feeds. A node is then
+  // always strictly left of everything it produces for, so no edge is ever
+  // horizontal-within-a-column and none run backwards.
+  //
+  // Direct consumers keep the single column immediately right of the root
+  // whatever their type — an answer built straight on a table is one hop
+  // downstream, and parking it in the answer layer would route its edge across
+  // the model column, drawing an arrow that reads as model→answer when no such
+  // dependency exists.
+  const dist = new Map<string, number>([[rootGuid, 0]]);
+  // Relax producer edges until stable. Bounded by node count: lineage is a DAG,
+  // but a cycle in cached edges must not spin here.
+  for (let pass = 0; pass <= data.nodes.length; pass++) {
+    let changed = false;
+    for (const e of data.edges) {
+      const consumerDist = dist.get(e.source); // e.source consumes e.target
+      if (consumerDist === undefined) continue;
+      if ((dist.get(e.target) ?? -1) < consumerDist + 1) {
+        dist.set(e.target, consumerDist + 1);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const maxDist = Math.max(0, ...[...dist.values()]);
+  const rootLayer = maxDist;
+  const consumerLayer = rootLayer + 1;
+  const layerById = new Map<string, number>();
   for (const n of flowNodes) {
-    const l = layerOf(n.id);
+    const d = dist.get(n.id);
+    // An ancestor is placed by distance; everything else is a direct consumer.
+    layerById.set(n.id, d === undefined ? consumerLayer : maxDist - d);
+  }
+
+  // ── Collapse wide SOURCE columns into one expandable node ──
+  //
+  // Consumers already collapse (into a paged drawer). Sources could not, so a
+  // model with twenty tables rendered as a ladder taller than the viewport. Here
+  // every member is already in the response, so the collapsed node expands in
+  // place — the [+]/[-] progressive disclosure every lineage tool uses — rather
+  // than opening a drawer. Grouped per (layer, type) so a mixed column only
+  // folds the part that is actually wide.
+  const hiddenToMore = new Map<string, string>();
+  const moreNodes: Node[] = [];
+  const upstreamGroups = new Map<string, Node[]>();
+  for (const n of flowNodes) {
+    const layer = layerById.get(n.id) ?? 2;
+    if (layer >= consumerLayer || n.id === rootGuid || n.id.startsWith("count-")) continue;
+    const key = `${layer}::${String(n.data.nodeType)}`;
+    const arr = upstreamGroups.get(key) ?? [];
+    arr.push(n);
+    upstreamGroups.set(key, arr);
+  }
+  for (const [key, members] of upstreamGroups) {
+    if (members.length <= SOURCE_COLLAPSE_THRESHOLD || expandedGroups.has(key)) continue;
+    const [layerStr, type] = key.split("::");
+    const moreId = `more-${key}`;
+    members.forEach((m) => hiddenToMore.set(m.id, moreId));
+    moreNodes.push({
+      id: moreId,
+      type: "more",
+      position: { x: 0, y: 0 },
+      data: { label: `${members.length} ${styleFor(type).label}s`, nodeType: type, layer: Number(layerStr) } satisfies MoreNodeData,
+    });
+    layerById.set(moreId, Number(layerStr));
+  }
+  const laidOut = flowNodes.filter((n) => !hiddenToMore.has(n.id)).concat(moreNodes);
+
+  const byLayer = new Map<number, Node[]>();
+  for (const n of laidOut) {
+    const l = layerById.get(n.id) ?? 2;
     const arr = byLayer.get(l) ?? [];
     arr.push(n);
     byLayer.set(l, arr);
   }
   for (const [layer, arr] of byLayer) {
-    arr.sort((a, b) => String(a.data.label).localeCompare(String(b.data.label)));
+    // Group by node type inside the column so mixed consumer types stay legible.
+    arr.sort(
+      (a, b) =>
+        String(a.data.nodeType).localeCompare(String(b.data.nodeType)) ||
+        String(a.data.label).localeCompare(String(b.data.label)),
+    );
     const offset = ((arr.length - 1) * Y_GAP) / 2;
     arr.forEach((n, i) => {
       n.position = { x: layer * X_GAP, y: i * Y_GAP - offset };
@@ -192,28 +302,39 @@ function buildFlow(
   }
 
   // ── Edges: draw producer→consumer (target→source) so arrows point downstream ──
+  //
+  // Bezier ("default"), not smoothstep. Smoothstep routes every edge between the
+  // same two columns through a vertical segment at the SAME midpoint x, so a
+  // fan-out of four collapsed onto one indistinguishable rail — you could not
+  // tell which source fed which target. Bezier control points derive from both
+  // endpoints, so edges sharing a source still separate.
   const flowEdges: Edge[] = [];
   const seen = new Set<string>();
   const addEdge = (source: string, target: string) => {
+    if (source === target) return;
     const key = `${source}->${target}`;
     if (seen.has(key)) return;
     seen.add(key);
     flowEdges.push({
-      id: key, source, target, type: "smoothstep",
+      id: key, source, target, type: "default",
       markerEnd: { type: MarkerType.ArrowClosed, color: theme.color.textMuted },
       style: { stroke: theme.color.textMuted, strokeWidth: 1.4 },
     });
   };
-  const renderedIds = new Set(flowNodes.map((n) => n.id));
+  const renderedIds = new Set(laidOut.map((n) => n.id));
+  // A collapsed source's edges are re-pointed at the node that stands in for it.
+  const resolve = (id: string) => hiddenToMore.get(id) ?? id;
   for (const e of data.edges) {
     if (collapsedConsumerGuids.has(e.source)) continue; // handled by count edge below
-    if (renderedIds.has(e.target) && renderedIds.has(e.source)) addEdge(e.target, e.source);
+    const target = resolve(e.target);
+    const source = resolve(e.source);
+    if (renderedIds.has(target) && renderedIds.has(source)) addEdge(target, source);
   }
   for (const type of collapsedTypes) {
     addEdge(rootGuid, `count-${type}`);
   }
 
-  return { nodes: flowNodes, edges: flowEdges };
+  return { nodes: laidOut, edges: flowEdges };
 }
 
 export default function LineageFlow({
@@ -225,11 +346,60 @@ export default function LineageFlow({
   onJump: (guid: string, nodeType: string) => void;
   onOpenDrawer: (consumerType: string) => void;
 }) {
-  const { nodes, edges } = useMemo(() => buildFlow(data), [data]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [hovered, setHovered] = useState<string | null>(null);
+
+  // A new root is a new graph — collapsed sources should not stay expanded from
+  // whatever the user was looking at before.
+  useEffect(() => setExpandedGroups(new Set()), [data.root.guid]);
+
+  const { nodes, edges } = useMemo(() => buildFlow(data, expandedGroups), [data, expandedGroups]);
+
+  // ── Hover: dim everything not on the hovered node's own path ──
+  //
+  // The density mitigation that hides nothing. With a dozen edges crossing a
+  // column, following one chain by eye is guesswork; hovering makes exactly the
+  // hovered node's own producers and consumers stand out.
+  const neighbours = useMemo(() => {
+    if (!hovered) return null;
+    const keep = new Set<string>([hovered]);
+    for (const e of edges) {
+      if (e.source === hovered) keep.add(e.target);
+      else if (e.target === hovered) keep.add(e.source);
+    }
+    return keep;
+  }, [hovered, edges]);
+
+  const shownNodes = useMemo(
+    () =>
+      neighbours
+        ? nodes.map((n) => (neighbours.has(n.id) ? n : { ...n, style: { ...n.style, opacity: 0.25 } }))
+        : nodes,
+    [nodes, neighbours],
+  );
+  const shownEdges = useMemo(() => {
+    if (!hovered) return edges;
+    return edges.map((e) => {
+      const on = e.source === hovered || e.target === hovered;
+      return on
+        ? {
+            ...e,
+            style: { ...e.style, stroke: theme.color.accent, strokeWidth: 2.2 },
+            markerEnd: { type: MarkerType.ArrowClosed, color: theme.color.accent },
+            zIndex: 1,
+          }
+        : { ...e, style: { ...e.style, opacity: 0.15 } };
+    });
+  }, [edges, hovered]);
 
   const onNodeClick = (_e: React.MouseEvent, node: Node) => {
     if (node.type === "count") {
       onOpenDrawer((node.data as CountNodeData).consumerType);
+      return;
+    }
+    if (node.type === "more") {
+      const key = node.id.slice("more-".length);
+      setExpandedGroups((prev) => new Set(prev).add(key));
       return;
     }
     const d = node.data as LineageNodeData;
@@ -249,10 +419,12 @@ export default function LineageFlow({
       `}</style>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={shownNodes}
+          edges={shownEdges}
           nodeTypes={nodeTypes}
           onNodeClick={onNodeClick}
+          onNodeMouseEnter={(_e, n) => setHovered(n.id)}
+          onNodeMouseLeave={() => setHovered(null)}
           onlyRenderVisibleElements
           fitView
           proOptions={{ hideAttribution: true }}
@@ -290,7 +462,7 @@ export default function LineageFlow({
                   color: theme.color.textMuted, textAlign: "center", maxWidth: 320,
                 }}
               >
-                No related objects found — nothing else in this cluster links to this one.
+                No related objects found — nothing else in this instance links to this one.
               </div>
             </Panel>
           )}

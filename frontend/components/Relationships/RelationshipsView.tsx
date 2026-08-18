@@ -16,7 +16,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   GitFork, Loader2, ChevronRight, Hammer, History, X, AlertTriangle,
-  Table2, BarChart3, LayoutDashboard,
+  Table2, BarChart3, LayoutDashboard, Plug,
 } from "lucide-react";
 import { relationshipsApi, syncApi, jobsApi } from "@/lib/api";
 import { useToast } from "../Toast";
@@ -37,6 +37,7 @@ const TABS: { id: ExplorerTab; label: string; icon: typeof Table2 }[] = [
   { id: "logical_tables", label: "Logical Tables", icon: Table2 },
   { id: "answers", label: "Answers", icon: BarChart3 },
   { id: "liveboards", label: "Liveboards", icon: LayoutDashboard },
+  { id: "connections", label: "Connections", icon: Plug },
 ];
 
 const MAX_RECENT = 8;
@@ -81,7 +82,9 @@ export function RelationshipsView({
   const guidToItem = useMemo(() => {
     const m = new Map<string, TopologyItem>();
     if (topology) {
-      [...topology.logical_tables, ...topology.answers, ...topology.liveboards].forEach((i) => m.set(i.ts_guid, i));
+      [...topology.logical_tables, ...topology.answers, ...topology.liveboards, ...topology.connections].forEach(
+        (i) => m.set(i.ts_guid, i),
+      );
     }
     return m;
   }, [topology]);
@@ -239,7 +242,9 @@ export function RelationshipsView({
           <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", color: theme.color.textMuted, fontFamily: theme.font.sans, marginBottom: 8 }}>
             Browse
           </div>
-          <div style={{ display: "flex", gap: 3, padding: 3, background: theme.color.surface2, borderRadius: theme.radius.control }}>
+          {/* 2x2 grid, not a single row: four tabs across a 300px rail clipped the
+              longest labels ("Logical Tables" wrapped, "Connections" truncated). */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 3, padding: 3, background: theme.color.surface2, borderRadius: theme.radius.control }}>
             {TABS.map((t) => {
               const active = tab === t.id;
               const Icon = t.icon;
@@ -249,15 +254,15 @@ export function RelationshipsView({
                   onClick={() => setTab(t.id)}
                   title={`${t.label} (${topology[t.id].length.toLocaleString()})`}
                   style={{
-                    flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
-                    padding: "7px 4px", border: "none", cursor: "pointer",
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                    padding: "7px 4px", border: "none", cursor: "pointer", minWidth: 0,
                     borderRadius: theme.radius.control - 2,
                     background: active ? theme.color.surface : "transparent",
                     boxShadow: active ? theme.shadow.xs : "none",
                     fontFamily: theme.font.sans,
                   }}
                 >
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: active ? 600 : 500, color: active ? theme.color.textPrimary : theme.color.textMuted }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: active ? 600 : 500, color: active ? theme.color.textPrimary : theme.color.textMuted, maxWidth: "100%", overflow: "hidden", whiteSpace: "nowrap" }}>
                     <Icon size={12} style={{ color: active ? theme.color.accent2 : theme.color.textMuted, flexShrink: 0 }} />
                     {t.label}
                   </span>
@@ -520,7 +525,7 @@ function BuildLineagePrompt({ building, progress, onBuild }: { building: boolean
       <div style={{ fontSize: 16, fontWeight: 600, color: theme.color.textPrimary }}>No lineage built yet</div>
       <div style={{ fontSize: 13, color: theme.color.textMuted, lineHeight: 1.6 }}>
         Build the lineage graph to trace this object&apos;s dependencies. The first build sweeps the
-        dependency API (seconds for the object graph) and can take a few minutes on large clusters —
+        dependency API (seconds for the object graph) and can take a few minutes on large instances —
         requires a <strong>Metadata</strong> sync first.
       </div>
       <button

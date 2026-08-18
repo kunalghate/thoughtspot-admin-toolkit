@@ -5,9 +5,14 @@ Usage:
   ts-admin-toolkit serve             # static mode (no Node.js required)
   ts-admin-toolkit serve --dev       # dev mode (FastAPI + Next.js hot reload)
   ts-admin-toolkit serve --port 9000 # custom port
+  ts-admin-toolkit update            # upgrade to the latest release
+  ts-admin-toolkit --version         # print the installed version
 """
 
+import asyncio
 import logging
+import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -17,6 +22,7 @@ from pathlib import Path
 import click
 import uvicorn
 
+from ts_admin import __version__
 from ts_admin.logging_config import setup_logging
 
 setup_logging()
@@ -26,6 +32,7 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
 
 @click.group()
+@click.version_option(__version__, "-v", "--version", prog_name="ts-admin-toolkit")
 def main() -> None:
     """ThoughtSpot Admin Toolkit — admin control plane for ThoughtSpot."""
 
@@ -41,6 +48,95 @@ def serve(port: int, dev: bool, no_browser: bool) -> None:
         _serve_dev(api_port=8000, ui_port=3000, no_browser=no_browser)
     else:
         _serve_static(port=port, no_browser=no_browser)
+
+
+# ── Update ─────────────────────────────────────────────────────────────────────
+
+# uv puts its own binary and the tool shims it creates in this directory. The
+# same path install.sh/install.ps1 use.
+UV_BIN_DIR = Path(os.environ.get("XDG_BIN_HOME") or (Path.home() / ".local" / "bin"))
+
+# Matches install.sh — uv fetches a managed interpreter when the system has none
+# that satisfies requires-python, which is the common case on stock macOS.
+UV_PYTHON_VERSION = "3.12"
+
+
+@main.command()
+@click.option("--check", is_flag=True, default=False, help="Only report whether an update exists.")
+def update(check: bool) -> None:
+    """Upgrade the toolkit to the latest release."""
+    from ts_admin.services.update_service import RELEASES_URL, check_for_update
+
+    # httpx logs every request at INFO. Useful inside `serve`, but here it puts
+    # a stack-trace-looking line in the middle of a four-line user interaction.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    click.echo("\n  Checking for updates...")
+
+    # force=True: the 6-hour cache exists to keep the in-app banner cheap. An
+    # explicit `update` must never install a stale cached wheel.
+    result = asyncio.run(check_for_update(force=True))
+
+    if not result.checked:
+        click.echo(f"\n  ✗ {result.error or 'Could not check for updates.'}", err=True)
+        click.echo(f"    Check your network connection, or see {RELEASES_URL}\n", err=True)
+        sys.exit(1)
+
+    if not result.update_available:
+        click.echo(f"\n  ✓ You are on the latest version (v{result.current}).\n")
+        return
+
+    click.echo(f"\n  Update available: v{result.current} → v{result.latest}")
+
+    if check:
+        click.echo("\n  To install it, run:  ts-admin-toolkit update\n")
+        return
+
+    uv = _resolve_uv()
+    if uv is None:
+        click.echo(
+            "\n  ✗ Could not find uv, the package manager the toolkit was installed with.\n"
+            "    Re-run the install command from the README to upgrade instead.\n",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo("  Installing...")
+
+    # --force replaces the existing install rather than no-opping, exactly as
+    # install.sh does. The local database and keychain credentials live outside
+    # the tool environment, so they are untouched by this.
+    completed = subprocess.run(
+        [uv, "tool", "install", "--force", "--python", UV_PYTHON_VERSION, result.wheel_url],
+        capture_output=True,
+        text=True,
+    )
+
+    if completed.returncode != 0:
+        click.echo(f"\n  ✗ Update failed.\n{completed.stderr}", err=True)
+        click.echo(f"    You can install manually from {RELEASES_URL}\n", err=True)
+        sys.exit(1)
+
+    click.echo(f"\n  ✓ Updated to v{result.latest}.")
+    click.echo("    Your clusters, settings and cached data were left as they are.")
+    click.echo("\n  Start it again with:  ts-admin-toolkit serve\n")
+
+
+def _resolve_uv() -> str | None:
+    """
+    Find uv on PATH, falling back to the directory the installers put it in —
+    a shell that has not been restarted since install will not have it on PATH.
+    """
+    found = shutil.which("uv")
+    if found:
+        return found
+
+    for name in ("uv", "uv.exe"):
+        candidate = UV_BIN_DIR / name
+        if candidate.exists():
+            return str(candidate)
+
+    return None
 
 
 # ── Static mode (default) ──────────────────────────────────────────────────────
@@ -158,7 +254,5 @@ def _check_node() -> None:
 
 
 def _print_banner(port: int, dev: bool) -> None:
-    from ts_admin import __version__
-
     mode = "dev mode" if dev else "static mode"
     click.echo(f"\n  ThoughtSpot Admin Toolkit v{__version__}  ({mode})\n")

@@ -32,6 +32,9 @@ class GroupListItem(BaseModel):
     org_id: int
     privileges: list[str]
     member_count: int
+    # Display name of the creating user, or the raw GUID when that user is not
+    # in the cache. None when the group predates the author_guid backfill.
+    created_by: str | None
     created_at: str | None
     modified_at: str | None
     synced_at: str | None

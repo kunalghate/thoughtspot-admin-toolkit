@@ -12,6 +12,7 @@ Usage:
     users = await client.search_users()
 """
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -46,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 # Maximum records per paginated API request
 PAGE_SIZE = 500
+# Smaller page for requests that ask for `include_details`: a 500-row page of table
+# details is ~10MB and was observed timing out against a live cluster on the default
+# 30s client timeout, costing a full retry of the page.
+DETAIL_PAGE_SIZE = 200
 
 
 # Cached `object_type` values → the `type` enum metadata/search accepts.
@@ -58,12 +63,73 @@ _SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
     "AGGR_WORKSHEET": "LOGICAL_TABLE",
     "SQL_VIEW": "LOGICAL_TABLE",
     "USER_DEFINED": "LOGICAL_TABLE",
+    "DATASET": "LOGICAL_TABLE",
     "TABLE": "LOGICAL_TABLE",
     "MODEL": "LOGICAL_TABLE",
     "VIEW": "LOGICAL_TABLE",
     "LOGICAL_TABLE": "LOGICAL_TABLE",
     "CONNECTION": "CONNECTION",
 }
+
+
+# Analyst Studio is built on Mode, so its datasets land in ThoughtSpot as ordinary
+# ONE_TO_ONE_LOGICAL tables sitting on a connection the API reports as RDBMS_MODE.
+# That connection is not returned by /connection/search, and the tables carry no
+# distinguishing subType — the warehouse type in metadata_detail is the only signal.
+_ANALYST_STUDIO_SOURCE_TYPE = "RDBMS_MODE"
+
+
+def _belongs_to_org(user: dict, org_id: int) -> bool:
+    """True when a users/search record lists membership of ``org_id``.
+
+    ``users/search`` returns each user's full org list inline, so scoping does
+    not need the server-side ``org_identifiers`` filter. A record with no ``orgs``
+    key at all is kept: on a cluster with orgs disabled there is only one org, and
+    dropping everything would be worse than being permissive.
+    """
+    orgs = user.get("orgs")
+    if orgs is None:
+        return True
+    return any(o.get("id") == org_id for o in orgs if isinstance(o, dict))
+
+
+def _unresolvable_guids(body: str) -> list[str]:
+    """GUIDs ThoughtSpot names as the reason for an error, if it named any.
+
+    A ThoughtSpot error body can carry a nested ``debug`` string holding a JSON
+    array of the object ids the server could not resolve, e.g.::
+
+        {"error": {"message": {"debug": {"code": 13003,
+                                         "debug": "[\\"53d3d10e-…\\", \\"\\"]"}}}}
+
+    Those ids are the only thing that makes such a failure actionable — they name
+    the object to go fix — and nothing else in the response identifies it.
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    message = ((payload.get("error") or {}).get("message")) or {}
+    if not isinstance(message, dict):
+        return []
+    inner = message.get("debug")
+    if not isinstance(inner, dict):
+        return []
+    try:
+        ids = json.loads(inner.get("debug") or "[]")
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(ids, list):
+        return []
+    return [i for i in ids if isinstance(i, str) and i]
+
+
+def _is_analyst_studio_dataset(item: dict) -> bool:
+    """True when a LOGICAL_TABLE search result is an Analyst Studio dataset."""
+    detail = item.get("metadata_detail") or {}
+    return detail.get("dataSourceTypeEnum") == _ANALYST_STUDIO_SOURCE_TYPE
 
 
 def _flatten_dependent_objects(items: list[dict], *, root_guid: str) -> list[dict]:
@@ -190,7 +256,21 @@ class ThoughtSpotClient:
             if response.status_code == 400:
                 raise TSInvalidParametersError(f"Invalid parameters for {method} {path}: {response.text[:200]}")
             if response.status_code == 404:
-                raise TSObjectNotFoundError(object_type="resource", identifier=path)
+                # A 404 on a *search* endpoint is usually not "you asked for a
+                # missing object" — it is ThoughtSpot failing to resolve some
+                # object referenced by a row in the result set (a dangling
+                # group/org membership, say). The body's nested debug array names
+                # that object, and it is the only pointer to what to go fix, so
+                # lift it into the message instead of burying it in raw JSON.
+                guids = _unresolvable_guids(response.text)
+                detail = response.text[:200]
+                if guids:
+                    detail = f"ThoughtSpot could not resolve object(s) {', '.join(guids)} — {detail}"
+                raise TSObjectNotFoundError(
+                    object_type="resource",
+                    identifier=path,
+                    detail=detail,
+                )
             if response.status_code >= 500:
                 raise TSServerError(status_code=response.status_code, body=response.text)
 
@@ -272,10 +352,21 @@ class ThoughtSpotClient:
     ) -> AsyncIterator[list[TSUser]]:
         """
         Yield pages of all users on the cluster (or within a specific org).
+
+        Org scoping is applied CLIENT-SIDE from each record's own ``orgs`` list
+        rather than by sending ``org_identifiers``. The two are equivalent —
+        verified live against PS-internal Prod (26.8.0.cl), where both paths
+        return the identical 362-user set for org 0 — but the server-side filter
+        makes ThoughtSpot resolve every result's org/group membership, and a
+        single unresolvable membership 404s the whole page.
+
+        That is not hypothetical: on SE Demo one user's membership points at a
+        group id the server cannot resolve, so `org_identifiers: [0]` fails for
+        any page spanning that record (record_size 249 succeeds, 250 fails) while
+        the unfiltered call returns all 325 users at any page size. Filtering here
+        keeps one broken membership from making the whole org unsyncable.
         """
         body: dict = {"user_identifier": "", "include_favorite_metadata": False}
-        if org_id is not None:
-            body["org_identifiers"] = [org_id]
 
         async for page in self._paginate(
             "/api/rest/2.0/users/search",
@@ -283,6 +374,8 @@ class ThoughtSpotClient:
             result_key="users",
             context="search_users",
         ):
+            if org_id is not None:
+                page = [u for u in page if _belongs_to_org(u, org_id)]
             try:
                 yield [TSUser.model_validate(u) for u in page]
             except ValidationError as exc:
@@ -331,6 +424,9 @@ class ThoughtSpotClient:
         We make separate requests per subtype so we can stamp each result with the
         correct effective type (WORKSHEET vs ONE_TO_ONE_LOGICAL).
 
+        The tables pass additionally asks for `include_details` so Analyst Studio
+        datasets can be told apart from ordinary tables — see _is_analyst_studio_dataset.
+
         /api/rest/2.0/metadata/search returns a list directly, so we paginate manually.
         """
         # Each spec: (api_type, subtypes_filter, effective_type_to_store)
@@ -350,13 +446,19 @@ class ThoughtSpotClient:
                 metadata_filter["subtypes"] = subtypes
 
             body: dict = {"metadata": [metadata_filter], "include_stats": True}
+            # Only the tables pass pays for details — the response is ~10x larger
+            # (measured 18MB vs 1.8MB for 900 tables) and no other subtype needs it.
+            wants_details = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
+            if wants_details:
+                body["include_details"] = True
+            page_size = DETAIL_PAGE_SIZE if wants_details else PAGE_SIZE
 
             offset = 0
             while True:
                 data = await self._request(
                     "POST",
                     "/api/rest/2.0/metadata/search",
-                    json={**body, "record_offset": offset, "record_size": PAGE_SIZE},
+                    json={**body, "record_offset": offset, "record_size": page_size},
                     context="search_metadata",
                 )
                 page: list = data if isinstance(data, list) else data.get("metadata_details", [])
@@ -364,7 +466,10 @@ class ThoughtSpotClient:
                     break
                 # Stamp each item with the effective type so the model stores it correctly
                 for item in page:
-                    item["metadata_type"] = effective_type
+                    if wants_details and _is_analyst_studio_dataset(item):
+                        item["metadata_type"] = MetadataType.DATASET
+                    else:
+                        item["metadata_type"] = effective_type
                 try:
                     yield [TSMetadataObject.model_validate(m) for m in page]
                 except ValidationError as exc:
@@ -372,9 +477,9 @@ class ThoughtSpotClient:
                         url="/api/rest/2.0/metadata/search",
                         detail=str(exc),
                     ) from exc
-                if len(page) < PAGE_SIZE:
+                if len(page) < page_size:
                     break
-                offset += PAGE_SIZE
+                offset += page_size
 
     # ── Tags ───────────────────────────────────────────────────────────────────
 

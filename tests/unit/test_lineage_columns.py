@@ -108,6 +108,70 @@ def test_resolve_model_columns_3_layer_chain():
     assert (margin.table_column_name, margin.db_table, margin.db_column_name) == ("", "", "")
 
 
+def test_resolve_model_columns_handles_model_kind_alias_prefix():
+    """MODEL TML keys columns off `model_tables[].alias` — the lowercased table name."""
+    from ts_admin.services.lineage_service import _parse_physical_source, _resolve_model_columns
+
+    # Real shape from a v10 cluster: alias-prefixed column_id, no table_paths.
+    model_body = {
+        "name": "Avnet",
+        "model_tables": [
+            {"name": "Dim_Date_Blitz", "alias": "dim_date_blitz", "fqn": "table-1"},
+        ],
+        "columns": [{"name": "Date Fk", "column_id": "dim_date_blitz::date_fk"}],
+    }
+    phys = _parse_physical_source(
+        {
+            "name": "Dim_Date_Blitz",
+            "db_table": "DIM_DATE_BLITZ",
+            "connection": {"name": "BLITZ_DEMOS", "fqn": "conn-9"},
+            "columns": [{"name": "date_fk", "db_column_name": "DATE_FK"}],
+        }
+    )
+    rows = _resolve_model_columns(
+        guid="model-9",
+        body=model_body,
+        physical_by_guid={"table-1": phys},
+        physical_by_name={"Dim_Date_Blitz": phys},
+        cluster_id=CLUSTER_ID,
+        org_id=0,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.table_guid, row.table_column_name) == ("table-1", "date_fk")
+    assert (row.db_table, row.db_column_name, row.connection_name) == ("DIM_DATE_BLITZ", "DATE_FK", "BLITZ_DEMOS")
+
+
+def test_resolve_model_columns_resolves_alias_by_name_when_fqn_is_absent():
+    """Without an fqn the lowercased alias must still find the physical table."""
+    from ts_admin.services.lineage_service import _parse_physical_source, _resolve_model_columns
+
+    model_body = {
+        "name": "Avnet",
+        "model_tables": [{"name": "Dim_Date_Blitz", "alias": "dim_date_blitz"}],
+        "columns": [{"name": "Date Fk", "column_id": "dim_date_blitz::date_fk"}],
+    }
+    phys = _parse_physical_source(
+        {
+            "name": "Dim_Date_Blitz",
+            "db_table": "DIM_DATE_BLITZ",
+            "connection": {"name": "BLITZ_DEMOS", "fqn": "conn-9"},
+            "columns": [{"name": "date_fk", "db_column_name": "DATE_FK"}],
+        }
+    )
+    rows = _resolve_model_columns(
+        guid="model-9",
+        body=model_body,
+        physical_by_guid={},
+        physical_by_name={"Dim_Date_Blitz": phys, "dim_date_blitz": phys},
+        cluster_id=CLUSTER_ID,
+        org_id=0,
+    )
+
+    assert rows[0].db_column_name == "DATE_FK"
+
+
 def test_resolve_model_columns_tolerates_missing_source():
     """A formula/unknown-prefix column resolves with empty db layer, no crash."""
     from ts_admin.services.lineage_service import _resolve_model_columns
@@ -196,10 +260,24 @@ class _FakeTMLClient:
 def _seed(engine, *, lb_modified: datetime | None = None):
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from ts_admin.models.cluster import Cluster
+    from ts_admin.models.sync_log import SyncLog
 
     now = datetime.now(tz=timezone.utc)
     with Session(engine) as session:
         session.add(Cluster(id=CLUSTER_ID, name="Prod", url="https://p", username="a", auth_type="trusted"))
+        # The SUCCESS metadata log is part of a healthy cache, not decoration:
+        # `build_object_graph` fails closed without it (a truncated sync leaves
+        # rows behind too, so rows alone certify nothing).
+        session.add(
+            SyncLog(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                entity_type="metadata",
+                status="SUCCESS",
+                record_count=4,
+                synced_at=now,
+            )
+        )
         rows = [
             ("table-1", "SALES", "ONE_TO_ONE_LOGICAL", now),
             ("model-1", "Sales Model", "WORKSHEET", now),
@@ -478,6 +556,24 @@ async def test_graph_columns_populated_after_build(monkeypatch, in_memory_db, pa
     assert lb_cols["Region"]["db_column_name"] == "REGION"
 
 
+async def test_graph_columns_for_physical_table_root(monkeypatch, in_memory_db, patched_config):
+    """A DB_TABLE root is a lineage row's `table_guid`, never its `model_guid` —
+    it must still get a column map (with the consuming model's "used by")."""
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="table-1", root_kind="table")
+    cols = {c["model_column_name"]: c for c in graph["columns"]}
+    assert set(cols) == {"Total Revenue", "Region"}  # formula columns have no table
+    assert cols["Total Revenue"]["db_column_name"] == "REVENUE"
+    assert cols["Total Revenue"]["table_guid"] == "table-1"
+    assert cols["Total Revenue"]["used_by"][0]["guid"] == "lb-1"
+
+
 # ── Phase 3: lazy answer indexing + debug ────────────────────────────────────────
 
 
@@ -533,3 +629,250 @@ async def test_debug_tml_reports_kind_and_parsed(monkeypatch, in_memory_db, patc
     assert dbg["kind"] == "worksheet"
     assert "worksheet" in dbg["edoc_keys"]
     assert any(row["model_column_name"] == "Total Revenue" for row in dbg["parsed"])
+
+
+# ── Un-exportable objects: a poisoned batch must not sink the whole pass ─────────
+#
+# `metadata/tml/export` is all-or-nothing per request: one object the server
+# cannot serialize 500s the entire batch. That used to abort build_column_map,
+# so a single broken object on a big cluster left it with NO connection edges
+# and NO column map at all.
+
+
+class _PoisonTMLClient(_FakeTMLClient):
+    """Fails any batch containing `poison` wholesale — exactly like the real 500."""
+
+    def __init__(self, poison: str):
+        super().__init__()
+        self.poison = poison
+        self.calls: list[list[str]] = []
+
+    async def tml_export(self, *, object_ids, edoc_format=None):
+        from ts_admin.ts_client.exceptions import TSServerError
+
+        self.calls.append(list(object_ids))
+        if self.poison in object_ids:
+            raise TSServerError(status_code=500, body='{"error":{"debug":["No value present"]}}')
+        return await super().tml_export(object_ids=object_ids, edoc_format=edoc_format)
+
+
+def _add_metadata(engine, guid: str, name: str, object_type: str) -> None:
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+
+    now = datetime.now(tz=timezone.utc)
+    with Session(engine) as session:
+        session.add(
+            CachedMetadata(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                ts_guid=guid,
+                name=name,
+                object_type=object_type,
+                owner_name="Alice",
+                modified_at=now,
+                synced_at=now,
+            )
+        )
+        session.commit()
+
+
+async def test_column_map_survives_an_unexportable_table(monkeypatch, in_memory_db, patched_config):
+    """One table the server refuses to export is isolated; everything else still builds."""
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    _add_metadata(in_memory_db, "bad-table", "BROKEN", "ONE_TO_ONE_LOGICAL")
+    fake = _PoisonTMLClient("bad-table")
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+
+    written = await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    assert written > 0
+    with Session(in_memory_db) as session:
+        lineage = session.exec(select(CachedColumnLineage)).all()
+        connects = session.exec(select(CachedDependency).where(CachedDependency.relation == "CONNECTS")).all()
+    assert {r.model_column_name for r in lineage} == {"Total Revenue", "Region", "Margin %"}
+    assert connects and connects[0].target_guid == "conn-1"
+    # The bad object was bisected down to its own batch and skipped there.
+    assert ["bad-table"] in fake.calls
+
+
+async def test_unexportable_liveboard_keeps_its_existing_edges(monkeypatch, in_memory_db, patched_config):
+    """A transient export failure must not delete edges nothing will rebuild."""
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    healthy = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: healthy)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    poisoned = _PoisonTMLClient("lb-1")
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: poisoned)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job(), incremental=False)
+
+    with Session(in_memory_db) as session:
+        lb_edges = session.exec(select(CachedDependency).where(CachedDependency.source_type == "LIVEBOARD")).all()
+    assert [e.target_guid for e in lb_edges] == ["model-1"]
+
+
+async def test_export_bisect_isolates_a_rejected_identifier(monkeypatch):
+    """A 400 ("Invalid parameter values: metadata_identifiers") is a bad object, not a bad request."""
+    from ts_admin.services import lineage_service
+    from ts_admin.ts_client.exceptions import TSInvalidParametersError
+
+    class _RejectsOne:
+        async def tml_export(self, *, object_ids, edoc_format=None):
+            if "stale-guid" in object_ids:
+                raise TSInvalidParametersError("Invalid parameter values: metadata_identifiers")
+            return [{"info": {"id": g}, "edoc": {"guid": g}} for g in object_ids]
+
+    failed: list[str] = []
+    items = await lineage_service._export_tml_resilient(_RejectsOne(), ["a", "stale-guid", "b"], failed)
+
+    assert failed == ["stale-guid"]
+    assert {i["info"]["id"] for i in items} == {"a", "b"}
+
+
+async def test_export_bisect_gives_up_once_the_failure_budget_is_spent(monkeypatch):
+    """A cluster failing everything is not worth bisecting object by object."""
+    from ts_admin.services import lineage_service
+    from ts_admin.ts_client.exceptions import TSServerError
+
+    class _AlwaysFails:
+        def __init__(self):
+            self.calls = 0
+
+        async def tml_export(self, *, object_ids, edoc_format=None):
+            self.calls += 1
+            raise TSServerError(status_code=500, body="down")
+
+    client = _AlwaysFails()
+    monkeypatch.setattr(lineage_service, "TML_EXPORT_FAILURE_BUDGET", 2)
+    failed: list[str] = []
+    with pytest.raises(TSServerError):
+        await lineage_service._export_tml_resilient(client, [f"g{i}" for i in range(50)], failed)
+    assert len(failed) <= 2
+
+
+# ── ThoughtSpot Views (TML `view` / AGGR_WORKSHEET) ──────────────────────────────
+#
+# A View is derived from another logical object, not from physical tables. It was
+# classified as a physical source, which meant every View on a cluster produced no
+# column rows at all AND registered a fake physical entry under its own name.
+# These are built from the real TML shape ps-internal-prod returns.
+
+_VIEW_TML = {
+    "guid": "view-1",
+    "view": {
+        "name": "Test View",
+        "tables": [{"id": "Sample Retail - WH", "name": "Sample Retail - WH", "fqn": "ws-1"}],
+        "search_query": "[Region] [Sales Amt]",
+        "view_columns": [
+            {"name": "Region", "search_output_column": "Region"},
+            {"name": "Total Sales Amt", "search_output_column": "Total Sales Amt"},
+        ],
+    },
+}
+
+
+def test_view_is_classified_as_a_model_not_a_physical_source():
+    """A View has no connection and no db_table — parsing it as one poisoned the db layer."""
+    from ts_admin.services import lineage_service
+
+    kind, body = lineage_service._classify_edoc(_VIEW_TML)
+    assert kind == "view"
+    assert kind in lineage_service._MODEL_KINDS
+    assert kind not in lineage_service._SOURCE_KINDS
+
+
+def test_view_columns_resolve_to_their_upstream_object():
+    from ts_admin.services import lineage_service
+
+    _, body = lineage_service._classify_edoc(_VIEW_TML)
+    rows = lineage_service._resolve_model_columns(
+        guid="view-1",
+        body=body,
+        physical_by_guid={},
+        physical_by_name={},
+        cluster_id=CLUSTER_ID,
+        org_id=0,
+    )
+
+    assert {r.model_column_name for r in rows} == {"Region", "Total Sales Amt"}
+    region = next(r for r in rows if r.model_column_name == "Region")
+    # One layer resolves: view column → upstream worksheet column. The db layer
+    # stays blank because a View genuinely has none.
+    assert (region.table_guid, region.table_column_name) == ("ws-1", "Region")
+    assert (region.db_table, region.connection_name) == ("", "")
+
+
+def test_view_with_several_sources_stops_at_the_column_name():
+    """The TML does not say which source an output column came from — do not guess."""
+    from ts_admin.services import lineage_service
+
+    body = {
+        "name": "Joined View",
+        "tables": [{"name": "A", "fqn": "a-1"}, {"name": "B", "fqn": "b-1"}],
+        "view_columns": [{"name": "Region", "search_output_column": "Region"}],
+    }
+    rows = lineage_service._resolve_model_columns(
+        guid="view-2", body=body, physical_by_guid={}, physical_by_name={}, cluster_id=CLUSTER_ID, org_id=0
+    )
+
+    assert len(rows) == 1
+    assert rows[0].table_column_name == "Region"
+    assert rows[0].table_guid == ""
+
+
+# ── Connections as a first-class root ────────────────────────────────────────────
+#
+# Connections are never CachedMetadata rows — they exist only as the target of a
+# CONNECTS edge. The left list and the graph both read from metadata, so a
+# connection was unreachable: it rendered in the graph but resolved to nothing,
+# and clicking it silently did nothing.
+
+
+async def test_topology_lists_connections_from_edges(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    topo = lineage_service.get_topology(cluster_id=CLUSTER_ID, org_id=0)
+    assert [c["ts_guid"] for c in topo["connections"]] == ["conn-1"]
+    assert topo["connections"][0]["node_type"] == "CONNECTION"
+    # And it is not double-counted into the object groups.
+    assert all(i["node_type"] != "CONNECTION" for i in topo["logical_tables"])
+
+
+async def test_connection_can_be_a_lineage_root(monkeypatch, in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _FakeTMLClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: fake)
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="conn-1", root_kind="connection")
+    assert graph is not None
+    assert (graph["root"]["name"], graph["root"]["node_type"]) == ("Snowflake Prod", "CONNECTION")
+    # Its tables are its consumers, and a connection has no column map of its own.
+    assert graph["consumer_totals"] == {"DB_TABLE": 1}
+    assert "table-1" in {n["guid"] for n in graph["nodes"]}
+    assert graph["columns"] == []
+
+
+def test_a_guid_that_is_neither_object_nor_connection_is_still_404(in_memory_db, patched_config):
+    """The connection fallback must not turn every unknown GUID into an empty graph."""
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    assert (
+        lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="no-such-guid", root_kind="connection")
+        is None
+    )

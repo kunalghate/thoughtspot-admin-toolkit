@@ -257,6 +257,7 @@ def _register_routers(app: FastAPI) -> None:
         relationships,
         sharing,
         sync,
+        update,
         users,
     )
 
@@ -273,6 +274,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(sharing.router, prefix="/api/v1")
     app.include_router(relationships.router, prefix="/api/v1")
     app.include_router(dashboard.router, prefix="/api/v1")
+    app.include_router(update.router, prefix="/api/v1")
 
 
 # Module-level app instance for uvicorn: uvicorn ts_admin.main:app

@@ -78,6 +78,8 @@ export interface GroupListItem {
   org_id: number;
   privileges: string[];
   member_count: number;
+  /** Creator's display name, or the raw GUID if that user isn't cached. */
+  created_by: string | null;
   created_at: string | null;
   modified_at: string | null;
   synced_at: string | null;
@@ -152,6 +154,10 @@ export interface MetadataStats {
 export interface MetadataListResponse extends PaginatedResponse<MetadataObject> {
   /** See MetadataStats.cache_authoritative. */
   cache_authoritative: boolean;
+  /** Cached objects in this cluster/org hidden by the System User filter.
+   *  `total` is what the admin can act on; this is what was withheld — the grid
+   *  needs it to explain an empty result instead of looking like a failed sync. */
+  hidden_system_count: number;
 }
 
 export interface PaginatedResponse<T> {
@@ -438,7 +444,7 @@ export type LineageNodeType =
   | "CONNECTION" | "DB_TABLE" | "LOGICAL_TABLE" | "MODEL" | "ANSWER" | "LIVEBOARD";
 
 /** The three explorer tabs' root_kind path segment. */
-export type RootKind = "model" | "answer" | "liveboard";
+export type RootKind = "model" | "answer" | "liveboard" | "connection";
 
 export interface TopologyItem {
   ts_guid: string;
@@ -453,13 +459,14 @@ export interface TopologyResponse {
   logical_tables: TopologyItem[];
   answers: TopologyItem[];
   liveboards: TopologyItem[];
+  connections: TopologyItem[];
 }
 
 export interface LineageNode {
   guid: string;
   name: string;
   node_type: LineageNodeType;
-  layer: number;         // 0=Connection … 4=Answer/Liveboard (frontend x = layer)
+  layer: number;         // pipeline depth by type; the graph lays out by distance from the root instead
   owner_name: string;
   accessible: boolean;
 }
@@ -579,4 +586,21 @@ export interface DashboardSummary {
   running_jobs: DashboardRunningJob[];
   recent_activity: DashboardActivity[];
   failed_jobs_7d: number;
+}
+
+// ── Updates ───────────────────────────────────────────────────────────────────
+
+export interface UpdateCheck {
+  /** The version currently running. */
+  current: string;
+  /** Latest published release, or null when the check could not be made. */
+  latest: string | null;
+  update_available: boolean;
+  /** False when GitHub was unreachable — show nothing rather than guessing. */
+  checked: boolean;
+  /** The exact command the user types to upgrade. Rendered verbatim. */
+  command: string;
+  release_url: string;
+  wheel_url: string | null;
+  error: string | null;
 }

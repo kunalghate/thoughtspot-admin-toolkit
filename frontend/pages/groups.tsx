@@ -41,6 +41,12 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
   const [selectedGroup, setSelectedGroup] = useState<GroupListItem | null>(null);
 
   const gridRef = useRef<AgGridReact<GroupListItem>>(null);
+  // Generation counter for the active datasource. A rebuild (org/cluster/search
+  // /sort change) bumps it; responses stamped with an older generation are
+  // dropped. Without this, the org-less first fetch that fires before
+  // `activeOrg` resolves can land last and overwrite `total` with the
+  // cluster-wide group count while the grid shows the org-scoped rows.
+  const loadIdRef = useRef(0);
 
   // Debounce typing → search so we don't refetch on every keystroke.
   useEffect(() => {
@@ -58,6 +64,8 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
     const sf = sortField;
     const so = sortOrder;
 
+    const loadId = ++loadIdRef.current;
+
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
@@ -70,10 +78,12 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
           });
+          if (loadId !== loadIdRef.current) return; // superseded by a newer datasource
           setTotal(res.total);
           setError(null);
           params.successCallback(res.items, res.total);
         } catch (e) {
+          if (loadId !== loadIdRef.current) return;
           setError(e instanceof Error ? e.message : String(e));
           params.failCallback();
         }
@@ -115,17 +125,19 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
     },
     { field: "member_count", headerName: "Members", width: 120 },
     {
-      field: "modified_at", headerName: "Modified", width: 140,
-      valueFormatter: (p) => p.value ? new Date(p.value as string).toLocaleDateString() : "",
+      // ThoughtSpot's own UI never shows who created a group; groups/search
+      // returns it as `author_id`, resolved to a display name server-side.
+      field: "created_by", headerName: "Created by", flex: 1, minWidth: 150,
+      valueFormatter: (p) => (p.value as string | null) ?? "—",
     },
     {
-      field: "synced_at", headerName: "Synced", width: 140,
+      field: "modified_at", headerName: "Modified", width: 140,
       valueFormatter: (p) => p.value ? new Date(p.value as string).toLocaleDateString() : "",
     },
   ], []);
 
   if (!activeCluster) {
-    return <EmptyState message="Select a cluster from the topbar to start." />;
+    return <EmptyState message="Select an instance from the topbar to start." />;
   }
 
   return (
@@ -142,7 +154,7 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
           style={{
             flex: 1, padding: "7px 12px", fontSize: 13, fontFamily: theme.font.sans,
             border: `1px solid ${theme.color.border}`, borderRadius: 6, background: theme.color.surface,
-            outline: "none",
+            color: theme.color.textPrimary, outline: "none",
           }}
         />
         <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>

@@ -304,7 +304,7 @@ def search_roots(
     fanned out from). Caller can override via `types`.
     """
     if types is None:
-        types = ["WORKSHEET", "TABLE", "MODEL", "VIEW", "ONE_TO_ONE_LOGICAL"]
+        types = ["WORKSHEET", "TABLE", "MODEL", "VIEW", "ONE_TO_ONE_LOGICAL", "DATASET"]
 
     with Session(_db.get_engine()) as session:
         rows = session.exec(

@@ -135,7 +135,7 @@ function buildJobColumns(onShowDetails: (job: Job) => void): ColDef<Job>[] {
     cellRenderer: (p: { value: string | null; data?: Job }) => {
       const job = p.data;
       if (!p.value || !job) {
-        return <span style={{ color: theme.color.violetBorder, fontSize: 12 }}>—</span>;
+        return <span style={{ color: theme.color.textMuted, fontSize: 12 }}>—</span>;
       }
       return (
         <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>

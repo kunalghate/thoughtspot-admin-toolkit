@@ -8,23 +8,14 @@ import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import { serializeFilterModel } from "@/lib/agGridFilters";
+import { metadataEmptyMessage, noRowsOverlay, withHiddenSuffix } from "@/lib/gridEmptyState";
 import type { MetadataObject } from "@/lib/types";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
+import { OBJECT_TYPES, TYPE_LABELS } from "@/lib/objectTypes";
 
 const PAGE_SIZE = 200;
 
-const OBJECT_TYPES = ["LIVEBOARD", "ANSWER", "WORKSHEET", "ONE_TO_ONE_LOGICAL", "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED"];
-const TYPE_LABELS: Record<string, string> = {
-  LIVEBOARD:          "Liveboard",
-  ANSWER:             "Answer",
-  WORKSHEET:          "Worksheet",
-  LOGICAL_TABLE:      "Worksheet",        // legacy cached records
-  ONE_TO_ONE_LOGICAL: "Table",
-  AGGR_WORKSHEET:     "Agg Worksheet",
-  SQL_VIEW:           "SQL View",
-  USER_DEFINED:       "User Defined",
-};
 
 // ── Page wrapper ───────────────────────────────────────────────────────────────
 
@@ -42,8 +33,12 @@ export default function MetadataPage() {
 function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const { activeCluster, activeOrg } = useShell();
   const gridRef = useRef<AgGridReact>(null);
+  // Generation counter for the active datasource — see the same guard on the
+  // Groups page. Drops responses from a superseded datasource.
+  const loadIdRef = useRef(0);
 
   const [total, setTotal]             = useState<number | null>(null);
+  const [hiddenSystem, setHidden]     = useState(0);
   const [search, setSearch]           = useState("");
   const [selectedTypes, setTypes]     = useState<string[]>([]);
   const [searchInput, setSearchInput] = useState(""); // raw input, debounced into search
@@ -69,6 +64,9 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
 
     const f = serializeFilterModel(colFilters);
 
+    const loadId = ++loadIdRef.current;
+    setTotal(null); // "Loading…" until the first block lands — never a stale count
+
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
@@ -92,7 +90,9 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
             record_offset: params.startRow,
             page_size: PAGE_SIZE,
           });
+          if (loadId !== loadIdRef.current) return; // superseded by a newer datasource
           setTotal(res.total);
+          setHidden(res.hidden_system_count ?? 0);
           params.successCallback(res.items, res.total);
         } catch {
           params.failCallback();
@@ -132,12 +132,35 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const exportCsv = () => gridRef.current?.api.exportDataAsCsv({ fileName: "metadata.csv" });
   const clearFilters = () => { setSearchInput(""); setSearch(""); setTypes([]); };
   const hasFilters = searchInput || selectedTypes.length > 0;
+  const isFiltered = Boolean(search) || selectedTypes.length > 0 || Object.keys(colFilters).length > 0;
 
   const displayCount = useMemo(() => {
     if (total === null) return "Loading…";
     const filtered = total.toLocaleString();
-    return selectedTypes.length > 0 || search ? `${filtered} results` : `${filtered} objects`;
-  }, [total, selectedTypes, search]);
+    const label = selectedTypes.length > 0 || search ? `${filtered} results` : `${filtered} objects`;
+    // Always surface what the System User filter withheld. An admin who sees
+    // fewer objects here than ThoughtSpot shows them deserves the reason.
+    return withHiddenSuffix(label, hiddenSystem);
+  }, [total, selectedTypes, search, hiddenSystem]);
+
+  // A blank table right after a green "Synced just now" reads as a broken sync —
+  // say which of the empty-cases actually happened.
+  const emptyMessage = useMemo(
+    () => metadataEmptyMessage({ hiddenSystem, isFiltered }),
+    [isFiltered, hiddenSystem],
+  );
+
+  // The infinite row model never shows the no-rows overlay on its own — drive it.
+  useEffect(() => {
+    const api = gridRef.current?.api;
+    if (!api) return;
+    if (total === 0) {
+      api.setGridOption("overlayNoRowsTemplate", noRowsOverlay(emptyMessage));
+      api.showNoRowsOverlay();
+    } else {
+      api.hideOverlay();
+    }
+  }, [total, emptyMessage]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", padding: 24, gap: 16 }}>
@@ -222,7 +245,6 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           onGridReady={handleGridReady}
           onSortChanged={handleSortChanged}
           onFilterChanged={handleFilterChanged}
-          overlayNoRowsTemplate="No content found. Sync metadata first."
           rowSelection="single"
           rowStyle={{ cursor: "pointer" }}
           onRowClicked={(e: RowClickedEvent<MetadataObject>) => {

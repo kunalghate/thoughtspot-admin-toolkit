@@ -181,7 +181,7 @@ export default function UserDetailDrawer({ clusterId, orgId, user, onClose }: Pr
                   display: "inline-flex", alignItems: "center", gap: 4,
                   padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600,
                   background: theme.color.accentSoft, color: theme.color.accent2,
-                }}><Shield size={10} /> Cluster admin</span>
+                }}><Shield size={10} /> Instance admin</span>
               )}
             </div>
             <div style={{ fontSize: 12, color: theme.color.textMuted, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

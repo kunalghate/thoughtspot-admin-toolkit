@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 # ArchiverService aliases this — keep it single-sourced.
 ARCHIVABLE_TYPES = ("LIVEBOARD", "ANSWER")
 
+# Owner of ThoughtSpot's built-in content (the TS: * worksheets, the system
+# Liveboards seeded into every new org). Not admin-actionable, so it is filtered
+# out of every browse query — see hidden_system_count() for why the count of
+# what was filtered has to travel with the results.
+SYSTEM_OWNER_NAME = "System User"
+
 
 class MetadataService:
     # ── Search / filter ────────────────────────────────────────────────────────
@@ -87,7 +93,7 @@ class MetadataService:
             CachedMetadata.org_id == org_id,
             # Hide objects owned by the built-in "System User" — not actionable
             # for admins (system-owned / internal content).
-            col(CachedMetadata.owner_name) != "System User",
+            col(CachedMetadata.owner_name) != SYSTEM_OWNER_NAME,
         ]
 
         if types:
@@ -180,6 +186,28 @@ class MetadataService:
 
             return list(items), total
 
+    @staticmethod
+    def hidden_system_count(*, cluster_id: str, org_id: int) -> int:
+        """Count the cached objects that search() hides as System User content.
+
+        Scoped to cluster/org only — deliberately NOT to the caller's active
+        filters. An org seeded with nothing but ThoughtSpot's built-in content
+        (every fresh org is) returns zero rows from search() even though the sync
+        just succeeded, and a blank grid reads as "the sync is broken". This
+        number is what lets the UI say the true thing instead: the sync worked,
+        and everything it found is system-owned.
+        """
+        with Session(_db.get_engine()) as session:
+            return session.exec(
+                select(func.count())
+                .select_from(CachedMetadata)
+                .where(
+                    CachedMetadata.cluster_id == cluster_id,
+                    CachedMetadata.org_id == org_id,
+                    col(CachedMetadata.owner_name) == SYSTEM_OWNER_NAME,
+                )
+            ).one()
+
     # ── Single object ──────────────────────────────────────────────────────────
 
     @staticmethod
@@ -244,7 +272,7 @@ class MetadataService:
             archivable = [
                 *scope,
                 col(CachedMetadata.object_type).in_(ARCHIVABLE_TYPES),
-                col(CachedMetadata.owner_name) != "System User",
+                col(CachedMetadata.owner_name) != SYSTEM_OWNER_NAME,
             ]
             archivable_total = session.exec(select(func.count()).select_from(CachedMetadata).where(*archivable)).one()
             stale = session.exec(

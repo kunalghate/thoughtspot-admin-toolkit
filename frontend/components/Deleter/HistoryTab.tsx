@@ -19,14 +19,10 @@ import { useShell } from "@/components/Shell";
 import { serializeFilterModel } from "@/components/Deleter/columns";
 import { archiverApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { typeLabel } from "@/lib/objectTypes";
 import type { ArchiveRecordFlatItem } from "@/lib/types";
 
 const HISTORY_PAGE_SIZE = 200;
-
-const TYPE_LABELS_HIST: Record<string, string> = {
-  LIVEBOARD: "Liveboard", ANSWER: "Answer",
-  WORKSHEET: "Worksheet", TABLE: "Table", MODEL: "Model", VIEW: "View",
-};
 
 const HISTORY_COLUMNS: ColDef[] = [
   {
@@ -46,7 +42,7 @@ const HISTORY_COLUMNS: ColDef[] = [
     filter: "agTextColumnFilter",
     filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     filterValueGetter: (p: { data?: { object_type?: string } }) =>
-      TYPE_LABELS_HIST[p.data?.object_type ?? ""] ?? p.data?.object_type,
+      typeLabel(p.data?.object_type),
     cellRenderer: (p: { value: string }) => (
       <span style={{
         padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 500,
@@ -54,7 +50,7 @@ const HISTORY_COLUMNS: ColDef[] = [
         background: p.value === "LIVEBOARD" ? theme.color.accentSoft : theme.color.surface3,
         color:      p.value === "LIVEBOARD" ? theme.color.accent2  : theme.color.textSecondary,
       }}>
-        {TYPE_LABELS_HIST[p.value] ?? p.value}
+        {typeLabel(p.value)}
       </span>
     ),
   },
@@ -116,7 +112,7 @@ export function HistoryTab() {
     if (!params.data) return null;
     const { id, name, tml_export_status } = params.data;
     if (tml_export_status !== "SUCCESS") {
-      return <span style={{ color: theme.color.violetBorder, fontSize: 12 }}>—</span>;
+      return <span style={{ color: theme.color.textMuted, fontSize: 12 }}>—</span>;
     }
     return (
       <a

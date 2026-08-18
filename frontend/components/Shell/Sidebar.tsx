@@ -99,7 +99,7 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
         >
           <div>
             <div style={{ fontSize: 10, color: theme.color.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, fontFamily: theme.font.sans }}>
-              Cluster
+              Instance
             </div>
             <div style={{ fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
               {activeCluster?.name ?? "—"}
@@ -108,7 +108,7 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
           <span style={{ color: theme.color.textMuted, fontSize: 14 }}>⇅</span>
         </button>
         <p style={{ fontSize: 10, color: theme.color.textMuted, margin: "6px 2px 0", fontFamily: theme.font.sans }}>
-          Go to Settings to add or remove clusters.
+          Go to Settings to add or remove instances.
         </p>
       </div>
 
