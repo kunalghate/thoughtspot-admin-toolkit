@@ -74,11 +74,43 @@ def _fetch_objects_by_guids(
     return results
 
 
+def _export_outcome(info: dict) -> tuple[str, str]:
+    """Return (status_code, error_message) for one `metadata/tml/export` entry.
+
+    The per-object result is nested one level deeper than it looks::
+
+        {"edoc": "…",
+         "info": {"id": "<guid>",
+                  "status": {"status_code": "OK" | "ERROR",
+                             "error_message": "…"}}}
+
+    Reading ``info["error_message"]`` — one level too shallow — is always None,
+    so every export failure was recorded as the generic placeholder
+    "TML export returned empty content" instead of the reason ThoughtSpot gave
+    (e.g. "Error Code: FORBIDDEN … Cannot download TML due to lack of access to
+    objects."), which is the only thing that tells an admin what to go fix.
+
+    Mirrors `archiver_service._import_outcome` on the import side, including its
+    tolerance for the flatter shape older clusters returned.
+    """
+    status = info.get("status")
+    if not isinstance(status, dict):
+        status = {}
+    return (
+        status.get("status_code") or "",
+        status.get("error_message") or info.get("error_message") or "",
+    )
+
+
 class _BackupExporter:
     """
     Client adapter that lets the delete path reuse `_export_tml_resilient`.
 
-    `metadata/tml/export` is all-or-nothing with no per-object status, and every
+    Most `metadata/tml/export` failures are per-object — the batch returns HTTP
+    200 and the un-exportable objects carry `info.status.status_code == "ERROR"`
+    (measured: 58 OK / 2 ERROR in one 60-object batch), which the caller handles
+    directly via `_export_outcome`. What still needs the bisect is the case that
+    fails the WHOLE batch: an unresolvable GUID 400s the entire request. Every
     real cluster carries a few dozen un-exportable objects (measured: 43 on
     se-demo, 36 on ps-internal-prod). `lineage_service._export_tml_resilient`
     already bisects a failing batch until the offender is isolated to a batch of
@@ -297,7 +329,14 @@ async def _execute_delete(
 
                     accounted.add(guid)
 
-                    if edoc:
+                    # `tml/export` failures are PER-OBJECT, not all-or-nothing:
+                    # a batch comes back HTTP 200 with an ERROR status on just
+                    # the objects that could not be exported. An ERROR status
+                    # fails the object even if an edoc came with it — this
+                    # gates a permanent delete, so anything ThoughtSpot flagged
+                    # is treated as "no trustworthy backup".
+                    status_code, status_error = _export_outcome(info)
+                    if edoc and status_code != "ERROR":
                         tml_path = job_tml_dir / f"{guid}.tml"
                         tml_path.write_text(edoc, encoding="utf-8")
                         delete_batch.append(guid)
@@ -307,7 +346,7 @@ async def _execute_delete(
                             tml_path=str(tml_path),
                         )
                     else:
-                        error = info.get("error_message") or "TML export returned empty content"
+                        error = status_error or "TML export returned empty content"
                         failed_tml.append(guid)
                         _update_record(
                             guid,
