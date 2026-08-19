@@ -42,6 +42,14 @@ Use `Bash` read-only to trace and reproduce reasoning — but **do not run the
 port-binding gates** (`make dev`, Playwright, uvicorn). QA owns those; running them
 in parallel collides on ports 8000/3000.
 
+**Work isolated (M8).** Run in your own detached worktree of the branch
+(`git worktree add --detach <scratchpad>/<lens> <branch>`; symlink
+`frontend/node_modules`). Scratch repros go in that worktree or the scratchpad —
+NEVER into the shared checkout's `tests/`, and never `npm run build` in the
+shared tree. Any ThoughtSpot REST v2 claim must cite the official reference
+(SpotterCode docs endpoint — `curl` JSON-RPC recipe in
+`docs/org-memory/codebase.md`) or a live measurement, not training data.
+
 ## Test vacuity (check this on every diff that adds or changes a test)
 
 A green test is not evidence until you know it can go red. For each test the

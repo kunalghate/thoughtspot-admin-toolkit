@@ -35,6 +35,17 @@ For the assigned item, return a brief covering:
   could fail open.
 - **Verification hooks** — which existing tests cover this area, and which guard
   test (dry-run / cluster-isolation / SSRF / audit-log) is relevant.
+- **The M9 answer (mandatory, not optional):** *what does the current code do
+  that the item's prescribed mechanism would REMOVE, and what load-bearing
+  behaviour in that area has NO test naming it?* Accidental recovery paths count
+  — S7's real self-heal was a side effect no test named, and missing it cost a
+  full built-and-rejected cycle. If the answer is "the mechanism removes
+  something unreplaced", say so prominently: that routes the item to the
+  cycle's REJECT outcome instead of design.
+- **API ground truth** — any ThoughtSpot REST v2 fact in the brief must come
+  from the official reference (SpotterCode docs endpoint — `curl` JSON-RPC
+  recipe in `docs/org-memory/codebase.md`) or a recorded live measurement,
+  never from training data or from reading our own client back to itself.
 - **Open questions** — ambiguities the architect or a human must resolve.
 
 Use `Bash` read-only (`git log`, `git blame`, `grep`, `rg`, `ls`) — never mutate

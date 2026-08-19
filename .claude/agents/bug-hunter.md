@@ -57,6 +57,13 @@ review. Run them against your hunting ground before you report it clean.
 - **Responses treated as if they were the request.** Iterating a ThoughtSpot
   bulk response and assuming it covers every requested id silently drops the
   ones it omits — and live clusters DO omit them.
+- **API contract claims need the reference, not memory.** v2 silently ignores
+  unknown request-body keys, so an invented key reads like a working filter —
+  three shipped that way. Before grading an API-shape finding CONFIRMED, check
+  it against the official REST v2 reference (SpotterCode docs endpoint — `curl`
+  JSON-RPC recipe in `docs/org-memory/codebase.md`), and keep scratch scripts
+  off the live cluster unless the CEO's brief says otherwise (use
+  `patched_config`, never a hand-patched engine).
 
 ## Every finding needs
 
