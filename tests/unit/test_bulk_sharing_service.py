@@ -191,6 +191,39 @@ def _execute(job_id: str, object_guids: list[str], mode: str = "READ_ONLY") -> N
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
+class TestShareRequestReachesTheClientIntact:
+    @pytest.mark.parametrize("notify", [True, False])
+    def test_notify_reaches_the_client_instead_of_only_the_audit_log(self, in_memory_db, patched_env, seeded, notify):
+        """`notify` used to be recorded in the audit-log row and then dropped —
+        it never reached the client. `notify_on_share` defaults to TRUE on the
+        wire, so "do not notify" would have emailed every recipient while the
+        audit trail said `"notify": false`."""
+        from ts_admin.services.bulk_sharing_service import SHARE_MESSAGE, execute_share
+
+        job_id = _create_job("bulk_share")
+        asyncio.run(
+            execute_share(
+                job_id,
+                CLUSTER_ID,
+                ORG_ID,
+                ["lb-1"],
+                ["g-finance"],
+                "READ_ONLY",
+                notify=notify,
+            )
+        )
+        assert _FakeClient.share_kwargs == [{"message": SHARE_MESSAGE, "notify": notify}]
+
+    def test_message_is_never_empty(self, in_memory_db, patched_env, seeded):
+        """`message` is in the share schema's `required` list."""
+        from ts_admin.services.bulk_sharing_service import SHARE_MESSAGE, execute_share
+
+        job_id = _create_job("bulk_share")
+        asyncio.run(execute_share(job_id, CLUSTER_ID, ORG_ID, ["lb-1"], ["g-finance"], "READ_ONLY"))
+        assert SHARE_MESSAGE
+        assert _FakeClient.share_kwargs[0]["message"] == SHARE_MESSAGE
+
+
 class TestPreviewExecuteAgree:
     def test_uncached_guid_is_excluded_from_both_and_reported_in_both(
         self,

@@ -489,6 +489,103 @@ class TestExecuteTransferSharing:
             assert principals == ["bob"]
 
 
+class TestTransferSharingScope:
+    """`principals/fetch-permissions` returns the source user's EFFECTIVE access,
+    every metadata type included. On ps-internal-prod that was 23,197 rows for a
+    single user, 20,425 of them LOGICAL_COLUMNs — not shareable content in their
+    own right, only reachable through the table that owns them, which the same
+    job already re-shares."""
+
+    ROWS = [
+        {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"},
+        {"metadata_id": "t-1", "metadata_name": "Orders", "metadata_type": "LOGICAL_TABLE", "share_mode": "MODIFY"},
+        {"metadata_id": "c-1", "metadata_name": "amount", "metadata_type": "LOGICAL_COLUMN", "share_mode": "MODIFY"},
+        {"metadata_id": "c-2", "metadata_name": "region", "metadata_type": "LOGICAL_COLUMN", "share_mode": "READ_ONLY"},
+    ]
+
+    def test_execute_never_shares_a_logical_column(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.user_management_service import execute_transfer_sharing
+
+        _FakeClient.principal_perm_results = list(self.ROWS)
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+        shared = {g for ids, _p, _m in _FakeClient.share_calls for g in ids}
+        assert shared == {"lb-1", "t-1"}
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+        assert job.status == "COMPLETE"
+        assert job.progress == 2, "the job total must count what is shared, not what is fetched"
+
+    def test_preview_and_execute_scope_identically(self, in_memory_db, patched_env, seeded):
+        """A dry-run that predicts more than the execute performs is worse than
+        no dry-run — it is the number the admin approves."""
+        from ts_admin.services.user_management_service import (
+            execute_transfer_sharing,
+            preview_transfer_sharing,
+        )
+
+        _FakeClient.principal_perm_results = list(self.ROWS)
+        preview = asyncio.run(
+            preview_transfer_sharing(
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+        assert preview["total"] == 2
+        assert "LOGICAL_COLUMN" not in preview["by_type"]
+
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+        shared = {g for ids, _p, _m in _FakeClient.share_calls for g in ids}
+        assert shared == {r["metadata_id"] for r in preview["items"]}
+
+    @pytest.mark.parametrize("notify", [True, False])
+    def test_notify_reaches_the_client_instead_of_only_the_audit_log(self, in_memory_db, patched_env, seeded, notify):
+        """`notify` used to be written to the audit row and then dropped, and
+        the wire default is TRUE — so "do not notify" would have emailed
+        everyone while the audit trail said otherwise."""
+        from ts_admin.services.user_management_service import (
+            TRANSFER_SHARE_MESSAGE,
+            execute_transfer_sharing,
+        )
+
+        _FakeClient.principal_perm_results = [
+            {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"}
+        ]
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+                notify=notify,
+            )
+        )
+        assert _FakeClient.share_kwargs == [{"message": TRANSFER_SHARE_MESSAGE, "notify": notify}]
+        assert TRANSFER_SHARE_MESSAGE, "`message` is required by the share schema — it may not be empty"
+
+
 class TestExecuteDelete:
     def test_happy_path(self, in_memory_db, patched_env, seeded):
         from ts_admin.services.user_management_service import execute_delete
@@ -509,6 +606,24 @@ class TestExecuteDelete:
             # CachedUser row gone
             remaining = s.exec(select(CachedUser.username)).all()
             assert "bob" not in remaining
+
+    def test_one_call_per_user_because_there_is_no_bulk_delete(self, in_memory_db, patched_env, seeded):
+        """`users/delete` does not exist — only `users/{id}/delete` does — so the
+        service must issue one call per identifier and never batch."""
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob", "u-carol"],
+                user_identifiers=["bob", "carol"],
+            )
+        )
+        assert _FakeClient.delete_calls == [["bob"], ["carol"]] or _FakeClient.delete_calls == [["carol"], ["bob"]]
+        assert all(len(call) == 1 for call in _FakeClient.delete_calls)
 
     def test_failure_retries_then_gives_up_at_10(self, in_memory_db, patched_env, seeded, fast_retry):
         from ts_admin.services.user_management_service import execute_delete
