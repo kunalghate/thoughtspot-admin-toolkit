@@ -22,6 +22,7 @@ import pytest
 from sqlmodel import Session, create_engine, select
 
 from ts_admin.models.archive_record import ArchiveRecord
+from ts_admin.models.audit_log import AuditLog
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
@@ -384,5 +385,86 @@ class TestRestoreDiscoverability:
 
         assert _FakeClient.import_calls == []
         with Session(in_memory_db) as s:
-            result = s.get(Job, job_id).get_result()
-        assert result["skipped"] == 1
+            job = s.get(Job, job_id)
+            status, error = job.status, job.error or ""
+        # A restore that restored NOTHING is FAILED, not COMPLETE — an
+        # all-skipped run used to report COMPLETE with succeeded=0, which reads
+        # as "the restore ran and it's done". The message names the bucket and
+        # the reason, because the count alone is not actionable.
+        assert status == "FAILED"
+        assert "0 of 1 objects restored" in error
+        assert "1 record(s) were not restorable" in error
+        assert "already restored" in error
+
+
+# ── M14: zero restores is FAILED, never PARTIAL and never COMPLETE ────────────
+
+
+class TestNothingRestoredIsFailed:
+    """
+    `if succeeded == 0 and failed: mark_failed` covered only the import-failure
+    case; an ALL-SKIPPED run fell through to `mark_complete`, so a restore that
+    restored nothing reported COMPLETE with succeeded=0 — and the audit row was
+    computed from a COMPLETE-or-PARTIAL expression that could not say FAILED at
+    all.
+    """
+
+    def _audit_rows(self):
+        from ts_admin.database import get_session
+
+        with get_session() as s:
+            return list(s.exec(select(AuditLog).where(AuditLog.action_type == "restore")).all())
+
+    def test_every_import_failing_ends_failed_in_the_job_and_the_audit_row(
+        self,
+        in_memory_db,
+        patched_env,
+        cluster_row,
+        tmp_path,
+    ):
+        with Session(in_memory_db) as s:
+            s.add(_archive_record(tmp_path, record_id="r1", name="Sales", guid="lb-old"))
+            s.add(_archive_record(tmp_path, record_id="r2", name="Revenue", guid="ans-old"))
+            s.commit()
+        _FakeClient.canned_results = [
+            {"response": {"header": {"name": "Sales"}, "status": {"status_code": "ERROR", "error_message": "nope"}}},
+            {"response": {"header": {"name": "Revenue"}, "status": {"status_code": "ERROR", "error_message": "nope"}}},
+        ]
+
+        job_id = _run_restore(["r1", "r2"])
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+        assert job.status == "FAILED"
+        assert "0 of 2 objects restored" in (job.error or "")
+        assert "2 TML import(s) failed" in (job.error or "")
+
+        rows = self._audit_rows()
+        assert len(rows) == 1
+        assert rows[0].status == "FAILED"
+        assert rows[0].items_affected == 0
+
+    def test_a_genuinely_partial_restore_is_still_partial(
+        self,
+        in_memory_db,
+        patched_env,
+        cluster_row,
+        tmp_path,
+    ):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        with Session(in_memory_db) as s:
+            s.add(_archive_record(tmp_path, record_id="r1", name="Sales", guid="lb-old"))
+            s.add(_archive_record(tmp_path, record_id="r2", name="Revenue", guid="ans-old"))
+            s.commit()
+        _FakeClient.canned_results = [
+            {"response": {"header": {"id_guid": "lb-new", "name": "Sales"}, "status": {"status_code": "OK"}}},
+            {"response": {"header": {"name": "Revenue"}, "status": {"status_code": "ERROR", "error_message": "nope"}}},
+        ]
+
+        job_id = _run_restore(["r1", "r2"])
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+        assert job.status == "PARTIAL"
+        assert (job.get_result() or {})["succeeded"] == 1
+        assert self._audit_rows()[0].status == "PARTIAL"

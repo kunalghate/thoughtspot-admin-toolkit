@@ -142,6 +142,40 @@ class _BackupExporter:
             raise
 
 
+def _delete_failure_reason(
+    *,
+    total: int,
+    failed_tml: int,
+    failed_delete: int,
+    not_attempted: int,
+    cancelled: bool,
+    error_samples: dict[str, str],
+) -> str:
+    """Name why a delete job deleted nothing.
+
+    The old message — "0 objects deleted — N TML exports failed" — named only
+    one of the four buckets and never the error itself, so a run that failed
+    entirely at the delete call reported "0 TML exports failed" and left the
+    admin with nothing to act on.
+    """
+    if total == 0:
+        return "0 objects deleted — the request named no objects."
+    parts: list[str] = []
+    if failed_tml:
+        detail = error_samples.get("tml") or "no reason returned"
+        parts.append(f"{failed_tml} TML backup(s) failed, so those objects were never deleted — first error: {detail}")
+    if failed_delete:
+        detail = error_samples.get("delete") or "no reason returned"
+        parts.append(f"{failed_delete} delete call(s) failed — first error: {detail}")
+    if cancelled:
+        parts.append("the job was cancelled")
+    if not_attempted:
+        parts.append(f"{not_attempted} exported object(s) were never attempted")
+    if not parts:
+        parts.append("no delete call was attempted")
+    return f"0 of {total} objects deleted: " + "; ".join(parts) + "."
+
+
 # ── Phase 5: Delete with mandatory TML safety net ─────────────────────────────
 
 
@@ -183,7 +217,9 @@ async def _execute_delete(
     deleted, failed_tml, failed_delete or not_attempted — and
     `succeeded + failed_tml + failed_delete + not_attempted == len(object_ids)`.
     A run that does not reconcile, or that leaves any non-deleted GUID, is
-    PARTIAL. Only a fully reconciled, fully deleted run is COMPLETE.
+    PARTIAL. Only a fully reconciled, fully deleted run is COMPLETE. A run that
+    deleted NOTHING is FAILED, never PARTIAL — including in the audit row, which
+    used to carry PARTIAL while the job itself said FAILED.
     """
     from sqlmodel import col
     from sqlmodel import delete as sql_delete
@@ -267,6 +303,10 @@ async def _execute_delete(
         delete_batch: list[str] = []  # GUIDs successfully exported
         failed_tml: list[str] = []
         accounted: set[str] = set()  # requested GUIDs the export response covered
+        # First error seen per phase. A terminal FAILED message that only counts
+        # ("0 objects deleted — 12 TML exports failed") tells an admin nothing
+        # they can act on; the reason ThoughtSpot gave does.
+        error_samples: dict[str, str] = {}
 
         def _fail_export(guid: str, error: str) -> None:
             """Bucket one GUID as an export failure. Idempotent per GUID."""
@@ -274,6 +314,7 @@ async def _execute_delete(
                 return
             accounted.add(guid)
             failed_tml.append(guid)
+            error_samples.setdefault("tml", error)
             _update_record(guid, tml_export_status="FAILED", tml_export_error=error[:500])
 
         cluster = _get_cluster(cluster_id)
@@ -347,6 +388,7 @@ async def _execute_delete(
                         )
                     else:
                         error = status_error or "TML export returned empty content"
+                        error_samples.setdefault("tml", error)
                         failed_tml.append(guid)
                         _update_record(
                             guid,
@@ -392,6 +434,7 @@ async def _execute_delete(
                     enum_type = MetadataType(obj_type)
                 except ValueError:
                     logger.warning("Unknown type %r — skipping %d objects", obj_type, len(guids))
+                    error_samples.setdefault("delete", f"{obj_type!r} is not a deletable metadata type")
                     failed_delete.extend(guids)
                     continue
 
@@ -403,28 +446,37 @@ async def _execute_delete(
 
                     try:
                         await client.delete_metadata(object_ids=chunk, object_type=enum_type)
-
-                        # Remove from CachedMetadata cache. Scoped to
-                        # (cluster_id, org_id) like the sibling read in
-                        # `_fetch_objects_by_guids` — a GUID can exist in more
-                        # than one org and on more than one cluster, and an
-                        # unscoped purge wipes cache rows for objects that were
-                        # never deleted.
-                        with Session(_db.get_engine()) as session:
-                            session.exec(
-                                sql_delete(CachedMetadata).where(
-                                    CachedMetadata.cluster_id == cluster_id,
-                                    CachedMetadata.org_id == org_id,
-                                    col(CachedMetadata.ts_guid).in_(chunk),
-                                )
-                            )
-                            session.commit()
-
-                        deleted.extend(chunk)
-                    except Exception as exc:
+                    # ONLY the live call is guarded, and only against the two
+                    # families it can raise (`_request` maps every HTTP outcome
+                    # onto TSAdminError; httpx.HTTPError covers the transport).
+                    # The blanket `except Exception` that used to wrap the cache
+                    # purge too would have recorded a successful delete as
+                    # `failed_delete` if the purge threw — reporting an object
+                    # as still present when it is permanently gone.
+                    except (TSAdminError, httpx.HTTPError) as exc:
                         logger.warning("delete_metadata chunk failed: %s", exc)
+                        error_samples.setdefault("delete", str(exc))
                         failed_delete.extend(chunk)
+                        update_progress(job_id, len(deleted))
+                        continue
 
+                    # Remove from CachedMetadata cache. Scoped to
+                    # (cluster_id, org_id) like the sibling read in
+                    # `_fetch_objects_by_guids` — a GUID can exist in more
+                    # than one org and on more than one cluster, and an
+                    # unscoped purge wipes cache rows for objects that were
+                    # never deleted.
+                    with Session(_db.get_engine()) as session:
+                        session.exec(
+                            sql_delete(CachedMetadata).where(
+                                CachedMetadata.cluster_id == cluster_id,
+                                CachedMetadata.org_id == org_id,
+                                col(CachedMetadata.ts_guid).in_(chunk),
+                            )
+                        )
+                        session.commit()
+
+                    deleted.extend(chunk)
                     update_progress(job_id, len(deleted))
 
             succeeded = len(deleted)
@@ -455,11 +507,23 @@ async def _execute_delete(
             )
 
         # COMPLETE means "every requested object was deleted, and the numbers
-        # add up". Anything else is PARTIAL.
-        status = (
-            "COMPLETE"
-            if (succeeded == total and not failed_tml and not failed_delete and not cancelled and reconciled)
-            else "PARTIAL"
+        # add up". Zero deletions is FAILED, never PARTIAL — evaluated FIRST,
+        # because PARTIAL reads to an admin as "some of it worked, retry the
+        # rest" and a run that deleted nothing achieved nothing. Anything in
+        # between is PARTIAL.
+        if succeeded == 0:
+            status = "FAILED"
+        elif succeeded == total and not failed_tml and not failed_delete and not cancelled and reconciled:
+            status = "COMPLETE"
+        else:
+            status = "PARTIAL"
+        failure_reason = _delete_failure_reason(
+            total=total,
+            failed_tml=len(failed_tml),
+            failed_delete=len(failed_delete),
+            not_attempted=len(not_attempted),
+            cancelled=cancelled,
+            error_samples=error_samples,
         )
         result = {
             "succeeded": succeeded,
@@ -490,24 +554,26 @@ async def _execute_delete(
             entry.set_parameters(
                 {
                     "object_ids": requested,
+                    "error": failure_reason if status == "FAILED" else "",
                     **result,
                 }
             )
             session.add(entry)
             session.commit()
 
-        if succeeded == 0 and not cancelled:
-            mark_failed(job_id, f"0 objects deleted — {len(failed_tml)} TML exports failed")
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
         elif status == "PARTIAL":
             mark_partial(job_id, result)
         else:
             mark_complete(job_id, result)
 
         logger.info(
-            "%s job=%s cluster=%s succeeded=%d failed_tml=%d failed_delete=%d not_attempted=%d cancelled=%s",
+            "%s job=%s cluster=%s status=%s succeeded=%d failed_tml=%d failed_delete=%d not_attempted=%d cancelled=%s",
             action_type,
             job_id,
             cluster_id,
+            status,
             succeeded,
             len(failed_tml),
             len(failed_delete),
@@ -515,6 +581,11 @@ async def _execute_delete(
             cancelled,
         )
 
+    # Last-resort handler for a background task: this runs after the 202 is on
+    # the wire, so an exception that escapes is invisible to the caller and
+    # strands the Job row at RUNNING forever. Permitted to swallow ANY
+    # exception — none silently: each is logged with a traceback and re-reported
+    # as a FAILED job.
     except Exception as exc:
         logger.exception("_execute_delete job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)
@@ -576,7 +647,11 @@ async def dryrun(
             ]
             try:
                 dep_map = await client.fetch_dependents(objects=dep_objects)
-            except Exception as exc:
+            # Non-fatal by design — the dry-run still reports permissions
+            # without it. Narrowed to the two families a live call can raise so
+            # a bug in our own parsing no longer degrades to "no dependents",
+            # which would understate the blast radius of a delete.
+            except (TSAdminError, httpx.HTTPError) as exc:
                 logger.warning("fetch_dependents failed (non-fatal): %s", exc)
                 dep_map = {}
 
@@ -595,7 +670,14 @@ async def dryrun(
         ]
 
         for item in perm_results:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
+                # `return_exceptions=True` swallows EVERYTHING, including a bug
+                # in our own code, and would file it as a per-object "error" row
+                # in an otherwise COMPLETE dry-run. Only the two families a live
+                # call can raise are reportable that way; anything else re-raises
+                # and fails the dry-run.
+                if not isinstance(item, (TSAdminError, httpx.HTTPError)):
+                    raise item
                 errors.append({"ts_guid": "unknown", "error": str(item)})
                 continue
             guid, perms = item
@@ -645,6 +727,9 @@ async def dryrun(
             len(errors),
         )
 
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `_execute_delete`. Permitted to swallow ANY exception because
+    # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("dryrun job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)

@@ -28,6 +28,7 @@ import json
 import logging
 from typing import Literal
 
+import httpx
 from sqlalchemy import distinct
 from sqlmodel import Session, col, func, select
 
@@ -41,7 +42,7 @@ from ts_admin.models.cache.ts_user import (
     UserOrgMembership,
 )
 from ts_admin.models.user_action_record import UserActionRecord
-from ts_admin.ts_client.exceptions import StaleCacheError
+from ts_admin.ts_client.exceptions import StaleCacheError, TSAdminError
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,28 @@ def _get_cluster(cluster_id: str):
     if cluster is None:
         raise ValueError(f"Cluster {cluster_id!r} not found in config")
     return cluster
+
+
+def _nothing_succeeded_reason(*, noun: str, total: int, failures: list[str], cancelled: bool) -> str:
+    """Compose the failure message for a job in which nothing succeeded.
+
+    A bare count ("0 objects transferred") is not a reason — it is the number the
+    admin can already see. What they need is the error ThoughtSpot actually
+    returned, which is what tells them whether to retry, fix a privilege, or
+    stop. Three of this module's write paths reported PARTIAL with zero items
+    affected for the life of the project against endpoints that 404'd; the
+    status is only half the fix, the message is the other half.
+    """
+    if total == 0:
+        return f"0 {noun} — the request resolved nothing to act on."
+    parts: list[str] = []
+    if failures:
+        parts.append(f"{len(failures)} call(s) failed — first error: {failures[0] or 'unknown error'}")
+    if cancelled:
+        parts.append("the job was cancelled")
+    if not parts:
+        parts.append("no call was attempted")
+    return f"0 of {total} {noun}: " + "; ".join(parts) + "."
 
 
 def _user_row_to_dict(u: CachedUser) -> dict:
@@ -383,6 +406,9 @@ async def execute_transfer(
     Refuses on a non-authoritative metadata cache — `object_ids` was produced by
     `preview_transfer` against that cache, and executing a transfer the preview
     understated is exactly the failure mode this guard exists for.
+
+    Terminal status: zero transfers is FAILED, never PARTIAL, and the message
+    names the error ThoughtSpot returned rather than only counting failures.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -460,46 +486,74 @@ async def execute_transfer(
                         object_ids=chunk,
                         new_owner_identifier=to_user_identifier,
                     )
-                    succeeded += len(chunk)
-                    # Update CachedMetadata so the UI reflects new ownership
-                    # immediately. Org-scoped: the same GUID can hold a row per
-                    # org, and this transfer ran against exactly one org — a
-                    # cluster-only .first() rewrote whichever org came back
-                    # first, so the wrong org's cache showed the new owner and
-                    # the right one kept the old.
-                    with Session(_db.get_engine()) as session:
-                        for guid in chunk:
-                            obj = session.exec(
-                                select(CachedMetadata).where(
-                                    CachedMetadata.cluster_id == cluster_id,
-                                    CachedMetadata.org_id == org_id,
-                                    CachedMetadata.ts_guid == guid,
-                                )
-                            ).first()
-                            if obj and to_user:
-                                obj.owner_guid = to_user.ts_guid
-                                obj.owner_name = to_user.display_name or to_user.username
-                                session.add(obj)
-                        session.commit()
-                except Exception as exc:
+                # ONLY the live call is guarded, and only against the two
+                # families it can raise (`_request` maps every HTTP outcome onto
+                # TSAdminError; httpx.HTTPError covers the transport). The
+                # blanket `except Exception` that used to wrap the cache update
+                # as well turned a bug in our own code into "this chunk failed
+                # upstream" — anything else must reach the outer handler.
+                except (TSAdminError, httpx.HTTPError) as exc:
                     logger.warning("assign_metadata_owner chunk failed: %s", exc)
                     failed_chunks.append({"guids": chunk, "error": str(exc)[:300]})
+                    update_progress(job_id, succeeded)
+                    continue
+
+                succeeded += len(chunk)
+                # Update CachedMetadata so the UI reflects new ownership
+                # immediately. Org-scoped: the same GUID can hold a row per
+                # org, and this transfer ran against exactly one org — a
+                # cluster-only .first() rewrote whichever org came back
+                # first, so the wrong org's cache showed the new owner and
+                # the right one kept the old.
+                with Session(_db.get_engine()) as session:
+                    for guid in chunk:
+                        obj = session.exec(
+                            select(CachedMetadata).where(
+                                CachedMetadata.cluster_id == cluster_id,
+                                CachedMetadata.org_id == org_id,
+                                CachedMetadata.ts_guid == guid,
+                            )
+                        ).first()
+                        if obj and to_user:
+                            obj.owner_guid = to_user.ts_guid
+                            obj.owner_name = to_user.display_name or to_user.username
+                            session.add(obj)
+                    session.commit()
                 update_progress(job_id, succeeded)
 
-        status = "PARTIAL" if (failed_chunks or cancelled) else "SUCCESS"
+        # Zero successes is FAILED, never PARTIAL — see the note in
+        # `bulk_sharing_service.execute_share`. The succeeded == 0 branch is
+        # evaluated first and the message names the cause, not just a count.
+        if succeeded == 0:
+            status = "FAILED"
+        elif failed_chunks or cancelled:
+            status = "PARTIAL"
+        else:
+            status = "SUCCESS"
+        failure_reason = _nothing_succeeded_reason(
+            noun="objects transferred",
+            total=total,
+            failures=[c.get("error", "") for c in failed_chunks],
+            cancelled=cancelled,
+        )
+
         with Session(_db.get_engine()) as session:
             rec = session.get(UserActionRecord, record_id)
             if rec:
                 rec.items_succeeded = succeeded
                 rec.items_failed = total - succeeded
                 rec.status = status
+                if status == "FAILED":
+                    rec.error = failure_reason[:500]
                 session.add(rec)
                 audit = AuditLog(
                     cluster_id=cluster_id,
                     action_type="transfer_ownership",
                     entity_type="user",
                     items_affected=succeeded,
-                    status=status if status != "SUCCESS" else "SUCCESS",
+                    # Same terminal status as the job — the audit row used to be
+                    # computed from an expression that could not say FAILED.
+                    status=status,
                 )
                 audit.set_parameters(
                     {
@@ -509,6 +563,7 @@ async def execute_transfer(
                         "succeeded": succeeded,
                         "failed_chunks": failed_chunks,
                         "cancelled": cancelled,
+                        "error": failure_reason if status == "FAILED" else "",
                     }
                 )
                 session.add(audit)
@@ -520,21 +575,27 @@ async def execute_transfer(
             "cancelled": cancelled,
             "record_id": record_id,
         }
-        if status == "PARTIAL":
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
+        elif status == "PARTIAL":
             mark_partial(job_id, result)
-        elif succeeded == 0:
-            mark_failed(job_id, "0 objects transferred")
         else:
             mark_complete(job_id, result)
         logger.info(
-            "transfer job=%s cluster=%s from=%s to=%s succeeded=%d failed=%d",
+            "transfer job=%s cluster=%s status=%s from=%s to=%s succeeded=%d failed=%d",
             job_id,
             cluster_id,
+            status,
             from_user_guid,
             to_user_identifier,
             succeeded,
             total - succeeded,
         )
+    # Last-resort handler for a background task: this runs after the 202 is on
+    # the wire, so an exception that escapes is invisible to the caller and
+    # strands the Job row at RUNNING. Permitted to swallow ANY exception —
+    # nothing is swallowed silently; each one is logged with a traceback, marks
+    # the UserActionRecord FAILED and re-reported as a FAILED job.
     except Exception as exc:
         logger.exception("execute_transfer job %s failed: %s", job_id, exc)
         with Session(_db.get_engine()) as session:
@@ -655,6 +716,10 @@ async def execute_transfer_sharing(
     a key on that endpoint and was discarded). Rows now carry `is_direct_share`,
     so narrowing to direct shares only is a one-line filter here; it is
     deliberately NOT applied yet — see the hand-back note.
+
+    Terminal status: zero successes is FAILED, never PARTIAL — including the
+    `total == 0` case, which used to report COMPLETE. See the comment at the
+    status computation for why an empty source set cannot be trusted.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -746,12 +811,43 @@ async def execute_transfer_sharing(
                             notify=notify,
                         )
                         succeeded += len(chunk)
-                    except Exception as exc:
+                    # Only the two families a live call can raise; a bug in our
+                    # own code is not "this bucket failed upstream" and must
+                    # reach the outer handler instead of becoming a PARTIAL.
+                    except (TSAdminError, httpx.HTTPError) as exc:
                         logger.warning("share_objects chunk failed (%s): %s", mode, exc)
                         failed_buckets.append({"mode": mode, "guids": chunk, "error": str(exc)[:300]})
                     update_progress(job_id, succeeded)
 
-        status = "PARTIAL" if (failed_buckets or cancelled) else "SUCCESS"
+        # Zero successes is FAILED, never PARTIAL — see the note in
+        # `bulk_sharing_service.execute_share`. `total == 0` is FAILED too, and
+        # deliberately so: `principals/fetch-permissions` degrades to an empty
+        # list on a response-shape mismatch rather than raising, so "the source
+        # user can see nothing" and "we could not read what the source user can
+        # see" are indistinguishable here. Reporting COMPLETE told an admin the
+        # handover was done when it may never have started; the message names
+        # both possibilities.
+        if succeeded == 0:
+            status = "FAILED"
+        elif failed_buckets or cancelled:
+            status = "PARTIAL"
+        else:
+            status = "SUCCESS"
+        if total == 0:
+            failure_reason = (
+                f"0 objects were re-shared to {to_user_identifier!r}: the source user's accessible-object "
+                "list came back empty. Either they have no shareable content, or "
+                "`security/principals/fetch-permissions` returned a shape this build could not read — "
+                "check the user in ThoughtSpot before treating the handover as done."
+            )
+        else:
+            failure_reason = _nothing_succeeded_reason(
+                noun="objects re-shared",
+                total=total,
+                failures=[b.get("error", "") for b in failed_buckets],
+                cancelled=cancelled,
+            )
+
         with Session(_db.get_engine()) as session:
             rec = session.get(UserActionRecord, record_id)
             if rec:
@@ -760,13 +856,16 @@ async def execute_transfer_sharing(
                 rec.items_failed = total - succeeded
                 rec.status = status
                 rec.set_affected(rows[:200])
+                if status == "FAILED":
+                    rec.error = failure_reason[:500]
                 session.add(rec)
                 audit = AuditLog(
                     cluster_id=cluster_id,
                     action_type="transfer_sharing",
                     entity_type="user",
                     items_affected=succeeded,
-                    status=status if status != "SUCCESS" else "SUCCESS",
+                    # Same terminal status as the job.
+                    status=status,
                 )
                 audit.set_parameters(
                     {
@@ -777,6 +876,7 @@ async def execute_transfer_sharing(
                         "succeeded": succeeded,
                         "failed_buckets": failed_buckets,
                         "cancelled": cancelled,
+                        "error": failure_reason if status == "FAILED" else "",
                     }
                 )
                 session.add(audit)
@@ -789,23 +889,25 @@ async def execute_transfer_sharing(
             "cancelled": cancelled,
             "record_id": record_id,
         }
-        if total == 0:
-            mark_complete(job_id, result)
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
         elif status == "PARTIAL":
             mark_partial(job_id, result)
-        elif succeeded == 0:
-            mark_failed(job_id, "0 shares applied")
         else:
             mark_complete(job_id, result)
         logger.info(
-            "transfer_sharing job=%s cluster=%s from=%s to=%s succeeded=%d failed=%d",
+            "transfer_sharing job=%s cluster=%s status=%s from=%s to=%s succeeded=%d failed=%d",
             job_id,
             cluster_id,
+            status,
             from_user_guid,
             to_user_identifier,
             succeeded,
             total - succeeded,
         )
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `execute_transfer`. Permitted to swallow ANY exception because
+    # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("execute_transfer_sharing job %s failed: %s", job_id, exc)
         with Session(_db.get_engine()) as session:
@@ -932,6 +1034,9 @@ async def dryrun_delete(
             result["total"],
             len(missing_live),
         )
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `execute_transfer`. Permitted to swallow ANY exception because
+    # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("dryrun_delete job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)
@@ -963,6 +1068,9 @@ async def execute_delete(
     A refusal marks the job FAILED and returns — it never raises. The task runs
     as a Starlette background task, i.e. after the 202 is on the wire, where a
     raise is fail-silent and strands the Job row (S23).
+
+    Terminal status: zero deletions is FAILED, never PARTIAL, and the message
+    names the error ThoughtSpot returned rather than only counting failures.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -1056,7 +1164,11 @@ async def execute_delete(
                         try:
                             await client.delete_user(user_identifier=ident)
                             return ident, None
-                        except Exception as exc:
+                        # Only the two families a live call can raise. This
+                        # per-identifier catch feeds the retry loop, so a bug in
+                        # our own code would otherwise be retried ten times and
+                        # then reported as a cluster-side failure.
+                        except (TSAdminError, httpx.HTTPError) as exc:
                             return ident, exc
 
                 results = await asyncio.gather(*[_delete_one(i) for i in list(pending.keys())])
@@ -1102,7 +1214,23 @@ async def execute_delete(
                 )
                 session.commit()
 
-        status = "PARTIAL" if (failed or cancelled) else "SUCCESS"
+        # Zero successes is FAILED, never PARTIAL — see the note in
+        # `bulk_sharing_service.execute_share`. `/users/delete` 404'd for the
+        # life of the project and every run of it reported PARTIAL with zero
+        # users affected, which reads as "some of them went, retry the rest".
+        if succeeded == 0:
+            status = "FAILED"
+        elif failed or cancelled:
+            status = "PARTIAL"
+        else:
+            status = "SUCCESS"
+        failure_reason = _nothing_succeeded_reason(
+            noun="users deleted",
+            total=total,
+            failures=list(failed.values()),
+            cancelled=cancelled,
+        )
+
         with Session(_db.get_engine()) as session:
             rec = session.get(UserActionRecord, record_id)
             if rec:
@@ -1111,13 +1239,16 @@ async def execute_delete(
                 rec.status = status
                 if failed:
                     rec.error = json.dumps(failed)[:500]
+                elif status == "FAILED":
+                    rec.error = failure_reason[:500]
                 session.add(rec)
                 audit = AuditLog(
                     cluster_id=cluster_id,
                     action_type="delete_users",
                     entity_type="user",
                     items_affected=succeeded,
-                    status=status if status != "SUCCESS" else "SUCCESS",
+                    # Same terminal status as the job.
+                    status=status,
                 )
                 audit.set_parameters(
                     {
@@ -1126,6 +1257,7 @@ async def execute_delete(
                         "succeeded": succeeded,
                         "failed": failed,
                         "cancelled": cancelled,
+                        "error": failure_reason if status == "FAILED" else "",
                     }
                 )
                 session.add(audit)
@@ -1137,20 +1269,24 @@ async def execute_delete(
             "cancelled": cancelled,
             "record_id": record_id,
         }
-        if status == "PARTIAL":
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
+        elif status == "PARTIAL":
             mark_partial(job_id, result)
-        elif succeeded == 0 and not cancelled:
-            mark_failed(job_id, f"0 users deleted — {len(failed)} failures")
         else:
             mark_complete(job_id, result)
         logger.info(
-            "delete_users job=%s cluster=%s succeeded=%d failed=%d cancelled=%s",
+            "delete_users job=%s cluster=%s status=%s succeeded=%d failed=%d cancelled=%s",
             job_id,
             cluster_id,
+            status,
             succeeded,
             len(failed),
             cancelled,
         )
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `execute_transfer`. Permitted to swallow ANY exception because
+    # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("execute_delete job %s failed: %s", job_id, exc)
         with Session(_db.get_engine()) as session:

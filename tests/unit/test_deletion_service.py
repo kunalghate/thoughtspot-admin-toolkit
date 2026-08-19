@@ -20,6 +20,7 @@ from ts_admin.models.audit_log import AuditLog
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
+from ts_admin.ts_client.exceptions import TSInvalidParametersError
 
 # ── Fake TS client ─────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ class _FakeClient:
 
     tml_results: list[dict] = []  # what tml_export returns
     delete_calls: list[tuple[str, list[str]]] = []  # (object_type, ids)
+    delete_should_raise: Exception | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -48,6 +50,8 @@ class _FakeClient:
 
     async def delete_metadata(self, *, object_ids, object_type):
         _FakeClient.delete_calls.append((str(object_type), list(object_ids)))
+        if _FakeClient.delete_should_raise is not None:
+            raise _FakeClient.delete_should_raise
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -57,6 +61,7 @@ class _FakeClient:
 def reset_fake():
     _FakeClient.tml_results = []
     _FakeClient.delete_calls = []
+    _FakeClient.delete_should_raise = None
 
 
 @pytest.fixture
@@ -752,3 +757,149 @@ class TestCachePurgeScoping:
 
         # Exactly one row removed — the (c1, org 0) one.
         assert {(r.cluster_id, r.org_id) for r in rows} == {("c1", 5), ("c2", 0)}
+
+
+# ── M14: zero deletions is FAILED, never PARTIAL ──────────────────────────────
+
+
+class TestNothingDeletedIsFailedNeverPartial:
+    """
+    The job status already evaluated `succeeded == 0` first, but the AUDIT row
+    did not: it was computed from a COMPLETE-or-PARTIAL expression that could
+    not say FAILED at all, so a job that deleted nothing left a PARTIAL row in
+    the permanent audit trail while the job itself said FAILED. The failure
+    message also named only the TML bucket, so a run that failed entirely at the
+    delete call reported "0 TML exports failed".
+    """
+
+    def test_audit_row_says_failed_when_every_delete_call_fails(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1", "status": {"status_code": "OK"}}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1", "status": {"status_code": "OK"}}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+        _FakeClient.delete_should_raise = TSInvalidParametersError("deleteMetadata rejected the request")
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            audits = s.exec(select(AuditLog).where(AuditLog.action_type == "bulk_delete")).all()
+
+        assert job.status == "FAILED"
+        assert len(audits) == 1
+        assert audits[0].status == "FAILED"
+        assert audits[0].items_affected == 0
+
+        error = job.error or ""
+        assert "0 of 2 objects deleted" in error
+        # The delete bucket AND the reason — not "0 TML exports failed".
+        assert "2 delete call(s) failed" in error
+        assert "deleteMetadata rejected the request" in error
+
+    def test_the_message_names_thoughtspots_own_tml_error(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _FakeClient.tml_results = [
+            {
+                "info": {
+                    "id": "lb-1",
+                    "status": {"status_code": "ERROR", "error_message": "Cannot download TML due to lack of access"},
+                },
+                "edoc": "",
+            },
+        ]
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            audit = s.exec(select(AuditLog).where(AuditLog.action_type == "bulk_delete")).one()
+
+        assert job.status == "FAILED"
+        assert audit.status == "FAILED"
+        assert "Cannot download TML due to lack of access" in (job.error or "")
+        assert _FakeClient.delete_calls == [], "nothing may be deleted without a backup"
+
+    def test_a_genuinely_partial_delete_still_says_partial(self, in_memory_db, patched_env, seeded):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1", "status": {"status_code": "OK"}}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1", "status": {"status_code": "ERROR", "error_message": "nope"}}, "edoc": ""},
+        ]
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            audit = s.exec(select(AuditLog).where(AuditLog.action_type == "bulk_delete")).one()
+
+        assert job.status == "PARTIAL"
+        assert audit.status == "PARTIAL"
+        assert (job.get_result() or {})["succeeded"] == 1
+
+    def test_a_bug_in_our_own_code_fails_the_job_instead_of_becoming_a_failed_delete(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+    ):
+        """The per-chunk catch is narrowed to (TSAdminError, httpx.HTTPError) so
+        a bug in our own code cannot masquerade as a cluster-side refusal on a
+        permanently destructive path."""
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1", "status": {"status_code": "OK"}}, "edoc": "liveboard:\n  name: Sales\n"},
+        ]
+        _FakeClient.delete_should_raise = TypeError("delete_metadata() got an unexpected keyword argument")
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            audits = s.exec(select(AuditLog).where(AuditLog.action_type == "bulk_delete")).all()
+
+        assert job.status == "FAILED"
+        assert job.error_type == "TypeError"
+        # It never reached the bucketing, so no audit row claims a partial delete.
+        assert audits == []

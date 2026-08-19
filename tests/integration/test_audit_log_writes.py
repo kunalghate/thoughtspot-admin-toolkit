@@ -23,6 +23,7 @@ from ts_admin.models.audit_log import AuditLog
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
+from ts_admin.ts_client.exceptions import TSServerError
 
 # ── Fake TS client (mirrors the pattern in test_deletion_service.py) ───────────
 
@@ -46,7 +47,12 @@ class _FakeClient:
 
     async def delete_metadata(self, *, object_ids, object_type):
         if _FakeClient.raise_on_delete:
-            raise RuntimeError("simulated TS delete failure")
+            # A cluster-side failure, which is what the per-chunk catch in
+            # `_execute_delete` is for. It has to be a real TS exception: that
+            # catch is narrowed to (TSAdminError, httpx.HTTPError), so a
+            # RuntimeError would be a bug in OUR code and is deliberately no
+            # longer bucketed as "this chunk failed upstream".
+            raise TSServerError(status_code=503, body="simulated TS delete failure")
         _FakeClient.delete_calls.append((str(object_type), list(object_ids)))
 
 
@@ -242,7 +248,7 @@ class TestAuditLogShapeOnPartialFailure:
         assert params["failed_tml_export"] == 1
         assert params["failed_delete"] == 0
 
-    def test_partial_status_when_delete_call_fails(self, in_memory_db, patched_env, seeded):
+    def test_failed_status_when_every_delete_call_fails(self, in_memory_db, patched_env, seeded):
         from ts_admin.services.deletion_service import _execute_delete
 
         # TML succeeds for both; delete_metadata raises.
@@ -267,10 +273,23 @@ class TestAuditLogShapeOnPartialFailure:
         rows = _audit_rows(in_memory_db)
         assert len(rows) == 1
         row = rows[0]
-        assert row.status == "PARTIAL"
+        # A run in which NOTHING was deleted is FAILED, never PARTIAL. This
+        # assertion used to read PARTIAL — and PARTIAL with items_affected == 0
+        # is precisely the shape that hid three non-existent endpoints for the
+        # life of the project: it reads to an admin as "some of it worked,
+        # retry the rest". The audit row must carry the same terminal status as
+        # the job, and the reason must be in the row, not only in a log line.
+        assert row.status == "FAILED"
         assert row.items_affected == 0
         params = row.get_parameters()
         assert params["failed_delete"] == 2
+        assert "0 of 2 objects deleted" in params["error"]
+        assert "simulated TS delete failure" in params["error"]
+
+        with Session(in_memory_db) as session:
+            job = session.get(Job, job_id)
+        assert job.status == "FAILED"
+        assert "simulated TS delete failure" in (job.error or "")
 
 
 class TestNoDuplicateAuditRows:
