@@ -160,3 +160,10 @@ One line per cycle on process friction. Format:
   `min-width: auto` (Flexbox §4.5) and reproduces the exact bug, and pushed back
   with numbers. The deviation was right. Briefs should ask for the invariant and
   the measurement, not prescribe the CSS property.
+
+- 2026-08-18 (skill hardening): Human-directed pass folding S6/S7/S27/S33 retro
+  lessons into `improve-cycle` + agent briefs (M6 REJECT path, M9 gate, M8
+  worktree default, M7 pruning, SpotterCode ground-truth tiers). Friction that
+  prompted it: every one of these rules had already been paid for in a cycle but
+  lived only in retros, so each cycle re-improvised them. Lesson: when a retro
+  lesson recurs twice, it belongs in the skill/brief, not the retro.
