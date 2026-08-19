@@ -19,6 +19,7 @@ handlers check `is_cancelled` at each page boundary and finish PARTIAL via
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from ts_admin.database import get_session
 from ts_admin.models.sync_log import SyncLog
@@ -35,6 +36,11 @@ from ts_admin.ts_client.exceptions import (
     TSAuthenticationError,
     TSInsufficientPrivilegesError,
 )
+
+# Every handler imports the client lazily inside its own body; annotation-only
+# here keeps that shape rather than pulling httpx in at module import.
+if TYPE_CHECKING:
+    from ts_admin.ts_client import ThoughtSpotClient
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +400,7 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
 
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from ts_admin.ts_client import ThoughtSpotClient
+    from ts_admin.ts_client.exceptions import TSPartialSuccessError
 
     cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
@@ -402,6 +409,11 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
     mark_running(job_id, total=0)
     count = 0
     cancelled = False
+    # Specs `search_metadata` could not fetch — a version-gated subtype this
+    # cluster is too old for, or one whose request failed. Non-empty means the
+    # cache below is missing a whole class of object, so the sync is not a
+    # complete one no matter how many rows it wrote.
+    failed_specs: list[str] = []
 
     # Write-ahead invalidation. Everything below this line leaves the cache in a
     # non-empty but TRUNCATED shape if it is interrupted: we delete every row for
@@ -434,33 +446,40 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
         session.commit()
 
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
-        async for page in client.search_metadata():
-            if is_cancelled(job_id):
-                cancelled = True
-                break
-            with get_session() as session:
-                for obj in page:
-                    tag_names = json.dumps([t.name for t in obj.tags])
-                    session.add(
-                        CachedMetadata(
-                            cluster_id=cluster_id,
-                            org_id=org_id,
-                            ts_guid=obj.id,
-                            name=obj.name,
-                            object_type=obj.type.value,
-                            owner_guid=obj.owner_id,
-                            owner_name=obj.author_name,
-                            tag_names=tag_names,
-                            created_at=obj.created,
-                            modified_at=obj.modified,
-                            last_accessed_at=obj.last_accessed,
-                            view_count=obj.view_count,
-                            synced_at=datetime.now(timezone.utc),
+        release_version = await _probe_release_version(client)
+        try:
+            async for page in client.search_metadata(release_version=release_version):
+                if is_cancelled(job_id):
+                    cancelled = True
+                    break
+                with get_session() as session:
+                    for obj in page:
+                        tag_names = json.dumps([t.name for t in obj.tags])
+                        session.add(
+                            CachedMetadata(
+                                cluster_id=cluster_id,
+                                org_id=org_id,
+                                ts_guid=obj.id,
+                                name=obj.name,
+                                object_type=obj.type.value,
+                                owner_guid=obj.owner_id,
+                                owner_name=obj.author_name,
+                                tag_names=tag_names,
+                                created_at=obj.created,
+                                modified_at=obj.modified,
+                                last_accessed_at=obj.last_accessed,
+                                view_count=obj.view_count,
+                                synced_at=datetime.now(timezone.utc),
+                            )
                         )
-                    )
-                    count += 1
-                session.commit()
-            update_progress(job_id, count)
+                        count += 1
+                    session.commit()
+                update_progress(job_id, count)
+        except TSPartialSuccessError as exc:
+            # Raised only after every spec has run, so the pages above are already
+            # committed. Keeping them is the point of the change: the alternative
+            # was one bad spec discarding a whole org's metadata.
+            failed_specs = [str(spec) for spec in exc.failed]
 
     if cancelled:
         # The delete-all above already ran, so this cache is TRUNCATED, not just
@@ -470,6 +489,37 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
         return
 
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+
+    if failed_specs:
+        # The delete-all above already ran, so what is in the cache now is exactly
+        # what this crawl fetched — with a whole spec's worth of objects missing.
+        # SUCCESS here would certify that as the org's complete metadata and hand
+        # it to `require_authoritative_metadata`'s callers as their input set. The
+        # sync_log row is the completeness signal (S23), and the honest value for
+        # an incomplete crawl is FAILED: browsing still works off the rows we did
+        # write, while the archiver / bulk-share / transfer previews keep refusing
+        # until a crawl covers every spec. The job goes PARTIAL rather than
+        # COMPLETE and names the specs, so the Jobs grid says which one to chase.
+        detail = "; ".join(failed_specs)
+        _write_sync_log(
+            "metadata",
+            org_id,
+            status="FAILED",
+            record_count=count,
+            duration_ms=duration_ms,
+            error=f"Incomplete metadata sync — {len(failed_specs)} of 7 object types failed: {detail}",
+            cluster_id=cluster_id,
+        )
+        mark_partial(job_id, {"entity_type": "metadata", "record_count": count, "failed_specs": failed_specs})
+        logger.warning(
+            "Metadata sync incomplete for cluster=%s org=%s — %d object(s) cached, failed specs: %s",
+            cluster_id,
+            org_id,
+            count,
+            detail,
+        )
+        return
+
     _write_sync_log(
         "metadata", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
     )
@@ -709,6 +759,29 @@ def sync_handlers() -> dict[str, Callable[..., Awaitable[None]]]:
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
+
+
+async def _probe_release_version(client: "ThoughtSpotClient") -> str | None:
+    """The cluster's release string for `search_metadata`'s version gate, or None.
+
+    Best-effort by design. `search_metadata` treats None as "assume current" and
+    issues every spec, which is what the sync did before the gate existed, so a
+    version probe must never be the reason a metadata sync fails. The base
+    `TSAdminError` is the right width here precisely because the failure is not
+    interesting: whatever is genuinely wrong with the cluster or the session
+    re-raises from the crawl that follows, one request later.
+    """
+    from ts_admin.ts_client.exceptions import TSAdminError
+
+    try:
+        info = await client.test_connection()
+    except TSAdminError as exc:
+        logger.warning("Could not read the cluster release version (%s) — issuing every metadata spec", exc)
+        return None
+    # `test_connection` substitutes "unknown" when the field is absent, and the
+    # field is documented nullable. Both mean the same thing as no answer at all.
+    version = info.get("release_version")
+    return None if version == "unknown" else version
 
 
 def _finish_cancelled(

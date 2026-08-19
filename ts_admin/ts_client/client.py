@@ -28,6 +28,7 @@ from ts_admin.ts_client.exceptions import (
     TSInsufficientPrivilegesError,
     TSInvalidParametersError,
     TSObjectNotFoundError,
+    TSPartialSuccessError,
     TSResponseParseError,
     TSServerError,
     TSSSLError,
@@ -97,6 +98,58 @@ _SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
 # That connection is not returned by /connection/search, and the tables carry no
 # distinguishing subType — the warehouse type in metadata_detail is the only signal.
 _ANALYST_STUDIO_SOURCE_TYPE = "RDBMS_MODE"
+
+
+# `metadata/search` subtypes that ThoughtSpot only accepts from a given release
+# onwards. Sending one to an older cluster is an out-of-enum value, so the whole
+# request 400s. Source: the v2 reference's `subtypes` enum (checked 2026-08-18),
+# which tags SQL_VIEW "Version: 10.11.0.cl or later"; the other five subtypes we
+# query carry no version tag at all.
+_SUBTYPE_MIN_RELEASE: dict[str, tuple[int, int, int]] = {
+    MetadataType.SQL_VIEW: (10, 11, 0),
+}
+
+
+def _parse_release_version(release_version: str | None) -> tuple[int, int, int] | None:
+    """``"26.8.0.cl"`` → ``(26, 8, 0)``. None when the string is not a release number.
+
+    Cloud releases end `.cl` and on-prem ones `.sw`, so everything after the
+    leading numeric components is ignored. The field is documented nullable and
+    its own example value in the reference is the literal string ``"test"``, so
+    an unrecognisable value is ordinary rather than exceptional — this returns
+    None for it instead of raising.
+    """
+    if not release_version:
+        return None
+    parts: list[int] = []
+    for component in release_version.strip().split("."):
+        # `str.isdigit()` is True for superscripts and other non-ASCII digits that
+        # `int()` then rejects — require ASCII so this can never raise.
+        if not (component.isascii() and component.isdigit()):
+            break
+        parts.append(int(component))
+    if len(parts) < 2:
+        return None
+    major, minor, patch = (parts + [0, 0])[:3]
+    return major, minor, patch
+
+
+def _supports_subtype(subtype: str, release_version: str | None) -> bool:
+    """False ONLY when the cluster is known to predate the subtype's release.
+
+    Unknown cuts towards "current": an unparseable (or missing) version must
+    behave like an up-to-date cluster, because the failure mode of guessing the
+    other way is that a 26.8 customer silently loses every SQL view to a version
+    string we could not read. Guessing this way costs at worst one 400 on a truly
+    old cluster, which `search_metadata` now records and survives.
+    """
+    minimum = _SUBTYPE_MIN_RELEASE.get(subtype)
+    if minimum is None:
+        return True
+    parsed = _parse_release_version(release_version)
+    if parsed is None:
+        return True
+    return parsed >= minimum
 
 
 def _belongs_to_org(user: dict, org_id: int) -> bool:
@@ -432,8 +485,21 @@ class ThoughtSpotClient:
 
     # ── Metadata ───────────────────────────────────────────────────────────────
 
+    # Each spec: (api_type, subtypes_filter, effective_type_to_store)
+    _METADATA_SPECS: list[tuple[str, list[str] | None, "MetadataType"]] = [
+        ("LIVEBOARD", None, MetadataType.LIVEBOARD),
+        ("ANSWER", None, MetadataType.ANSWER),
+        ("LOGICAL_TABLE", ["WORKSHEET"], MetadataType.WORKSHEET),
+        ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"], MetadataType.ONE_TO_ONE_LOGICAL),
+        ("LOGICAL_TABLE", ["AGGR_WORKSHEET"], MetadataType.AGGR_WORKSHEET),
+        ("LOGICAL_TABLE", ["SQL_VIEW"], MetadataType.SQL_VIEW),
+        ("LOGICAL_TABLE", ["USER_DEFINED"], MetadataType.USER_DEFINED),
+    ]
+
     async def search_metadata(
         self,
+        *,
+        release_version: str | None = None,
     ) -> AsyncIterator[list[TSMetadataObject]]:
         """Yield pages of all content objects (Liveboards, Answers, Worksheets, Tables).
 
@@ -448,58 +514,115 @@ class ThoughtSpotClient:
         datasets can be told apart from ordinary tables — see _is_analyst_studio_dataset.
 
         /api/rest/2.0/metadata/search returns a list directly, so we paginate manually.
+
+        **One spec's failure must not discard the others.** Seven independent
+        requests share this generator, so letting the first failure propagate threw
+        away every page already yielded — an admin could end with no metadata cache
+        at all rather than a partial one. Each spec is therefore driven separately
+        and a per-request failure (400/404/5xx/unparseable body) is recorded and
+        skipped. `release_version` gates out subtypes the cluster is too old to
+        know about before they can 400 at all; the resilience below is what covers
+        every future version-gated value.
+
+        The caller does NOT get to ignore that: once every spec has run, a
+        `TSPartialSuccessError` naming the failed specs is raised **after** the
+        last page is yielded. Whatever was fetched is still the caller's to keep,
+        but a caller that does not handle the error fails loudly rather than
+        certifying a partial crawl as a complete one.
+
+        Whole-cluster conditions — auth, privileges, connectivity, rate limits —
+        are deliberately NOT caught: the remaining specs would fail identically,
+        so retrying them just multiplies the same failure.
         """
-        # Each spec: (api_type, subtypes_filter, effective_type_to_store)
-        specs = [
-            ("LIVEBOARD", None, MetadataType.LIVEBOARD),
-            ("ANSWER", None, MetadataType.ANSWER),
-            ("LOGICAL_TABLE", ["WORKSHEET"], MetadataType.WORKSHEET),
-            ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"], MetadataType.ONE_TO_ONE_LOGICAL),
-            ("LOGICAL_TABLE", ["AGGR_WORKSHEET"], MetadataType.AGGR_WORKSHEET),
-            ("LOGICAL_TABLE", ["SQL_VIEW"], MetadataType.SQL_VIEW),
-            ("LOGICAL_TABLE", ["USER_DEFINED"], MetadataType.USER_DEFINED),
-        ]
+        succeeded_specs: list[str] = []
+        failed_specs: list[str] = []
 
-        for api_type, subtypes, effective_type in specs:
-            metadata_filter: dict = {"type": api_type}
-            if subtypes:
-                metadata_filter["subtypes"] = subtypes
-
-            body: dict = {"metadata": [metadata_filter], "include_stats": True}
-            # Only the tables pass pays for details — the response is ~10x larger
-            # (measured 18MB vs 1.8MB for 900 tables) and no other subtype needs it.
-            wants_details = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
-            if wants_details:
-                body["include_details"] = True
-            page_size = DETAIL_PAGE_SIZE if wants_details else PAGE_SIZE
-
-            offset = 0
-            while True:
-                data = await self._request(
-                    "POST",
-                    "/api/rest/2.0/metadata/search",
-                    json={**body, "record_offset": offset, "record_size": page_size},
-                    context="search_metadata",
+        for api_type, subtypes, effective_type in self._METADATA_SPECS:
+            spec_name = subtypes[0] if subtypes else api_type
+            if subtypes and not _supports_subtype(subtypes[0], release_version):
+                minimum = ".".join(str(n) for n in _SUBTYPE_MIN_RELEASE[subtypes[0]])
+                logger.info(
+                    "Skipping the %s metadata spec — cluster release %s predates %s",
+                    spec_name,
+                    release_version,
+                    minimum,
                 )
-                page: list = data if isinstance(data, list) else data.get("metadata_details", [])
-                if not page:
-                    break
-                # Stamp each item with the effective type so the model stores it correctly
-                for item in page:
-                    if wants_details and _is_analyst_studio_dataset(item):
-                        item["metadata_type"] = MetadataType.DATASET
-                    else:
-                        item["metadata_type"] = effective_type
+                # Not fetching it is still not fetching it: record it so the caller
+                # cannot mistake this crawl for a complete one.
+                failed_specs.append(f"{spec_name}: not supported before release {minimum}")
+                continue
+
+            # Driven by hand rather than `async for` so the `except` covers only the
+            # HTTP fetch — a consumer-body error must never be recorded as a spec failure.
+            pages = self._search_metadata_spec(api_type, subtypes, effective_type)
+            while True:
                 try:
-                    yield [TSMetadataObject.model_validate(m) for m in page]
-                except ValidationError as exc:
-                    raise TSResponseParseError(
-                        url="/api/rest/2.0/metadata/search",
-                        detail=str(exc),
-                    ) from exc
-                if len(page) < page_size:
+                    page = await anext(pages)
+                except StopAsyncIteration:
+                    succeeded_specs.append(spec_name)
                     break
-                offset += page_size
+                except (
+                    TSInvalidParametersError,
+                    TSObjectNotFoundError,
+                    TSResponseParseError,
+                    TSServerError,
+                ) as exc:
+                    logger.warning("Metadata spec %s failed, continuing with the rest: %s", spec_name, exc)
+                    failed_specs.append(f"{spec_name}: {exc}")
+                    break
+                yield page
+
+        if failed_specs:
+            raise TSPartialSuccessError(succeeded=succeeded_specs, failed=failed_specs)
+
+    async def _search_metadata_spec(
+        self,
+        api_type: str,
+        subtypes: list[str] | None,
+        effective_type: MetadataType,
+    ) -> AsyncIterator[list[TSMetadataObject]]:
+        """Yield every page of ONE metadata/search spec. Raises on the first failure."""
+        metadata_filter: dict = {"type": api_type}
+        if subtypes:
+            metadata_filter["subtypes"] = subtypes
+
+        body: dict = {"metadata": [metadata_filter], "include_stats": True}
+        # Only the tables pass pays for details — the response is ~10x larger
+        # (measured 18MB vs 1.8MB for 900 tables) and no other subtype needs it.
+        wants_details = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
+        if wants_details:
+            body["include_details"] = True
+        page_size = DETAIL_PAGE_SIZE if wants_details else PAGE_SIZE
+
+        offset = 0
+        while True:
+            data = await self._request(
+                "POST",
+                "/api/rest/2.0/metadata/search",
+                json={**body, "record_offset": offset, "record_size": page_size},
+                context="search_metadata",
+            )
+            page: list = data if isinstance(data, list) else data.get("metadata_details", [])
+            if not page:
+                break
+            # Stamp each item with the effective type so the model stores it correctly
+            for item in page:
+                if wants_details and _is_analyst_studio_dataset(item):
+                    item["metadata_type"] = MetadataType.DATASET
+                else:
+                    item["metadata_type"] = effective_type
+            try:
+                yield [TSMetadataObject.model_validate(m) for m in page]
+            except ValidationError as exc:
+                raise TSResponseParseError(
+                    url="/api/rest/2.0/metadata/search",
+                    detail=str(exc),
+                ) from exc
+            # `metadata/search` has no total-count field — the response is a bare
+            # array — so a short page is the only termination signal there is.
+            if len(page) < page_size:
+                break
+            offset += page_size
 
     # ── Tags ───────────────────────────────────────────────────────────────────
 

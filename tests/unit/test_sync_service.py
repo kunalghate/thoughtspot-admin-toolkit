@@ -11,6 +11,7 @@ could never help — the credentials were always valid.
 from __future__ import annotations
 
 import pytest
+import respx
 from sqlmodel import create_engine
 
 from ts_admin.services import connection_status
@@ -514,9 +515,24 @@ def _meta_obj(guid: str, object_type: str):
     )
 
 
-def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = None, exc: BaseException | None = None):
+def _install_metadata_client(
+    monkeypatch,
+    pages,
+    *,
+    raise_after: int | None = None,
+    exc: BaseException | None = None,
+    release_version: str | None = "26.8.0.cl",
+    probe_exc: BaseException | None = None,
+) -> dict:
     """Fake ThoughtSpotClient whose search_metadata yields `pages`, optionally
-    raising `exc` after `raise_after` pages to simulate an interrupted crawl."""
+    raising `exc` after `raise_after` pages to simulate an interrupted crawl.
+
+    `test_connection` is part of the fake because `_sync_metadata` probes the
+    cluster's release version to decide which subtypes it may ask for; pass
+    `probe_exc` to make that probe fail. Returns a dict the caller can read the
+    recorded probe/crawl arguments back out of.
+    """
+    recorded: dict = {"release_version_passed": "<not called>", "probes": 0}
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -528,7 +544,14 @@ def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = No
         async def __aexit__(self, *exc_info):
             return False
 
-        async def search_metadata(self):
+        async def test_connection(self):
+            recorded["probes"] += 1
+            if probe_exc is not None:
+                raise probe_exc
+            return {"release_version": release_version or "unknown", "url": "https://prod.thoughtspot.cloud"}
+
+        async def search_metadata(self, *, release_version=None):
+            recorded["release_version_passed"] = release_version
             for idx, page in enumerate(pages):
                 if raise_after is not None and idx >= raise_after:
                     raise exc or TSConnectionError("upstream dropped the connection mid-crawl")
@@ -539,6 +562,7 @@ def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = No
         lambda self, org_id=None: None,
     )
     monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+    return recorded
 
 
 # WHY THESE TESTS INTERRUPT WITH CancelledError, NOT TSConnectionError
@@ -1313,7 +1337,10 @@ async def test_cancelled_metadata_sync_does_not_end_complete(monkeypatch, in_mem
         async def __aexit__(self, *exc):
             return False
 
-        async def search_metadata(self):
+        async def test_connection(self):
+            return {"release_version": "26.8.0.cl", "url": "https://prod.thoughtspot.cloud"}
+
+        async def search_metadata(self, *, release_version=None):
             nonlocal pages_fetched
             for guid in ("a", "b", "c"):
                 pages_fetched += 1
@@ -1417,3 +1444,210 @@ async def test_cancelled_group_sync_skips_the_purge(monkeypatch, in_memory_db, p
     assert _job_status(holder["job_id"])[0] == "PARTIAL"
     # g2 was never reached by the cancelled sweep — it must still be cached.
     assert _group_guids() == {"g1", "g2"}
+
+
+# ── One metadata spec's failure must not destroy the whole sync (W3) ──────────
+#
+# `search_metadata` issues seven independent `metadata/search` requests. A
+# failure in one used to propagate out of the generator and take the whole sync
+# with it — discarding the specs that had already succeeded, so an admin could
+# end with NO metadata cache rather than a partial one. The reachable trigger is
+# the `SQL_VIEW` subtype, which the v2 reference tags "Version: 10.11.0.cl or
+# later" while we query it unconditionally.
+#
+# These tests drive the REAL ThoughtSpotClient over respx rather than the fake
+# above: the spec loop under test lives in the client, and a fake client would
+# assert the fix into existence instead of exercising it.
+
+PROD_URL = "https://prod.thoughtspot.cloud"
+
+
+def _wire_obj(guid: str) -> dict:
+    """A metadata/search record, in the shape the live endpoint returns."""
+    return {
+        "metadata_id": guid,
+        "metadata_name": f"obj-{guid}",
+        "metadata_header": {"id": guid, "name": f"obj-{guid}", "author": "u1", "authorDisplayName": "Alice"},
+    }
+
+
+def _install_live_metadata_cluster(
+    monkeypatch,
+    *,
+    release_version: str = "26.8.0.cl",
+    rows: dict[str, list] | None = None,
+    fail_on: str | None = None,
+) -> list[str]:
+    """Route /system and /metadata/search at respx. Returns the list that records
+    every spec reaching the wire, so a *skipped* spec is observable."""
+    import json as _json
+
+    import httpx
+
+    from ts_admin.ts_client.auth import BearerTokenAuth
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        metadata_filter = _json.loads(request.content)["metadata"][0]
+        subtypes = metadata_filter.get("subtypes")
+        spec = subtypes[0] if subtypes else metadata_filter["type"]
+        seen.append(spec)
+        if spec == fail_on:
+            return httpx.Response(400, json={"error": {"message": "Invalid parameter values: subtypes"}})
+        return httpx.Response(200, json=(rows or {}).get(spec, []))
+
+    respx.get(f"{PROD_URL}/api/rest/2.0/system").mock(
+        return_value=httpx.Response(200, json={"release_version": release_version, "name": "prod"})
+    )
+    respx.post(f"{PROD_URL}/api/rest/2.0/metadata/search").mock(side_effect=handler)
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: BearerTokenAuth(token="t"),
+    )
+    return seen
+
+
+def _job_result(job_id: str) -> dict | None:
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        return job.get_result()
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_a_failing_metadata_spec_keeps_what_the_other_specs_fetched(monkeypatch, in_memory_db, patched_config):
+    """The W3 bug end to end: SQL_VIEW 400s, everything else still lands."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    seen = _install_live_metadata_cluster(
+        monkeypatch,
+        rows={"LIVEBOARD": [_wire_obj("lb-1")], "ANSWER": [_wire_obj("a-1")], "WORKSHEET": [_wire_obj("w-1")]},
+        fail_on="SQL_VIEW",
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    # The specs that worked are cached — the whole point of the change.
+    assert {r.ts_guid for r in _metadata_rows()} == {"lb-1", "a-1", "w-1"}
+    # USER_DEFINED is issued AFTER SQL_VIEW: the crawl continued past the failure.
+    assert seen[-1] == "USER_DEFINED"
+
+    # …and the cache is not certified. A spec that never ran means a whole class
+    # of object is missing from a cache `_sync_metadata` had already emptied.
+    status, _ = _job_status(job_id)
+    assert status == "PARTIAL"
+    assert status != "COMPLETE"
+    result = _job_result(job_id)
+    assert result["record_count"] == 3
+    assert [f for f in result["failed_specs"] if f.startswith("SQL_VIEW")] == result["failed_specs"]
+    assert _metadata_marker_status() == "FAILED"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_a_clean_metadata_sync_is_still_certified(monkeypatch, in_memory_db, patched_config):
+    """Anti-vacuity for the test above: PARTIAL is conditional, not the new normal."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _install_live_metadata_cluster(monkeypatch, rows={"LIVEBOARD": [_wire_obj("lb-1")]})
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _metadata_marker_status() == "SUCCESS"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is True
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_an_old_cluster_never_sends_the_sql_view_subtype(monkeypatch, in_memory_db, patched_config):
+    """The version gate, driven from the cluster's own /system response: below
+    10.11 the out-of-enum value must not reach the wire at all."""
+    seen = _install_live_metadata_cluster(
+        monkeypatch,
+        release_version="10.10.0.cl",
+        rows={"LIVEBOARD": [_wire_obj("lb-1")]},
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert "SQL_VIEW" not in seen
+    assert "USER_DEFINED" in seen  # the specs either side of it still ran
+    assert {r.ts_guid for r in _metadata_rows()} == {"lb-1"}
+    # A skipped spec is an unfetched spec, so this crawl is not a complete one.
+    assert _job_status(job_id)[0] == "PARTIAL"
+    assert _job_result(job_id)["failed_specs"] == ["SQL_VIEW: not supported before release 10.11.0"]
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_a_current_cluster_still_gets_its_sql_views(monkeypatch, in_memory_db, patched_config):
+    """Both live clusters are 26.8 — the gate must be invisible to them."""
+    seen = _install_live_metadata_cluster(
+        monkeypatch,
+        release_version="26.8.0.cl",
+        rows={"SQL_VIEW": [_wire_obj("sv-1")]},
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert "SQL_VIEW" in seen
+    assert {r.ts_guid for r in _metadata_rows()} == {"sv-1"}
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+
+@pytest.mark.anyio
+async def test_the_cluster_release_version_reaches_the_spec_gate(monkeypatch, in_memory_db, patched_config):
+    """Plumbing: whatever /system reports is what decides the specs."""
+    recorded = _install_metadata_client(monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], release_version="10.11.0.sw")
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="metadata", org_id=0, job_id=_make_job("metadata"))
+
+    assert recorded["probes"] == 1
+    assert recorded["release_version_passed"] == "10.11.0.sw"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"probe_exc": TSConnectionError("cluster unreachable")}, "the probe request failed"),
+        ({"release_version": None}, "the cluster reported no version at all"),
+    ],
+)
+async def test_an_unknown_release_version_does_not_disable_the_spec(
+    monkeypatch, in_memory_db, patched_config, kwargs, reason
+):
+    """Fail-open, and fail-open all the way down: an unreadable version must not
+    cost a current cluster its SQL views, and must not fail the sync either."""
+    recorded = _install_metadata_client(monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], **kwargs)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    # None is what `search_metadata` reads as "assume current" — see
+    # `_supports_subtype`, which issues every spec for it.
+    assert recorded["release_version_passed"] is None, reason
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _metadata_marker_status() == "SUCCESS"
