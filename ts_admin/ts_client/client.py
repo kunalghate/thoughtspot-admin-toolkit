@@ -54,6 +54,25 @@ PAGE_SIZE = 500
 DETAIL_PAGE_SIZE = 200
 
 
+# `CachedMetadata.object_type` values that are NOT members of any ThoughtSpot v2
+# `type` enum. Every one of them is a logical table underneath — the five API
+# subtypes plus DATASET, which is our own derived value (an Analyst Studio table)
+# and has never existed on the wire at all. Any endpoint with an enum-typed
+# `type` field must collapse them, or ThoughtSpot rejects the request.
+#
+# `tests/unit/test_client_write_endpoints.py` iterates every `MetadataType`
+# member against each endpoint's real enum, so adding a member without adding it
+# here fails the build.
+LOGICAL_TABLE_SUBTYPES: dict[str, str] = {
+    MetadataType.WORKSHEET: "LOGICAL_TABLE",
+    MetadataType.ONE_TO_ONE_LOGICAL: "LOGICAL_TABLE",
+    MetadataType.AGGR_WORKSHEET: "LOGICAL_TABLE",
+    MetadataType.SQL_VIEW: "LOGICAL_TABLE",
+    MetadataType.USER_DEFINED: "LOGICAL_TABLE",
+    MetadataType.DATASET: "LOGICAL_TABLE",
+}
+
+
 # Cached `object_type` values → the `type` enum metadata/search accepts.
 # All tabular subtypes collapse to LOGICAL_TABLE; leaves keep their own type.
 _SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
@@ -592,15 +611,6 @@ class ThoughtSpotClient:
 
     # ── Permissions ────────────────────────────────────────────────────────────
 
-    # Subtypes that the permissions API doesn't know about — map them to LOGICAL_TABLE
-    _PERMISSIONS_TYPE_MAP: dict[str, str] = {
-        "WORKSHEET": "LOGICAL_TABLE",
-        "ONE_TO_ONE_LOGICAL": "LOGICAL_TABLE",
-        "AGGR_WORKSHEET": "LOGICAL_TABLE",
-        "SQL_VIEW": "LOGICAL_TABLE",
-        "USER_DEFINED": "LOGICAL_TABLE",
-    }
-
     async def fetch_permissions(
         self,
         *,
@@ -616,7 +626,7 @@ class ThoughtSpotClient:
         object_type may be a subtype (e.g. WORKSHEET); it's mapped to the
         TS API type (LOGICAL_TABLE) automatically.
         """
-        api_type = self._PERMISSIONS_TYPE_MAP.get(object_type, object_type)
+        api_type = LOGICAL_TABLE_SUBTYPES.get(object_type, object_type)
 
         data = await self._request(
             "POST",
@@ -659,11 +669,22 @@ class ThoughtSpotClient:
     # ── Metadata deletion ──────────────────────────────────────────────────────
 
     async def delete_metadata(self, *, object_ids: list[str], object_type: MetadataType) -> None:
-        """Permanently delete metadata objects. Irreversible."""
+        """
+        Permanently delete metadata objects. Irreversible.
+
+        `deleteMetadata`'s `type` enum is exactly
+        LIVEBOARD | ANSWER | LOGICAL_TABLE | LOGICAL_COLUMN | LOGICAL_RELATIONSHIP.
+        The caller (`deletion_service._execute_delete`) groups by
+        `CachedMetadata.object_type`, whose values also include WORKSHEET,
+        ONE_TO_ONE_LOGICAL, AGGR_WORKSHEET, SQL_VIEW, USER_DEFINED and our own
+        derived DATASET — none of them enum members. They collapse to
+        LOGICAL_TABLE here, exactly as they already do for fetch_permissions.
+        """
+        api_type = LOGICAL_TABLE_SUBTYPES.get(object_type, object_type)
         await self._request(
             "POST",
             "/api/rest/2.0/metadata/delete",
-            json={"metadata": [{"identifier": oid, "type": object_type} for oid in object_ids]},
+            json={"metadata": [{"identifier": oid, "type": api_type} for oid in object_ids]},
             context="delete_metadata",
         )
 
