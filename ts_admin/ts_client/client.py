@@ -886,22 +886,30 @@ class ThoughtSpotClient:
                     )
         return out
 
-    async def delete_users(self, *, user_identifiers: list[str]) -> None:
+    async def delete_user(self, *, user_identifier: str) -> None:
         """
-        Permanently delete one or more users from the cluster.
+        Permanently delete ONE user from the cluster.
 
-        POST /api/rest/2.0/users/delete
+        POST /api/rest/2.0/users/{user_identifier}/delete — the identifier is a
+        PATH segment and the request carries NO body. 204 No Content on success.
 
-        Each identifier may be a username or a user GUID. Irreversible — the
-        user is removed from every org and every group. Owned content stays
-        but becomes orphan-owned; transfer ownership first if you need to
-        preserve attribution.
+        There is deliberately no bulk variant: `/api/rest/2.0/users/delete`
+        (what this used to POST, with a body of `{"users": [...]}`) is not a
+        route and 404s on every cluster. Callers loop, which they already did —
+        one identifier per call keeps per-user retries isolated.
+
+        The identifier may be a username or a user GUID, so it is percent-encoded
+        before being interpolated: an unescaped `/` or `..` in a username would
+        otherwise rewrite the request path.
+
+        Irreversible — the user is removed from every org and every group. Owned
+        content stays but becomes orphan-owned; transfer ownership first if you
+        need to preserve attribution.
         """
         await self._request(
             "POST",
-            "/api/rest/2.0/users/delete",
-            json={"users": [{"identifier": uid} for uid in user_identifiers]},
-            context="delete_users",
+            f"/api/rest/2.0/users/{quote(user_identifier, safe='')}/delete",
+            context="delete_user",
         )
 
     async def fetch_dependents(

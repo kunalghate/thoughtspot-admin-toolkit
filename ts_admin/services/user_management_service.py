@@ -1016,7 +1016,7 @@ async def execute_delete(
                 async def _delete_one(ident: str) -> tuple[str, Exception | None]:
                     async with sem:
                         try:
-                            await client.delete_users(user_identifiers=[ident])
+                            await client.delete_user(user_identifier=ident)
                             return ident, None
                         except Exception as exc:
                             return ident, exc
