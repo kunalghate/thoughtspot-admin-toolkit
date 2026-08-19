@@ -218,6 +218,88 @@ class TestExecuteDeleteHappyPath:
         assert any(a.action_type == "bulk_delete" for a in audits)
 
 
+class TestTmlExportOutcomeNesting:
+    """`tml/export` puts the per-object verdict one level deeper than it looks::
+
+        {"edoc": "…", "info": {"id": "<guid>",
+                               "status": {"status_code": "OK"|"ERROR",
+                                          "error_message": "…"}}}
+
+    Reading `info["error_message"]` was always None, so every failure was
+    recorded as the generic placeholder and the admin never saw the reason.
+    """
+
+    FORBIDDEN = "Error Code: FORBIDDEN. Cannot download TML due to lack of access to objects."
+
+    def _run(self, guids):
+        from ts_admin.services.deletion_service import _execute_delete
+
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": guids})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=guids,
+                action_type="bulk_delete",
+            )
+        )
+        return job_id
+
+    def test_thoughtspots_own_reason_is_recorded_not_the_placeholder(self, in_memory_db, patched_env, seeded):
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {
+                "info": {"id": "ans-1", "status": {"status_code": "ERROR", "error_message": self.FORBIDDEN}},
+                "edoc": "",
+            },
+        ]
+        job_id = self._run(["lb-1", "ans-1"])
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+
+        assert recs["ans-1"].tml_export_status == "FAILED"
+        assert recs["ans-1"].tml_export_error == self.FORBIDDEN
+        assert "returned empty content" not in (recs["ans-1"].tml_export_error or "")
+
+    def test_a_batch_carries_per_object_verdicts_not_one_all_or_nothing_result(self, in_memory_db, patched_env, seeded):
+        """Measured live: one 60-object batch returned HTTP 200 with 58 OK and
+        2 ERROR. A failure inside the batch must cost only its own object."""
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1", "status": {"status_code": "OK"}}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1", "status": {"status_code": "ERROR", "error_message": self.FORBIDDEN}}, "edoc": ""},
+        ]
+        job_id = self._run(["lb-1", "ans-1"])
+
+        called_ids = sorted(i for _, ids in _FakeClient.delete_calls for i in ids)
+        assert called_ids == ["lb-1"], "the OK object in the same batch is still exported and still deleted"
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+        assert recs["lb-1"].tml_export_status == "SUCCESS"
+        assert recs["ans-1"].tml_export_status == "FAILED"
+
+    def test_an_error_status_fails_the_object_even_when_an_edoc_came_with_it(self, in_memory_db, patched_env, seeded):
+        """This gates a permanent delete, so anything ThoughtSpot flagged is
+        treated as "no trustworthy backup" — the fail-safe direction."""
+        _FakeClient.tml_results = [
+            {
+                "info": {"id": "lb-1", "status": {"status_code": "ERROR", "error_message": self.FORBIDDEN}},
+                "edoc": "liveboard:\n  name: Sales\n",
+            },
+        ]
+        job_id = self._run(["lb-1"])
+
+        assert _FakeClient.delete_calls == [], "never delete an object whose backup ThoughtSpot flagged"
+        with Session(in_memory_db) as s:
+            rec = s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).first()
+            job = s.get(Job, job_id)
+        assert rec.tml_export_status == "FAILED"
+        assert rec.tml_export_error == self.FORBIDDEN
+        assert job.status == "FAILED", "the only requested object was never deleted"
+
+
 class TestExecuteDeletePartial:
     def test_tml_export_failure_excludes_object_from_delete(
         self,
