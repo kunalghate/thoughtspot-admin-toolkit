@@ -825,8 +825,7 @@ class ThoughtSpotClient:
         self,
         *,
         principal_identifier: str,
-        metadata_types: list[str] | None = None,
-        permission_type: str = "DEFINED",
+        default_metadata_type: str | None = None,
     ) -> list[dict]:
         """
         Return everything a principal (user or group) has access to.
@@ -837,18 +836,36 @@ class ThoughtSpotClient:
         the leaving user could see, so we can re-share each item with the
         replacement at the same access level.
 
+        **The request schema has exactly five keys** — `principals` (required),
+        `metadata`, `record_offset`, `record_size`, `default_metadata_type` —
+        and v2 silently ignores anything else. Two keys this used to send were
+        therefore pure no-ops, both measured live on 26.8.0.cl:
+
+          - `permission_type` — not a key on THIS endpoint (it exists only on
+            `security/metadata/fetch-permissions`, 10.3.0.cl+). "DEFINED",
+            "EFFECTIVE" and omitting it returned identical results, i.e. always
+            the effective set, group-inherited access included. The old comment
+            claiming DEFINED meant "direct shares only" was false.
+          - `metadata_type: ["LIVEBOARD"]` — the real key is
+            `default_metadata_type` and it is a SINGLE STRING, not an array.
+            The array form returned all types (23,197 rows); the string form
+            returned 372. Callers needing several types loop.
+
         Returns a flat list of:
-          {metadata_id, metadata_name, metadata_type, share_mode}
+          {metadata_id, metadata_name, metadata_type, share_mode,
+           shared_permission, group_permissions, is_direct_share}
+
+        `share_mode` is the EFFECTIVE permission (`permission` on the wire).
+        `shared_permission` / `group_permissions` are carried through so a
+        caller can tell a share made to this principal by name from one
+        inherited through a group; `is_direct_share` is the derived flag.
         """
         body: dict = {
             "principals": [{"identifier": principal_identifier}],
             "record_size": -1,
-            # DEFINED = direct shares only (transfer-sharing re-shares these);
-            # EFFECTIVE additionally resolves group-inherited access (audit view).
-            "permission_type": permission_type,
         }
-        if metadata_types:
-            body["metadata_type"] = metadata_types
+        if default_metadata_type:
+            body["default_metadata_type"] = default_metadata_type
 
         data = await self._request(
             "POST",
@@ -864,7 +881,9 @@ class ThoughtSpotClient:
         #     "metadata_type",
         #     "metadata_permissions": [{
         #       "metadata_id", "metadata_name",
-        #       "permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS"
+        #       "permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS",
+        #       "shared_permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS",
+        #       "group_permission": [{"id", "name", "permission"}]
         #     }]
         #   }]
         # }]}
@@ -876,12 +895,17 @@ class ThoughtSpotClient:
                     permission = item.get("permission", "NO_ACCESS")
                     if permission == "NO_ACCESS":
                         continue
+                    shared = item.get("shared_permission") or ""
+                    group_permissions = item.get("group_permission") or []
                     out.append(
                         {
                             "metadata_id": item.get("metadata_id", ""),
                             "metadata_name": item.get("metadata_name", ""),
                             "metadata_type": metadata_type,
                             "share_mode": permission,
+                            "shared_permission": shared,
+                            "group_permissions": group_permissions,
+                            "is_direct_share": bool(shared) and shared != "NO_ACCESS",
                         }
                     )
         return out

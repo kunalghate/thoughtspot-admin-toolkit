@@ -34,6 +34,7 @@ class _FakeClient:
     assign_calls: list[tuple[list[str], str]] = []
     delete_calls: list[list[str]] = []
     share_calls: list[tuple[list[str], list[str], str]] = []
+    share_kwargs: list[dict] = []
     principal_perm_results: list[dict] = []
     delete_user_should_fail: set[str] = set()
     delete_attempts: dict[str, int] = {}
@@ -51,17 +52,17 @@ class _FakeClient:
     async def assign_metadata_owner(self, *, object_ids, new_owner_identifier):
         _FakeClient.assign_calls.append((list(object_ids), new_owner_identifier))
 
-    async def delete_users(self, *, user_identifiers):
-        for ident in user_identifiers:
-            _FakeClient.delete_attempts[ident] = _FakeClient.delete_attempts.get(ident, 0) + 1
-            if ident in _FakeClient.delete_user_should_fail:
-                raise RuntimeError(f"simulated failure deleting {ident}")
-            _FakeClient.delete_calls.append(list(user_identifiers))
+    async def delete_user(self, *, user_identifier):
+        _FakeClient.delete_attempts[user_identifier] = _FakeClient.delete_attempts.get(user_identifier, 0) + 1
+        if user_identifier in _FakeClient.delete_user_should_fail:
+            raise RuntimeError(f"simulated failure deleting {user_identifier}")
+        _FakeClient.delete_calls.append([user_identifier])
 
-    async def share_objects(self, *, object_ids, principal_ids, permission):
+    async def share_objects(self, *, object_ids, principal_ids, permission, message="", notify=False):
         _FakeClient.share_calls.append((list(object_ids), list(principal_ids), str(permission)))
+        _FakeClient.share_kwargs.append({"message": message, "notify": notify})
 
-    async def principal_permissions(self, *, principal_identifier, metadata_types=None, permission_type="DEFINED"):
+    async def principal_permissions(self, *, principal_identifier, default_metadata_type=None):
         return list(_FakeClient.principal_perm_results)
 
     async def search_users(self, *, org_id=None):
@@ -74,6 +75,7 @@ def reset_fake():
     _FakeClient.assign_calls = []
     _FakeClient.delete_calls = []
     _FakeClient.share_calls = []
+    _FakeClient.share_kwargs = []
     _FakeClient.principal_perm_results = []
     _FakeClient.delete_user_should_fail = set()
     _FakeClient.delete_attempts = {}

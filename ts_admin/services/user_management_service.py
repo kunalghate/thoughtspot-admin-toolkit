@@ -58,6 +58,21 @@ DELETE_MAX_ATTEMPTS = 10
 DELETE_RETRY_BASE_DELAY = 0.5  # seconds, doubled each round
 DELETE_RETRY_MAX_DELAY = 8.0  # seconds, ceiling per round
 
+# `security/metadata/share` marks `message` REQUIRED — omitting the key is a 400.
+TRANSFER_SHARE_MESSAGE = "Shared with you as part of a ThoughtSpot access handover."
+
+# `principals/fetch-permissions` returns one row per accessible object of EVERY
+# type, and on a real cluster the overwhelming majority are LOGICAL_COLUMNs
+# (measured on ps-internal-prod: 20,425 of 23,197 rows for a single user). A
+# column is not shareable content on its own — it is reachable only through the
+# table that owns it, which transfer-sharing already re-shares. Including them
+# inflated the job total ~8x, made the dry-run count meaningless, and spent the
+# whole run issuing shares that change nothing a user can see.
+#
+# Preview and execute MUST apply this identically, or the dry-run stops
+# predicting the execute — hence one helper, used by both.
+TRANSFER_SHARING_EXCLUDED_TYPES = frozenset({"LOGICAL_COLUMN"})
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -535,6 +550,15 @@ async def execute_transfer(
 # ── Transfer sharing (re-share what the source user can see) ──────────────────
 
 
+def _transferable_rows(rows: list[dict]) -> list[dict]:
+    """Drop rows that are not shareable content in their own right.
+
+    See TRANSFER_SHARING_EXCLUDED_TYPES. Applied by both the preview and the
+    execute so the two always agree.
+    """
+    return [r for r in rows if r.get("metadata_type") not in TRANSFER_SHARING_EXCLUDED_TYPES]
+
+
 async def get_user_access(*, cluster_id: str, org_id: int, ts_guid: str) -> dict:
     """
     Live API call: everything the user can currently see (defined permissions).
@@ -552,12 +576,14 @@ async def get_user_access(*, cluster_id: str, org_id: int, ts_guid: str) -> dict
         auth=cluster.build_auth_strategy(org_id=org_id),
         timeout=120.0,
     ) as client:
-        # EFFECTIVE resolves group-inherited access too — the audit answer to
-        # "what can this user see", not just what was shared to them directly.
-        rows = await client.principal_permissions(
-            principal_identifier=ts_guid,
-            permission_type="EFFECTIVE",
-        )
+        # This endpoint has no `permission_type` key at all — it always returns
+        # EFFECTIVE access, group inheritance included. That happens to be the
+        # right answer for an audit view ("what can this user see"), but it was
+        # arrived at by accident: the `permission_type="EFFECTIVE"` we used to
+        # send was silently discarded, exactly like the `"DEFINED"` the transfer
+        # path sent. Each row now carries `is_direct_share` so the two cases are
+        # distinguishable at the row level.
+        rows = await client.principal_permissions(principal_identifier=ts_guid)
 
     by_type: dict[str, int] = {}
     for r in rows:
@@ -595,9 +621,7 @@ async def preview_transfer_sharing(
         url=cluster.url,
         auth=cluster.build_auth_strategy(org_id=org_id),
     ) as client:
-        rows = await client.principal_permissions(
-            principal_identifier=from_user_guid,
-        )
+        rows = _transferable_rows(await client.principal_permissions(principal_identifier=from_user_guid))
 
     by_type: dict[str, int] = {}
     for r in rows:
@@ -618,7 +642,19 @@ async def execute_transfer_sharing(
     """
     Re-share every object the source user can see with the target, at the
     same access level. Implementation: fetch principal_permissions once,
-    bucket by share_mode, issue one share_objects call per bucket.
+    drop the types that are not shareable content (see
+    TRANSFER_SHARING_EXCLUDED_TYPES), bucket by share_mode, issue one
+    share_objects call per bucket.
+
+    `notify` is forwarded to the API as `notify_on_share`. It used to be written
+    to the audit log and then dropped, and the wire default is TRUE.
+
+    NOTE: the source set is the source user's EFFECTIVE access — group-inherited
+    included — because `principals/fetch-permissions` has no way to ask for
+    anything narrower (the `permission_type: "DEFINED"` we used to send was not
+    a key on that endpoint and was discarded). Rows now carry `is_direct_share`,
+    so narrowing to direct shares only is a one-line filter here; it is
+    deliberately NOT applied yet — see the hand-back note.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -672,7 +708,7 @@ async def execute_transfer_sharing(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
-            rows = await client.principal_permissions(principal_identifier=from_user_guid)
+            rows = _transferable_rows(await client.principal_permissions(principal_identifier=from_user_guid))
 
             # Bucket by share_mode
             buckets: dict[str, list[str]] = {}
@@ -706,6 +742,8 @@ async def execute_transfer_sharing(
                             object_ids=chunk,
                             principal_ids=[to_user_identifier],
                             permission=enum_mode,
+                            message=TRANSFER_SHARE_MESSAGE,
+                            notify=notify,
                         )
                         succeeded += len(chunk)
                     except Exception as exc:
