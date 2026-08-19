@@ -603,3 +603,22 @@ same tool rather than assuming these still hold.
 - **`security/metadata/share` returns a bare 204** with no per-object or
   per-principal status, and no bulk-share endpoint provides one. A share can
   only be verified by reading permissions back (S44).
+
+- **2026-08-18 (process): the SpotterCode MCP main endpoint began requiring
+  authentication mid-session.** `https://spottercode.thoughtspot.app/mcp` returns
+  `{"error":"invalid_token", "error_description":"Authentication is now required
+  … this endpoint was previously open"}`, so `execute-thoughtspot-code` —
+  live-cluster verification — is unavailable to an unauthenticated agent. The
+  read-only docs tools remain open at `/mcp/docs` and can be driven over plain
+  `curl` with the MCP JSON-RPC handshake (`initialize` → capture
+  `mcp-session-id` → `notifications/initialized` → `tools/call`). Any brief that
+  assumes an agent can verify against a live cluster via MCP needs re-scoping
+  until the client is re-authenticated; verify from the repo's own
+  `ThoughtSpotClient` against a configured cluster instead.
+- **2026-08-18: `release_version` is documented NULLABLE and the reference's own
+  example value is the literal string `"test"`.** Any version gate must fail
+  OPEN — treat unparseable or absent as current — or a real SW/dev cluster
+  silently loses whatever the gate protects. `_parse_release_version`
+  (`client.py:113`) returns `None` for `"test"`, `""`, `"10"`, `"v10.11.0"` and
+  non-ASCII digits (`str.isdigit()` is True for superscripts that `int()`
+  rejects, hence the `isascii()` guard).
