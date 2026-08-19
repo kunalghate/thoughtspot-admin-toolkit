@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from pydantic import ValidationError
@@ -529,14 +530,22 @@ class ThoughtSpotClient:
         """
         Permanently delete a tag from the cluster.
 
+        POST /api/rest/2.0/tags/{tag_identifier}/delete — the identifier is a
+        PATH segment and the request carries NO body. 204 No Content on success.
+
+        `/api/rest/2.0/tags/delete` (what this used to POST, with a body of
+        `{"tag": [...]}`) is not a route: it 404s on every cluster, and our 404
+        handler renders that as "the object may have been deleted … run a sync
+        and retry", which sent admins re-syncing after a failure a sync can
+        never fix.
+
         Deleting a tag automatically removes it from every object it was
         assigned to (one API call instead of unassigning per-object first).
         Irreversible.
         """
         await self._request(
             "POST",
-            "/api/rest/2.0/tags/delete",
-            json={"tag": [{"identifier": tag_id}]},
+            f"/api/rest/2.0/tags/{quote(tag_id, safe='')}/delete",
             context="delete_tag",
         )
 
