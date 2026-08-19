@@ -15,13 +15,19 @@ import json
 from datetime import datetime, timezone
 
 import pytest
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
+from ts_admin.models.audit_log import AuditLog
 from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
 from ts_admin.models.sync_log import SyncLog
+from ts_admin.ts_client.exceptions import (
+    TSInvalidParametersError,
+    TSObjectNotFoundError,
+    TSServerError,
+)
 
 CLUSTER_ID = "c1"
 ORG_ID = 0
@@ -31,11 +37,26 @@ ORG_ID = 0
 
 
 class _FakeClient:
-    """Stand-in for ThoughtSpotClient; records every share_objects call."""
+    """Stand-in for ThoughtSpotClient; records every share_objects call.
+
+    It also keeps a real ACL, because `security/metadata/share` answers 204 No
+    Content and `execute_share` therefore READS THE ACL BACK to decide whether
+    the share landed (S44). A fake whose share is a no-op is a fake of a cluster
+    where every share silently fails — which is exactly the state three
+    non-existent endpoints were in for the life of the project, and exactly what
+    the verification pass now refuses to call SUCCESS.
+
+    `apply_shares = False` reproduces that cluster on purpose;
+    `share_should_fail` reproduces a share call that raises.
+    """
 
     share_calls: list[tuple[list[str], list[str], str]] = []  # (object_ids, principal_ids, permission)
     share_kwargs: list[dict] = []  # (message, notify) per call
-    permission_calls: list[tuple[str, str]] = []  # (ts_guid, object_type)
+    permission_calls: list[tuple[str, str, str]] = []  # (ts_guid, object_type, permission_type)
+    acl: dict[tuple[str, str], str] = {}  # (object_guid, principal_guid) → mode
+    apply_shares: bool = True
+    share_should_fail: Exception | None = None
+    fail_object_ids: set[str] = set()  # empty = every share call fails
 
     def __init__(self, *args, **kwargs):
         pass
@@ -46,13 +67,35 @@ class _FakeClient:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def fetch_permissions(self, *, ts_guid, object_type):
-        _FakeClient.permission_calls.append((ts_guid, str(object_type)))
-        return []  # no existing ACL — every pair is a change
+    async def fetch_permissions(self, *, ts_guid, object_type, permission_type="DEFINED"):
+        from ts_admin.ts_client.models import TSPermission
+
+        _FakeClient.permission_calls.append((ts_guid, str(object_type), permission_type))
+        return [
+            TSPermission(
+                principal_id=pid,
+                principal_name=pid,
+                principal_type="USER_GROUP",
+                share_mode=mode,
+            )
+            for (guid, pid), mode in _FakeClient.acl.items()
+            # The real client drops NO_ACCESS rows — a revoke shows up as the
+            # principal being ABSENT, never as a NO_ACCESS entry.
+            if guid == ts_guid and mode != "NO_ACCESS"
+        ]
 
     async def share_objects(self, *, object_ids, principal_ids, permission, message="", notify=False):
         _FakeClient.share_calls.append((list(object_ids), list(principal_ids), str(permission)))
         _FakeClient.share_kwargs.append({"message": message, "notify": notify})
+        if _FakeClient.share_should_fail is not None and (
+            not _FakeClient.fail_object_ids or set(object_ids) & _FakeClient.fail_object_ids
+        ):
+            raise _FakeClient.share_should_fail
+        if not _FakeClient.apply_shares:
+            return  # 204 No Content, and nothing actually changed
+        for oid in object_ids:
+            for pid in principal_ids:
+                _FakeClient.acl[(oid, pid)] = str(permission)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -63,6 +106,10 @@ def reset_fake():
     _FakeClient.share_calls = []
     _FakeClient.share_kwargs = []
     _FakeClient.permission_calls = []
+    _FakeClient.acl = {}
+    _FakeClient.apply_shares = True
+    _FakeClient.share_should_fail = None
+    _FakeClient.fail_object_ids = set()
 
 
 @pytest.fixture
@@ -434,3 +481,287 @@ class TestTagResolutionMatchesTheDeleter:
         from ts_admin.services.bulk_sharing_service import resolve_tag_to_guids
 
         assert set(resolve_tag_to_guids(cluster_id=CLUSTER_ID, org_id=ORG_ID, tag_name="finance")) == {"lb-user"}
+
+
+# ── M14: zero successes is FAILED, never PARTIAL ──────────────────────────────
+
+
+def _job_row(job_id: str) -> Job:
+    from ts_admin.database import get_session
+
+    with get_session() as s:
+        return s.get(Job, job_id)
+
+
+def _audit_rows() -> list[AuditLog]:
+    from ts_admin.database import get_session
+
+    with get_session() as s:
+        return list(s.exec(select(AuditLog).where(AuditLog.action_type == "bulk_share")).all())
+
+
+class TestZeroSuccessesIsFailedNeverPartial:
+    """
+    A job in which NOTHING succeeded must not present as one that achieved
+    something. `status = "PARTIAL" if (failed or cancelled or skipped) else
+    "SUCCESS"` used to be evaluated BEFORE any `succeeded == 0` branch, so a
+    share against an endpoint that 404'd for the life of the project reported
+    PARTIAL with zero pairs affected — which reads as "some of it worked, retry
+    the rest" and, attached to the 404's canned "run a sync and retry" message,
+    sent admins re-syncing forever. Reverting the branch order fails these.
+    """
+
+    def test_every_share_call_failing_ends_the_job_failed(self, in_memory_db, patched_env, seeded):
+        _FakeClient.share_should_fail = TSObjectNotFoundError(
+            object_type="resource",
+            identifier="/api/rest/2.0/security/share",
+            detail="Not Found",
+        )
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1", "ans-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.status != "PARTIAL"
+
+    def test_the_failure_message_names_the_cause_not_just_a_count(self, in_memory_db, patched_env, seeded):
+        _FakeClient.share_should_fail = TSObjectNotFoundError(
+            object_type="resource",
+            identifier="/api/rest/2.0/security/share",
+            detail="Not Found",
+        )
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"])
+
+        error = _job_row(job_id).error or ""
+        assert "0 share operations succeeded" in error
+        # The endpoint path and ThoughtSpot's own words — the only thing that
+        # tells an admin the endpoint does not exist rather than the cache
+        # being stale.
+        assert "/api/rest/2.0/security/share" in error
+        assert "Not Found" in error
+
+    def test_the_audit_row_says_failed_too(self, in_memory_db, patched_env, seeded):
+        _FakeClient.share_should_fail = TSInvalidParametersError("bad request")
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1", "ans-1"])
+
+        rows = _audit_rows()
+        assert len(rows) == 1
+        assert rows[0].status == "FAILED"
+        assert rows[0].items_affected == 0
+        assert "bad request" in rows[0].get_parameters()["error"]
+
+    def test_a_genuinely_partial_run_is_still_partial(self, in_memory_db, patched_env, seeded):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        _FakeClient.share_should_fail = TSInvalidParametersError("bad request")
+        _FakeClient.fail_object_ids = {"ans-1"}
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1", "ans-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "PARTIAL"
+        assert (job.get_result() or {})["succeeded_pairs"] == 1
+        assert _audit_rows()[0].status == "PARTIAL"
+
+    def test_a_bug_in_our_own_code_fails_the_job_instead_of_becoming_a_partial(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+    ):
+        """The per-chunk catch is narrowed to (TSAdminError, httpx.HTTPError).
+
+        A blanket `except Exception` there turned a live TypeError in our own
+        code into "this chunk failed upstream" and shipped it as a PARTIAL job
+        with a ThoughtSpot-flavoured error message it had nothing to do with.
+        """
+        _FakeClient.share_should_fail = TypeError("share_objects() got an unexpected keyword argument")
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.error_type == "TypeError"
+        # It never reached the per-chunk bucket, so no audit row claims a
+        # partially-completed share.
+        assert _audit_rows() == []
+
+
+# ── S44: a bulk share is verified by reading it back ──────────────────────────
+
+
+class TestPostExecuteVerification:
+    """
+    `security/metadata/share` returns a bare 204 No Content, so "the share
+    succeeded" was an assumption and the audit row recording it was a guess.
+    Every shared object is now re-read through `fetch-permissions` and compared
+    against what was requested.
+    """
+
+    def test_a_share_that_never_lands_is_not_reported_as_success(self, in_memory_db, patched_env, seeded):
+        # The 204 comes back, and nothing changed — the exact state a
+        # non-existent endpoint leaves the cluster in.
+        _FakeClient.apply_shares = False
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1", "ans-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        error = job.error or ""
+        assert "2 of 2 re-read object(s) do not carry the requested access" in error
+        assert "did not take effect" in error
+
+        params = _audit_rows()[0].get_parameters()
+        assert params["verified_failed"] == 2
+        assert params["verified_ok"] == 0
+        assert _audit_rows()[0].status == "FAILED"
+
+    def test_a_share_that_lands_verifies_clean(self, in_memory_db, patched_env, seeded):
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1", "ans-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "COMPLETE"
+        result = job.get_result() or {}
+        assert result["verified_ok"] == 2
+        assert result["verified_failed"] == 0
+        assert result["verified_errors"] == 0
+        assert result["verification_scope"] == "full"
+
+    def test_a_partly_applied_share_is_partial_not_complete(self, in_memory_db, patched_env, seeded):
+        """One object's ACL is left unchanged behind a 204 — the other lands."""
+        from ts_admin.services import bulk_sharing_service as svc
+
+        real_share = _FakeClient.share_objects
+
+        async def _selective(self, *, object_ids, principal_ids, permission, message="", notify=False):
+            if "ans-1" in object_ids:
+                _FakeClient.share_calls.append((list(object_ids), list(principal_ids), str(permission)))
+                _FakeClient.share_kwargs.append({"message": message, "notify": notify})
+                return  # 204, no ACL change
+            await real_share(
+                self,
+                object_ids=object_ids,
+                principal_ids=principal_ids,
+                permission=permission,
+                message=message,
+                notify=notify,
+            )
+
+        _FakeClient.share_objects = _selective
+        try:
+            job_id = _create_job("bulk_share")
+            _execute(job_id, ["lb-1", "ans-1"])
+        finally:
+            _FakeClient.share_objects = real_share
+
+        job = _job_row(job_id)
+        assert job.status == "PARTIAL"
+        result = job.get_result() or {}
+        assert result["verified_ok"] == 1
+        assert result["verified_failed"] == 1
+        assert [x["object_guid"] for x in result["verified_failed_guids"]] == ["ans-1"]
+        assert svc.VERIFY_SAMPLE_LIMIT >= 2  # non-vacuity: both objects were in the sample
+
+    def test_a_revoke_is_verified_by_absence_not_by_a_no_access_row(self, in_memory_db, patched_env, seeded):
+        """`fetch_permissions` never returns a NO_ACCESS row, so an applied
+        revoke shows up as the principal being GONE from the defined ACL."""
+        _FakeClient.acl[("lb-1", "g-finance")] = "READ_ONLY"
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"], mode="NO_ACCESS")
+
+        result = _job_row(job_id).get_result() or {}
+        assert result["verified_ok"] == 1
+        assert result["verified_failed"] == 0
+
+    def test_a_revoke_that_did_not_land_is_caught(self, in_memory_db, patched_env, seeded):
+        _FakeClient.acl[("lb-1", "g-finance")] = "READ_ONLY"
+        _FakeClient.apply_shares = False
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"], mode="NO_ACCESS")
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+
+    def test_verification_reads_the_defined_lens(self, in_memory_db, patched_env, seeded):
+        """A share creates a DIRECT (DEFINED) share, and the preview diffed
+        through the same lens — EFFECTIVE would report group-inherited access
+        as proof that an explicit share landed."""
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"])
+
+        assert _FakeClient.permission_calls, "verification made no read-back call at all"
+        assert {lens for _g, _t, lens in _FakeClient.permission_calls} == {"DEFINED"}
+
+    def test_verification_is_capped_and_the_result_says_so(self, in_memory_db, patched_env, seeded):
+        """Verification is N extra live calls on a job that may cover thousands
+        of objects, so it is bounded — and a bounded verification reported as a
+        full one would be the same class of lie this exists to fix."""
+        from ts_admin.services import bulk_sharing_service as svc
+
+        now = datetime.now(tz=timezone.utc)
+        guids = [f"lb-bulk-{i}" for i in range(svc.VERIFY_SAMPLE_LIMIT + 10)]
+        with Session(in_memory_db) as s:
+            for guid in guids:
+                s.add(
+                    CachedMetadata(
+                        cluster_id=CLUSTER_ID,
+                        org_id=ORG_ID,
+                        ts_guid=guid,
+                        name=guid,
+                        object_type="LIVEBOARD",
+                        owner_guid="u-alice",
+                        owner_name="Alice",
+                        tag_names=json.dumps([]),
+                        synced_at=now,
+                    )
+                )
+            s.commit()
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, guids)
+
+        result = _job_row(job_id).get_result() or {}
+        assert result["verified_candidates"] == len(guids)
+        assert result["verified_sampled"] == svc.VERIFY_SAMPLE_LIMIT
+        assert result["verification_scope"] == "sample"
+        assert "NOT verified" in result["verification_note"]
+        assert f"{svc.VERIFY_SAMPLE_LIMIT} of {len(guids)}" in result["verification_note"]
+
+    def test_a_read_back_that_itself_fails_is_not_counted_as_a_failed_share(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+    ):
+        """An unreachable verification read proves nothing either way — it must
+        not be laundered into "the share failed"."""
+        real_fetch = _FakeClient.fetch_permissions
+
+        async def _boom(self, *, ts_guid, object_type, permission_type="DEFINED"):
+            if _FakeClient.share_calls:  # only the post-execute read-back
+                raise TSServerError(status_code=503, body="verification unavailable")
+            return await real_fetch(self, ts_guid=ts_guid, object_type=object_type, permission_type=permission_type)
+
+        _FakeClient.fetch_permissions = _boom
+        try:
+            job_id = _create_job("bulk_share")
+            _execute(job_id, ["lb-1"])
+        finally:
+            _FakeClient.fetch_permissions = real_fetch
+
+        job = _job_row(job_id)
+        result = job.get_result() or {}
+        assert result["verified_errors"] == 1
+        assert result["verified_failed"] == 0
+        assert job.status == "COMPLETE"
+        assert "could not be re-read" in result["verification_note"]

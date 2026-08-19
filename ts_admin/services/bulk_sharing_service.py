@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 
+import httpx
 from sqlmodel import Session, col, func, select
 
 import ts_admin.database as _db
@@ -34,7 +35,7 @@ from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_user import CachedUser, UserOrgMembership
 from ts_admin.models.share_record import ShareRecord
 from ts_admin.services.deletion_service import SYSTEM_OWNER_NAME
-from ts_admin.ts_client.exceptions import StaleCacheError
+from ts_admin.ts_client.exceptions import StaleCacheError, TSAdminError
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,27 @@ logger = logging.getLogger(__name__)
 # not a silent default. It is the body of the notification email, so it only
 # reaches a human when `notify_on_share` is true.
 SHARE_MESSAGE = "Shared with you by a ThoughtSpot administrator."
+
+# The lens both the preview diff and the post-execute verification read through.
+# `security/metadata/fetch-permissions` accepts `permission_type` ("DEFINED" |
+# "EFFECTIVE"); `share_objects` creates an explicit, i.e. DEFINED, share, so
+# DEFINED is what "did the share land?" has to be asked in — and asking the
+# before-picture and the after-picture through the SAME lens is what makes them
+# comparable. Passed explicitly at both call sites in this module so a change to
+# the client's default cannot silently switch the lens under them. (Other
+# callers — `deletion_service.dryrun`'s "who loses access if I delete this" —
+# ask a different question and are deliberately left on the client default.)
+PERMISSION_LENS = "DEFINED"
+
+# Post-execute verification cap. `security/metadata/share` answers a bare 204 No
+# Content — no per-object, no per-principal status, and no bulk-share endpoint
+# offers one — so verification is a read-back, one live call per object. A bulk
+# share can cover thousands of objects, so it is bounded: at most this many
+# objects, spread evenly across the shared set. What was actually verified is
+# always stated in `Job.result` and the audit row, because a sampled
+# verification reported as a full one is the same class of lie the read-back
+# exists to catch.
+VERIFY_SAMPLE_LIMIT = 50
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -274,9 +296,17 @@ async def preview_share(
         async def _fetch(guid: str, obj_type: str):
             async with sem:
                 try:
-                    perms = await client.fetch_permissions(ts_guid=guid, object_type=obj_type)
+                    perms = await client.fetch_permissions(
+                        ts_guid=guid,
+                        object_type=obj_type,
+                        permission_type=PERMISSION_LENS,
+                    )
                     return guid, perms, None
-                except Exception as exc:
+                # Only the two families a live call can raise: `_request` maps
+                # every HTTP outcome onto TSAdminError, httpx.HTTPError covers
+                # the transport. A TypeError from our own code is not "this
+                # object's ACL could not be read" and must escape.
+                except (TSAdminError, httpx.HTTPError) as exc:
                     logger.warning("fetch_permissions failed for %s: %s", guid, exc)
                     return guid, [], exc
 
@@ -507,9 +537,162 @@ async def dryrun_share(
             result["total"],
             result["will_change_count"],
         )
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `execute_share`. Permitted to swallow ANY exception because an
+    # escape here strands the Job row at RUNNING; nothing is swallowed silently.
     except Exception as exc:
         logger.exception("dryrun_share job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)
+
+
+# ── Post-execute verification ─────────────────────────────────────────────────
+
+
+def _verification_sample(guids: list[str], limit: int) -> list[str]:
+    """Pick at most `limit` GUIDs, spread evenly across `guids`.
+
+    A stride rather than the first N: objects are shared in `object_type`
+    buckets, so the first N would all come from one bucket and a per-type
+    failure (the shape of every 404 this row exists for) could hide behind a
+    fully verified sample of the other type.
+    """
+    if len(guids) <= limit:
+        return list(guids)
+    step = len(guids) / limit
+    return [guids[int(i * step)] for i in range(limit)]
+
+
+async def _verify_share(
+    client,
+    *,
+    shared_guids: list[str],
+    obj_map: dict[str, CachedMetadata],
+    principal_guids: list[str],
+    mode: str,
+) -> dict:
+    """
+    Re-read the shared objects' ACLs and compare them against what was requested.
+
+    `share_objects` returns 204 No Content, so without this the audit row saying
+    "shared" is a guess. Each sampled object is re-read through
+    `fetch_permissions` (PERMISSION_LENS) and counted as:
+
+      - verified_ok      — every requested principal is at the requested mode
+      - verified_failed  — at least one is not (the share did not land)
+      - verified_errors  — the read-back itself failed, so nothing is proven
+        either way. An unreachable read is NOT evidence of a failed share and is
+        deliberately kept out of `verified_failed`.
+
+    `NO_ACCESS` is a revoke and `fetch_permissions` never returns a NO_ACCESS
+    row, so "applied" there means the principal is ABSENT from the defined ACL.
+    """
+    candidates = list(dict.fromkeys(shared_guids))
+    sample = _verification_sample(candidates, VERIFY_SAMPLE_LIMIT)
+    if not sample:
+        return {
+            "verified_ok": 0,
+            "verified_failed": 0,
+            "verified_errors": 0,
+            "verified_sampled": 0,
+            "verified_candidates": 0,
+            "verification_scope": "none",
+            "verification_note": "Nothing was shared, so nothing was verified.",
+            "verified_failed_guids": [],
+        }
+
+    sem = asyncio.Semaphore(10)
+
+    async def _read(guid: str):
+        async with sem:
+            try:
+                perms = await client.fetch_permissions(
+                    ts_guid=guid,
+                    object_type=obj_map[guid].object_type,
+                    permission_type=PERMISSION_LENS,
+                )
+                return guid, perms, None
+            # Same narrow pair as every other live call in this module.
+            except (TSAdminError, httpx.HTTPError) as exc:
+                logger.warning("share verification could not re-read %s: %s", guid, exc)
+                return guid, [], exc
+
+    results = await asyncio.gather(*[_read(guid) for guid in sample])
+
+    verified_ok = 0
+    verified_errors = 0
+    failed_guids: list[dict] = []
+    for guid, perms, err in results:
+        if err is not None:
+            verified_errors += 1
+            continue
+        actual = {p.principal_id: str(p.share_mode) for p in perms}
+        if mode == "NO_ACCESS":
+            wrong = [pid for pid in principal_guids if pid in actual]
+        else:
+            wrong = [pid for pid in principal_guids if actual.get(pid) != mode]
+        if wrong:
+            failed_guids.append({"object_guid": guid, "principals": wrong[:20]})
+        else:
+            verified_ok += 1
+
+    scope = "full" if len(sample) == len(candidates) else "sample"
+    note = (
+        f"Re-read {len(sample)} of {len(candidates)} shared object(s) "
+        f"({PERMISSION_LENS} permissions; cap {VERIFY_SAMPLE_LIMIT})."
+    )
+    if scope == "sample":
+        note += " Objects outside the sample were NOT verified."
+    if verified_errors:
+        note += f" {verified_errors} object(s) could not be re-read, so their outcome is unknown."
+
+    return {
+        "verified_ok": verified_ok,
+        "verified_failed": len(failed_guids),
+        "verified_errors": verified_errors,
+        "verified_sampled": len(sample),
+        "verified_candidates": len(candidates),
+        "verification_scope": scope,
+        "verification_note": note,
+        "verified_failed_guids": failed_guids[:50],
+    }
+
+
+def _share_failure_reason(
+    *,
+    succeeded_pairs: int,
+    failed_records: list[dict],
+    skipped: list[dict],
+    cancelled: bool,
+    verification: dict,
+) -> str:
+    """Name what actually went wrong, not just how many things did.
+
+    "0 share operations succeeded" told an admin nothing they could act on. What
+    they need is the error ThoughtSpot returned — for the non-existent endpoint
+    this row exists for, a 404 whose canned message ("run a sync and retry") was
+    itself the thing sending people in circles.
+    """
+    parts: list[str] = []
+    if failed_records:
+        first = failed_records[0]
+        parts.append(
+            f"{len(failed_records)} share call(s) failed — first error on "
+            f"{first.get('object_type') or '?'}: {first.get('error') or 'unknown error'}"
+        )
+    if verification["verified_failed"]:
+        parts.append(
+            f"{verification['verified_failed']} of {verification['verified_sampled']} re-read object(s) "
+            "do not carry the requested access — the share call reported no error but did not take effect"
+        )
+    if cancelled:
+        parts.append("the job was cancelled")
+    if skipped:
+        parts.append(f"{len(skipped)} object(s) were not in the metadata cache and were never attempted")
+    if not parts:
+        parts.append("no share call was attempted")
+
+    lead = "0 share operations succeeded" if succeeded_pairs == 0 else f"{succeeded_pairs} share pair(s) succeeded"
+    return f"{lead}: " + "; ".join(parts) + "."
 
 
 # ── Execute ────────────────────────────────────────────────────────────────────
@@ -541,7 +724,13 @@ async def execute_share(
     GUIDs with no cache row are excluded — the same set `preview_share` excludes
     — and reported in `Job.result["skipped"]` plus the audit log. A run with any
     skipped GUID is PARTIAL, never SUCCESS: the admin asked for something that
-    did not happen.
+    did not happen. A run in which NOTHING succeeded is FAILED, never PARTIAL.
+
+    `share_objects` answers 204 No Content, so every shared object is re-read
+    afterwards (bounded — see VERIFY_SAMPLE_LIMIT) and compared against what was
+    requested. The `verified_*` counts and `verification_note` land in both
+    `Job.result` and the audit row, and a run whose re-read shows nothing landed
+    is not reported as a success.
     """
     from ts_admin.services.job_service import (
         is_cancelled,
@@ -626,6 +815,7 @@ async def execute_share(
 
     succeeded_pairs = 0
     failed_records: list[dict] = []
+    shared_guids: list[str] = []  # GUIDs whose share call returned without error
     cancelled = False
 
     try:
@@ -654,6 +844,8 @@ async def execute_share(
                     if is_cancelled(job_id):
                         cancelled = True
                         break
+
+                    chunk_error: str | None = None
                     try:
                         await client.share_objects(
                             object_ids=chunk,
@@ -662,66 +854,97 @@ async def execute_share(
                             message=SHARE_MESSAGE,
                             notify=notify,
                         )
-                        pair_count = len(chunk) * len(principal_guids)
-                        succeeded_pairs += pair_count
-
-                        # ShareRecord per (object × principal)
-                        with Session(_db.get_engine()) as session:
-                            for guid in chunk:
-                                for pid in principal_guids:
-                                    meta = principal_meta.get(pid, {"name": pid, "type": "USER"})
-                                    session.add(
-                                        ShareRecord(
-                                            cluster_id=cluster_id,
-                                            job_id=job_id,
-                                            org_id=org_id,
-                                            object_guid=guid,
-                                            object_name=obj_map[guid].name,
-                                            object_type=obj_type,
-                                            principal_guid=pid,
-                                            principal_name=meta["name"],
-                                            principal_type=meta["type"],
-                                            new_mode=mode,
-                                            status="SUCCESS",
-                                        )
-                                    )
-                            session.commit()
-                    except Exception as exc:
+                    # ONLY the live call is guarded, and only against the two
+                    # families it can raise (`_request` maps every HTTP outcome
+                    # onto TSAdminError; httpx.HTTPError covers the transport).
+                    # The blanket `except Exception` that used to wrap this
+                    # whole block — the share call AND the ShareRecord writes —
+                    # turned any failure at all into "this chunk failed", which
+                    # is how a TypeError in our own code shipped as a PARTIAL
+                    # job. Anything else must reach the outer handler and FAIL.
+                    except (TSAdminError, httpx.HTTPError) as exc:
                         logger.warning("share_objects chunk failed (%s): %s", obj_type, exc)
-                        failed_records.append({"object_type": obj_type, "guids": chunk, "error": str(exc)[:300]})
-                        with Session(_db.get_engine()) as session:
-                            for guid in chunk:
-                                for pid in principal_guids:
-                                    meta = principal_meta.get(pid, {"name": pid, "type": "USER"})
-                                    session.add(
-                                        ShareRecord(
-                                            cluster_id=cluster_id,
-                                            job_id=job_id,
-                                            org_id=org_id,
-                                            object_guid=guid,
-                                            object_name=obj_map[guid].name,
-                                            object_type=obj_type,
-                                            principal_guid=pid,
-                                            principal_name=meta["name"],
-                                            principal_type=meta["type"],
-                                            new_mode=mode,
-                                            status="FAILED",
-                                            error=str(exc)[:300],
-                                        )
+                        chunk_error = str(exc)[:300]
+                        failed_records.append({"object_type": obj_type, "guids": chunk, "error": chunk_error})
+
+                    if chunk_error is None:
+                        succeeded_pairs += len(chunk) * len(principal_guids)
+                        shared_guids.extend(chunk)
+
+                    # ShareRecord per (object × principal), either way.
+                    with Session(_db.get_engine()) as session:
+                        for guid in chunk:
+                            for pid in principal_guids:
+                                meta = principal_meta.get(pid, {"name": pid, "type": "USER"})
+                                session.add(
+                                    ShareRecord(
+                                        cluster_id=cluster_id,
+                                        job_id=job_id,
+                                        org_id=org_id,
+                                        object_guid=guid,
+                                        object_name=obj_map[guid].name,
+                                        object_type=obj_type,
+                                        principal_guid=pid,
+                                        principal_name=meta["name"],
+                                        principal_type=meta["type"],
+                                        new_mode=mode,
+                                        status="FAILED" if chunk_error else "SUCCESS",
+                                        error=chunk_error,
                                     )
-                            session.commit()
+                                )
+                        session.commit()
                     update_progress(job_id, succeeded_pairs)
 
-        # A skipped GUID means the admin asked for something that did not happen,
-        # so the job can never report a clean SUCCESS.
-        status = "PARTIAL" if (failed_records or cancelled or skipped) else "SUCCESS"
+            # `security/metadata/share` answers 204 No Content, so the only way
+            # to know the share landed is to read it back. Runs inside the same
+            # client session, and is bounded — see VERIFY_SAMPLE_LIMIT.
+            verification = await _verify_share(
+                client,
+                shared_guids=shared_guids,
+                obj_map=obj_map,
+                principal_guids=principal_guids,
+                mode=mode,
+            )
+
+        # Zero successes is FAILED, never PARTIAL. PARTIAL reads to an admin as
+        # "some of it worked, retry the rest" — attached to a 404 from an
+        # endpoint that never existed, it sent people re-syncing forever. The
+        # succeeded == 0 branch is therefore evaluated FIRST, and the failure
+        # message names what happened rather than only counting it.
+        #
+        # A skipped GUID means the admin asked for something that did not
+        # happen, so a run with any skips can never report a clean SUCCESS.
+        if succeeded_pairs == 0:
+            status = "FAILED"
+        elif failed_records or cancelled or skipped:
+            status = "PARTIAL"
+        else:
+            status = "SUCCESS"
+
+        # The read-back overrides the optimistic result: shares that were issued
+        # without error but did not land are not successes.
+        if status != "FAILED" and verification["verified_failed"]:
+            status = "FAILED" if verification["verified_ok"] == 0 else "PARTIAL"
+
+        failure_reason = _share_failure_reason(
+            succeeded_pairs=succeeded_pairs,
+            failed_records=failed_records,
+            skipped=skipped,
+            cancelled=cancelled,
+            verification=verification,
+        )
+
         with Session(_db.get_engine()) as session:
             audit = AuditLog(
                 cluster_id=cluster_id,
                 action_type="bulk_share",
                 entity_type="metadata",
                 items_affected=succeeded_pairs,
-                status=status if status != "SUCCESS" else "SUCCESS",
+                # The audit row carries the SAME terminal status as the job. It
+                # used to be computed from an earlier expression that could not
+                # say FAILED at all, so a job that achieved nothing left a
+                # PARTIAL row behind it in the audit trail.
+                status=status,
             )
             audit.set_parameters(
                 {
@@ -735,6 +958,8 @@ async def execute_share(
                     "failed": failed_records,
                     "skipped": skipped,
                     "cancelled": cancelled,
+                    "error": failure_reason,
+                    **verification,
                 }
             )
             session.add(audit)
@@ -748,22 +973,33 @@ async def execute_share(
             "skipped": skipped,
             "skipped_count": len(skipped),
             "cancelled": cancelled,
+            **verification,
         }
-        if status == "PARTIAL":
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
+        elif status == "PARTIAL":
             mark_partial(job_id, result)
-        elif succeeded_pairs == 0 and not cancelled:
-            mark_failed(job_id, "0 share operations succeeded")
         else:
             mark_complete(job_id, result)
         logger.info(
-            "bulk_share job=%s cluster=%s succeeded=%d failed=%d skipped=%d cancelled=%s",
+            "bulk_share job=%s cluster=%s status=%s succeeded=%d failed=%d skipped=%d cancelled=%s "
+            "verified_ok=%d verified_failed=%d",
             job_id,
             cluster_id,
+            status,
             succeeded_pairs,
             total_pairs - succeeded_pairs,
             len(skipped),
             cancelled,
+            verification["verified_ok"],
+            verification["verified_failed"],
         )
+    # Last-resort handler for a background task: this coroutine is awaited by
+    # Starlette AFTER the 202 is on the wire, so an exception that escapes here
+    # is invisible to the caller and strands the Job row at RUNNING forever.
+    # Narrowing it would re-introduce that. It is permitted to swallow ANY
+    # exception, and it swallows none of them silently — every one is logged
+    # with a traceback and re-reported as a FAILED job.
     except Exception as exc:
         logger.exception("execute_share job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)
