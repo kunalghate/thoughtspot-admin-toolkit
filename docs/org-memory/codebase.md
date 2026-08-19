@@ -563,3 +563,43 @@ same tool rather than assuming these still hold.
   the session response includes only the Primary Org unless the admin was
   explicitly added to each Org. Any org check must read `current_org`, never
   membership.
+
+### v2 request/response facts measured on a live cluster (2026-08-18)
+
+- **v2 silently ignores unknown request-body keys.** Verified by sending
+  `totally_made_up_key_zzz` to `security/principals/fetch-permissions` and
+  getting byte-identical results. Consequence: an invented key is a **no-op
+  that reads like a working filter**, never an error. This is why three wrong
+  keys shipped unnoticed (`permission_type` and `metadata_type` on the
+  principals endpoint, `export_associated_objects` on tml/export).
+- **`permission_type` is a real key on `security/metadata/fetch-permissions`
+  (10.3.0.cl+) and does not exist on `security/principals/fetch-permissions`.**
+  Do not generalise from one to the other. On the metadata endpoint the values
+  differ enormously: measured on ps-internal-prod, 15 of 15 sampled liveboards
+  returned `DEFINED = 0` while `EFFECTIVE = 129-139`. Almost nothing on a real
+  cluster is shared directly; access is via group membership. Any UI showing
+  only DEFINED must say so or it reports "no one has access" about content the
+  whole company can read.
+- **`default_metadata_type` is a SINGLE STRING, not an array** (the principals
+  endpoint's real type filter). Measured: array-under-the-wrong-key form
+  returned 23,197 rows across 5 types; correct string form returned 372.
+  `LOGICAL_COLUMN` dominates real results — 20,425 of those 23,197 for one user.
+- **`metadata/tml/export` failures are PER-OBJECT, not all-or-nothing.** A
+  60-object batch returned HTTP 200 with 58 `info.status.status_code == "OK"`
+  and 2 `"ERROR"` carrying `info.status.error_message`. The only all-or-nothing
+  case is an **unresolvable GUID**, which 400s the whole batch and NAMES the
+  offending GUID in `error.message.debug` — the same structure
+  `client._unresolvable_guids()` already parses for 404s.
+- **`users/search` and `groups/search` are NOT scoped by the token's org.**
+  Measured with the session in org 0: unfiltered 622 users / 1250 groups;
+  `org_identifiers: [0]` gives 362 / 236. So passing `org_id` to auth changes
+  nothing for these two, and `_sync_users`/`_sync_groups` not passing it is
+  correct rather than a bug. `metadata/search` has no org parameter at all, so
+  for it the token IS the only mechanism — the three handlers look inconsistent
+  and each is right for its endpoint.
+- **`metadata/search` has no total-count field** — the response is a bare array
+  with no envelope, so `len(page) < page_size` is the only termination signal.
+  `record_size: -1` works; the default is 10.
+- **`security/metadata/share` returns a bare 204** with no per-object or
+  per-principal status, and no bulk-share endpoint provides one. A share can
+  only be verified by reading permissions back (S44).
