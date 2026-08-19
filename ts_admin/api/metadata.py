@@ -13,6 +13,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -95,7 +96,15 @@ class PermissionEntry(BaseModel):
 class PermissionsResponse(BaseModel):
     ts_guid: str
     object_name: str
+    # Principals the object was explicitly shared with ("DEFINED").
     permissions: list[PermissionEntry]
+    # Everyone who can actually reach it, group membership resolved
+    # ("EFFECTIVE"). On a real cluster almost nothing is shared directly —
+    # measured on ps-internal-prod, 15 of 15 sampled liveboards had zero direct
+    # shares while 129-139 principals could open each one. Reporting only the
+    # first number tells the admin "no one has access" about content the whole
+    # company can read, so both travel together and the UI states which is which.
+    effective_count: int = 0
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -222,14 +231,18 @@ async def get_permissions(
     # Org context comes from the auth token — without org_id, objects living in
     # a non-default org 400 with "invalid parameters" on fetch-permissions.
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
-        perms = await client.fetch_permissions(
-            ts_guid=ts_guid,
-            object_type=obj.object_type,
+        # Two calls, concurrently — the API has no mode that returns both, and
+        # the drawer is opened on demand for one object, so the second round
+        # trip is cheap next to being wrong.
+        perms, effective = await asyncio.gather(
+            client.fetch_permissions(ts_guid=ts_guid, object_type=obj.object_type),
+            client.fetch_permissions(ts_guid=ts_guid, object_type=obj.object_type, permission_type="EFFECTIVE"),
         )
 
     return PermissionsResponse(
         ts_guid=ts_guid,
         object_name=obj.name,
+        effective_count=len(effective),
         permissions=[
             PermissionEntry(
                 principal_id=p.principal_id,

@@ -322,6 +322,23 @@ class TestGetPermissions:
         assert r.status_code == 200
         assert fake_ts.auth_org_ids == [42]
 
+    def test_reports_effective_access_alongside_direct_shares(self, client, seeded, fake_ts):
+        """
+        Direct shares ("DEFINED") are almost always empty on a real cluster —
+        measured on ps-internal-prod, 15 of 15 sampled liveboards had zero,
+        while 129-139 principals could actually open each one. Returning only
+        the direct list made the drawer say "0 principals with access" about
+        content the whole company can read.
+        """
+        r = client.get("/api/v1/metadata/lb-1/permissions?cluster_id=c1&org_id=0")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "effective_count" in body
+        # Both permission types are asked for — the API has no mode returning both.
+        types = [k.get("permission_type") for k in fake_ts.fetch_kwargs]
+        assert "EFFECTIVE" in types
+        assert "DEFINED" in types or None in types
+
     def test_live_call_goes_to_the_requested_cluster_not_the_active_one(self, client, seeded, fake_ts):
         """
         This endpoint scoped its CACHE read by `cluster_id` and then built the

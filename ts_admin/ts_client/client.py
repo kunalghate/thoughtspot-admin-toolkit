@@ -637,6 +637,7 @@ class ThoughtSpotClient:
         *,
         ts_guid: str,
         object_type: str,
+        permission_type: str = "DEFINED",
     ) -> list[TSPermission]:
         """
         Fetch all users and groups that have access to a metadata object.
@@ -646,6 +647,19 @@ class ThoughtSpotClient:
 
         object_type may be a subtype (e.g. WORKSHEET); it's mapped to the
         TS API type (LOGICAL_TABLE) automatically.
+
+        `permission_type` (a real key on THIS endpoint, 10.3.0.cl+ — unlike on
+        `security/principals/fetch-permissions`, where it does not exist):
+
+          - "DEFINED"   — only principals the object was explicitly shared with.
+          - "EFFECTIVE" — everyone who can actually reach it, group membership
+            resolved. Omitting the key gives the same result as EFFECTIVE.
+
+        The gap between them is enormous on a real cluster and is not a rounding
+        error: measured on ps-internal-prod, 15 of 15 sampled liveboards had
+        DEFINED = 0 while EFFECTIVE = 129-139. A caller showing only DEFINED
+        must say so, or it reports "no one has access" about an object 138
+        people can open.
         """
         api_type = LOGICAL_TABLE_SUBTYPES.get(object_type, object_type)
 
@@ -655,7 +669,7 @@ class ThoughtSpotClient:
             json={
                 "metadata": [{"identifier": ts_guid, "type": api_type}],
                 "record_size": -1,
-                "permission_type": "DEFINED",  # explicitly shared only, matches TS UI
+                "permission_type": permission_type,
             },
             context="fetch_permissions",
         )

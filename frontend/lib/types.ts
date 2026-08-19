@@ -135,6 +135,11 @@ export interface PermissionsResponse {
   ts_guid: string;
   object_name: string;
   permissions: Permission[];
+  /** Everyone who can actually reach the object, group membership resolved.
+   *  `permissions` above lists only DIRECT shares, which on a real cluster is
+   *  usually empty — so this is what stops the drawer reporting "no one has
+   *  access" about content the whole company can open. */
+  effective_count: number;
 }
 
 // ── API response wrappers ─────────────────────────────────────────────────────
