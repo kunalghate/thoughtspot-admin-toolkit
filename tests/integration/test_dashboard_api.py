@@ -276,24 +276,42 @@ class TestNeverSyncedVersusZero:
         body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
         assert body["synced"]["tags"] is True
 
-    def test_delta_is_the_change_since_the_previous_successful_sync(self, client, seeded, in_memory_db):
+    def test_no_record_count_trend_is_published(self, client, seeded, in_memory_db):
+        """
+        The payload carried a `deltas` map that was structurally always 0.
+
+        It diffed "the two most recent successful syncs" of an entity, but no
+        writer appends to `sync_log` — `sync_service._write_sync_log` and
+        `lineage_service._write_dependencies_sync_log` both upsert the single
+        (cluster, org, entity) row — so the query could never return two rows and
+        the Dashboard's trend indicator never rendered once. The test that used
+        to live here hand-inserted two rows, a state production cannot reach,
+        which is precisely why the dead field survived review.
+
+        Pinned as an ABSENCE: an always-zero field is worse than no field, and
+        re-adding it needs a stored previous count (see
+        `test_sync_log_keeps_no_history_so_there_is_no_record_count_trend`).
+        """
         now = datetime.now(tz=timezone.utc)
         with Session(in_memory_db) as session:
-            previous, latest = now - timedelta(hours=2), now
-            for synced_at, count in ((previous, 356), (latest, 360)):
-                session.add(
-                    SyncLog(
-                        cluster_id="c1",
-                        org_id=0,
-                        entity_type="users",
-                        record_count=count,
-                        status="SUCCESS",
-                        synced_at=synced_at,
-                    )
+            session.add(
+                SyncLog(
+                    cluster_id="c1",
+                    org_id=0,
+                    entity_type="users",
+                    record_count=360,
+                    status="SUCCESS",
+                    synced_at=now,
                 )
+            )
             session.commit()
+
         body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
-        assert body["deltas"]["users"] == 4
+
+        assert "deltas" not in body
+        # ...and the rest of the sync state the same query feeds is unaffected.
+        assert body["synced"]["users"] is True
+        assert body["synced_at"]["users"] is not None
 
 
 class TestCacheFreshness:

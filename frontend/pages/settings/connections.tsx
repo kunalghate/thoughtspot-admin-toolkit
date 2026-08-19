@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 import { Plus, Trash2, CheckCircle, XCircle, Pencil } from "lucide-react";
 import AppShell from "@/components/Shell";
 import { SettingsTabs } from "@/components/SettingsTabs";
@@ -27,6 +28,8 @@ export default function ConnectionsPage() {
   const [loading, setLoading]       = useState(true);
   const [showForm, setShowForm]     = useState(false);
   const [editingCluster, setEditing] = useState<Cluster | null>(null);
+  const [actionError, setActionError] = useState("");
+  const router = useRouter();
 
   const reload = () => {
     clustersApi.list().then(setClusters).finally(() => setLoading(false));
@@ -36,19 +39,46 @@ export default function ConnectionsPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Remove this instance? This cannot be undone.")) return;
-    await clustersApi.delete(id);
-    reload();
+    try {
+      await clustersApi.delete(id);
+      reload();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to remove this instance");
+    }
   };
 
   const handleActivate = async (id: string) => {
-    await fetch(`/api/v1/clusters/${id}/activate`, { method: "POST" });
-    reload();
+    setActionError("");
+    try {
+      // Via the API client, not a raw `fetch("/api/v1/…")`: under `make dev`
+      // the page is served from :3000 and only the client knows the API base,
+      // so the raw call 404'd against the Next dev server and the click looked
+      // like it did nothing.
+      await clustersApi.activate(id);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to switch instance");
+      return;
+    }
+    // Reload rather than `reload()`: the shell reads the active cluster in an
+    // effect keyed on the route, so repainting only this page's list leaves the
+    // Topbar, the org selector and every cached page scoped to the old cluster.
+    router.reload();
   };
 
   return (
     <AppShell pageTitle="Settings — Connections">
       <div style={{ padding: 28, maxWidth: 760 }}>
         <SettingsTabs current="connections" />
+
+        {actionError && (
+          <p style={{
+            margin: "0 0 16px", padding: "8px 12px", borderRadius: 6, fontSize: 12,
+            color: theme.color.danger, background: theme.color.dangerSoft,
+            border: `1px solid ${theme.color.dangerBorder}`, fontFamily: theme.font.sans,
+          }}>
+            {actionError}
+          </p>
+        )}
 
         {/* Header row */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>

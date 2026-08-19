@@ -92,6 +92,10 @@ export function DeleteUsersModal({
   }, [clusterId, orgId, users]);
 
   const adminCount = items.filter((i) => i.is_admin).length;
+  // Opt-in for the one delete that can lock the admin out of their own cluster.
+  // The server refuses an admin delete without it; asking here is what turns
+  // that refusal into a decision instead of a dead end.
+  const [confirmAdmin, setConfirmAdmin] = useState(false);
   const ownedTotal = items.reduce((acc, i) => acc + i.owned_object_count, 0);
 
   async function handleSubmit() {
@@ -103,6 +107,7 @@ export function DeleteUsersModal({
         org_id: orgId,
         user_guids: items.map((i) => i.ts_guid),
         user_identifiers: items.map((i) => i.username),
+        confirm_admin_delete: adminCount > 0 ? confirmAdmin : undefined,
       });
       onClose(true);
       window.location.href = `/jobs?highlight=${res.job_id}`;
@@ -195,6 +200,28 @@ export function DeleteUsersModal({
             </div>
           )}
 
+          {step === "confirming" && adminCount > 0 && (
+            <label style={{
+              display: "flex", alignItems: "flex-start", gap: 8, marginTop: 12,
+              padding: "10px 12px", background: theme.color.dangerSoft,
+              border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6,
+              fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
+              cursor: "pointer",
+            }}>
+              <input
+                type="checkbox"
+                checked={confirmAdmin}
+                onChange={(e) => setConfirmAdmin(e.target.checked)}
+                style={{ marginTop: 2, flexShrink: 0 }}
+              />
+              <span>
+                I understand {adminCount === 1 ? "one of these users is" : `${adminCount} of these users are`} a
+                ThoughtSpot admin. Deleting an admin can leave the instance without one — the server refuses
+                without this.
+              </span>
+            </label>
+          )}
+
           {step === "confirming" && (
             <div style={{ marginTop: 12 }}>
               <Label>Type <code style={codeStyle}>DELETE</code> to confirm</Label>
@@ -227,7 +254,7 @@ export function DeleteUsersModal({
         )}
         {step === "confirming" && (
           <DangerButton
-            disabled={confirmText !== "DELETE"}
+            disabled={confirmText !== "DELETE" || (adminCount > 0 && !confirmAdmin)}
             onClick={handleSubmit}
           >
             Confirm delete

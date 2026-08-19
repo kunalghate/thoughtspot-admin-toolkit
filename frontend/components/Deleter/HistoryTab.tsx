@@ -19,6 +19,7 @@ import { useShell } from "@/components/Shell";
 import { serializeFilterModel } from "@/components/Deleter/columns";
 import { archiverApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { formatDate } from "@/lib/utils";
 import { typeLabel } from "@/lib/objectTypes";
 import type { ArchiveRecordFlatItem } from "@/lib/types";
 
@@ -66,16 +67,7 @@ const HISTORY_COLUMNS: ColDef[] = [
     headerName: "Deleted On",
     width: 150,
     sortable: true,
-    valueFormatter: (p: { value: string }) => {
-      if (!p.value) return "—";
-      const d = new Date(p.value);
-      const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-      if (days === 0) return "Today";
-      if (days === 1) return "Yesterday";
-      if (days < 30) return `${days}d ago`;
-      if (days < 365) return `${Math.floor(days / 30)}mo ago`;
-      return `${Math.floor(days / 365)}y ago`;
-    },
+    valueFormatter: (p: { value: string }) => (p.value ? formatDate(p.value) : "—"),
   },
   {
     colId: "deleted_by",

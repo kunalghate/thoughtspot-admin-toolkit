@@ -26,6 +26,7 @@ from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
 from ts_admin.models.sync_log import SyncLog
 from ts_admin.models.user_action_record import UserActionRecord
+from ts_admin.ts_client.exceptions import TSObjectNotFoundError, TSServerError
 
 # ── Fake TS client ─────────────────────────────────────────────────────────────
 
@@ -34,10 +35,13 @@ class _FakeClient:
     assign_calls: list[tuple[list[str], str]] = []
     delete_calls: list[list[str]] = []
     share_calls: list[tuple[list[str], list[str], str]] = []
+    share_kwargs: list[dict] = []
     principal_perm_results: list[dict] = []
     delete_user_should_fail: set[str] = set()
     delete_attempts: dict[str, int] = {}
     users_pages: list[list] = []  # pages of objects with .id and .name (for search_users)
+    assign_should_fail: Exception | None = None
+    share_should_fail: Exception | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -50,18 +54,26 @@ class _FakeClient:
 
     async def assign_metadata_owner(self, *, object_ids, new_owner_identifier):
         _FakeClient.assign_calls.append((list(object_ids), new_owner_identifier))
+        if _FakeClient.assign_should_fail is not None:
+            raise _FakeClient.assign_should_fail
 
-    async def delete_users(self, *, user_identifiers):
-        for ident in user_identifiers:
-            _FakeClient.delete_attempts[ident] = _FakeClient.delete_attempts.get(ident, 0) + 1
-            if ident in _FakeClient.delete_user_should_fail:
-                raise RuntimeError(f"simulated failure deleting {ident}")
-            _FakeClient.delete_calls.append(list(user_identifiers))
+    async def delete_user(self, *, user_identifier):
+        _FakeClient.delete_attempts[user_identifier] = _FakeClient.delete_attempts.get(user_identifier, 0) + 1
+        if user_identifier in _FakeClient.delete_user_should_fail:
+            # A cluster-side failure, which is what the retry loop exists for.
+            # It must be a real TS exception: the per-identifier catch is
+            # narrowed to (TSAdminError, httpx.HTTPError), so a RuntimeError here
+            # would be a bug in OUR code and is deliberately no longer retried.
+            raise TSServerError(status_code=503, body=f"simulated failure deleting {user_identifier}")
+        _FakeClient.delete_calls.append([user_identifier])
 
-    async def share_objects(self, *, object_ids, principal_ids, permission):
+    async def share_objects(self, *, object_ids, principal_ids, permission, message="", notify=False):
         _FakeClient.share_calls.append((list(object_ids), list(principal_ids), str(permission)))
+        _FakeClient.share_kwargs.append({"message": message, "notify": notify})
+        if _FakeClient.share_should_fail is not None:
+            raise _FakeClient.share_should_fail
 
-    async def principal_permissions(self, *, principal_identifier, metadata_types=None, permission_type="DEFINED"):
+    async def principal_permissions(self, *, principal_identifier, default_metadata_type=None):
         return list(_FakeClient.principal_perm_results)
 
     async def search_users(self, *, org_id=None):
@@ -74,10 +86,13 @@ def reset_fake():
     _FakeClient.assign_calls = []
     _FakeClient.delete_calls = []
     _FakeClient.share_calls = []
+    _FakeClient.share_kwargs = []
     _FakeClient.principal_perm_results = []
     _FakeClient.delete_user_should_fail = set()
     _FakeClient.delete_attempts = {}
     _FakeClient.users_pages = []
+    _FakeClient.assign_should_fail = None
+    _FakeClient.share_should_fail = None
 
 
 # ── DB + env fixtures ─────────────────────────────────────────────────────────
@@ -248,6 +263,15 @@ def seeded(in_memory_db):
         session.commit()
 
 
+@pytest.fixture
+def fast_retry(monkeypatch):
+    """Collapse the delete retry backoff so tests do not sleep through it."""
+    from ts_admin.services import user_management_service as svc
+
+    monkeypatch.setattr(svc, "DELETE_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(svc, "DELETE_RETRY_MAX_DELAY", 0.0)
+
+
 def _create_job(job_type: str, parameters: dict) -> str:
     import uuid
 
@@ -304,6 +328,28 @@ class TestGetUserDetail:
         admin = svc.get_user_detail(cluster_id="c1", ts_guid="u-admin")
         assert admin["is_admin"] is True
         assert "Administrator" in admin["groups"]
+
+    def test_owned_count_does_not_double_count_a_multi_org_object(self, in_memory_db, seeded):
+        from ts_admin.services import user_management_service as svc
+
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=1,
+                    ts_guid="lb-1",  # same object, second org
+                    name="Sales Liveboard",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-alice",
+                    owner_name="Alice",
+                    tag_names=json.dumps([]),
+                    synced_at=datetime.now(tz=timezone.utc),
+                )
+            )
+            s.commit()
+
+        detail = svc.get_user_detail(cluster_id="c1", ts_guid="u-alice")
+        assert detail["owned_object_count"] == 2
 
     def test_effective_privileges_are_deduped_union_of_groups(self, in_memory_db, seeded):
         from ts_admin.services import user_management_service as svc
@@ -456,6 +502,103 @@ class TestExecuteTransferSharing:
             assert principals == ["bob"]
 
 
+class TestTransferSharingScope:
+    """`principals/fetch-permissions` returns the source user's EFFECTIVE access,
+    every metadata type included. On ps-internal-prod that was 23,197 rows for a
+    single user, 20,425 of them LOGICAL_COLUMNs — not shareable content in their
+    own right, only reachable through the table that owns them, which the same
+    job already re-shares."""
+
+    ROWS = [
+        {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"},
+        {"metadata_id": "t-1", "metadata_name": "Orders", "metadata_type": "LOGICAL_TABLE", "share_mode": "MODIFY"},
+        {"metadata_id": "c-1", "metadata_name": "amount", "metadata_type": "LOGICAL_COLUMN", "share_mode": "MODIFY"},
+        {"metadata_id": "c-2", "metadata_name": "region", "metadata_type": "LOGICAL_COLUMN", "share_mode": "READ_ONLY"},
+    ]
+
+    def test_execute_never_shares_a_logical_column(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.user_management_service import execute_transfer_sharing
+
+        _FakeClient.principal_perm_results = list(self.ROWS)
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+        shared = {g for ids, _p, _m in _FakeClient.share_calls for g in ids}
+        assert shared == {"lb-1", "t-1"}
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+        assert job.status == "COMPLETE"
+        assert job.progress == 2, "the job total must count what is shared, not what is fetched"
+
+    def test_preview_and_execute_scope_identically(self, in_memory_db, patched_env, seeded):
+        """A dry-run that predicts more than the execute performs is worse than
+        no dry-run — it is the number the admin approves."""
+        from ts_admin.services.user_management_service import (
+            execute_transfer_sharing,
+            preview_transfer_sharing,
+        )
+
+        _FakeClient.principal_perm_results = list(self.ROWS)
+        preview = asyncio.run(
+            preview_transfer_sharing(
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+        assert preview["total"] == 2
+        assert "LOGICAL_COLUMN" not in preview["by_type"]
+
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+        shared = {g for ids, _p, _m in _FakeClient.share_calls for g in ids}
+        assert shared == {r["metadata_id"] for r in preview["items"]}
+
+    @pytest.mark.parametrize("notify", [True, False])
+    def test_notify_reaches_the_client_instead_of_only_the_audit_log(self, in_memory_db, patched_env, seeded, notify):
+        """`notify` used to be written to the audit row and then dropped, and
+        the wire default is TRUE — so "do not notify" would have emailed
+        everyone while the audit trail said otherwise."""
+        from ts_admin.services.user_management_service import (
+            TRANSFER_SHARE_MESSAGE,
+            execute_transfer_sharing,
+        )
+
+        _FakeClient.principal_perm_results = [
+            {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"}
+        ]
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+                notify=notify,
+            )
+        )
+        assert _FakeClient.share_kwargs == [{"message": TRANSFER_SHARE_MESSAGE, "notify": notify}]
+        assert TRANSFER_SHARE_MESSAGE, "`message` is required by the share schema — it may not be empty"
+
+
 class TestExecuteDelete:
     def test_happy_path(self, in_memory_db, patched_env, seeded):
         from ts_admin.services.user_management_service import execute_delete
@@ -477,7 +620,25 @@ class TestExecuteDelete:
             remaining = s.exec(select(CachedUser.username)).all()
             assert "bob" not in remaining
 
-    def test_failure_retries_then_gives_up_at_10(self, in_memory_db, patched_env, seeded):
+    def test_one_call_per_user_because_there_is_no_bulk_delete(self, in_memory_db, patched_env, seeded):
+        """`users/delete` does not exist — only `users/{id}/delete` does — so the
+        service must issue one call per identifier and never batch."""
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob", "u-carol"],
+                user_identifiers=["bob", "carol"],
+            )
+        )
+        assert _FakeClient.delete_calls == [["bob"], ["carol"]] or _FakeClient.delete_calls == [["carol"], ["bob"]]
+        assert all(len(call) == 1 for call in _FakeClient.delete_calls)
+
+    def test_failure_retries_then_gives_up_at_10(self, in_memory_db, patched_env, seeded, fast_retry):
         from ts_admin.services.user_management_service import execute_delete
 
         _FakeClient.delete_user_should_fail = {"bob"}
@@ -495,10 +656,185 @@ class TestExecuteDelete:
         assert _FakeClient.delete_attempts.get("bob", 0) == 10
         with Session(in_memory_db) as s:
             job = s.get(Job, job_id)
-            assert job.status in {"FAILED", "PARTIAL"}
+            # Zero users deleted is FAILED, never PARTIAL (M14).
+            assert job.status == "FAILED"
             # User still in cache (we only remove on success)
             remaining = s.exec(select(CachedUser.username)).all()
             assert "bob" in remaining
+
+    def test_retry_rounds_are_spaced_by_backoff(self, in_memory_db, patched_env, seeded, monkeypatch):
+        """
+        The ten rounds used to fire back to back in milliseconds, so a transient
+        429/503 burned every attempt before the cluster could recover. Measured
+        on wall time rather than a patched asyncio.sleep so the assertion is
+        about behaviour, not about how the delay is spelled.
+        """
+        import time
+
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "DELETE_RETRY_BASE_DELAY", 0.01)
+        monkeypatch.setattr(svc, "DELETE_RETRY_MAX_DELAY", 0.02)
+
+        _FakeClient.delete_user_should_fail = {"bob"}
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        started = time.monotonic()
+        asyncio.run(
+            svc.execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob"],
+                user_identifiers=["bob"],
+            )
+        )
+        elapsed = time.monotonic() - started
+
+        # Non-vacuity: the loop really did run all ten rounds.
+        assert _FakeClient.delete_attempts.get("bob", 0) == 10
+        # 9 gaps between 10 rounds: 0.01 + 0.02 * 8 = 0.17s minimum.
+        assert elapsed >= 0.15
+
+    def test_admin_is_refused_without_confirmation_and_nothing_goes_live(
+        self, in_memory_db, patched_env, seeded, fast_retry
+    ):
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-admin"],
+                user_identifiers=["admin-user"],
+            )
+        )
+
+        assert _FakeClient.delete_attempts == {}  # refused before any live call
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            assert job.status == "FAILED"
+            assert "admin-user" in (job.error or "")
+            assert "confirm_admin_delete" in (job.error or "")
+            # No UserActionRecord written for a refusal
+            assert s.exec(select(UserActionRecord)).all() == []
+            # Still in the cache
+            assert "admin-user" in s.exec(select(CachedUser.username)).all()
+
+    def test_admin_delete_proceeds_with_explicit_confirmation(self, in_memory_db, patched_env, seeded, fast_retry):
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-admin"],
+                user_identifiers=["admin-user"],
+                confirm_admin_delete=True,
+            )
+        )
+
+        assert _FakeClient.delete_attempts.get("admin-user") == 1
+        with Session(in_memory_db) as s:
+            assert s.get(Job, job_id).status == "COMPLETE"
+
+    def test_self_delete_is_refused_even_with_confirmation(self, in_memory_db, patched_env, seeded, fast_retry):
+        """The cluster's configured username is what the toolkit authenticates as."""
+        from ts_admin.services.user_management_service import execute_delete
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedUser(
+                    cluster_id="c1",
+                    ts_guid="u-svc",
+                    username="admin",  # == ClusterConfig.username in patched_env
+                    display_name="Service Account",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            s.commit()
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-svc"],
+                user_identifiers=["admin"],
+                confirm_admin_delete=True,  # no override exists for this one
+            )
+        )
+
+        assert _FakeClient.delete_attempts == {}
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            assert job.status == "FAILED"
+            assert "authenticates as" in (job.error or "")
+            assert "admin" in s.exec(select(CachedUser.username)).all()
+
+    def test_self_delete_is_refused_even_when_the_account_is_not_in_the_cache(
+        self, in_memory_db, patched_env, seeded, fast_retry
+    ):
+        from ts_admin.services.user_management_service import execute_delete
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=[],
+                user_identifiers=["ADMIN"],  # raw identifier, different case
+            )
+        )
+
+        assert _FakeClient.delete_attempts == {}
+        with Session(in_memory_db) as s:
+            assert s.get(Job, job_id).status == "FAILED"
+
+
+class TestPreviewDelete:
+    def test_owned_count_is_org_scoped_and_never_double_counted(self, in_memory_db, seeded):
+        """
+        An object present in two orgs used to be counted once per org, so the
+        pre-delete warning over-stated the blast radius.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            # lb-1 is the SAME object, visible in a second org.
+            s.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=1,
+                    ts_guid="lb-1",
+                    name="Sales Liveboard",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-alice",
+                    owner_name="Alice",
+                    tag_names=json.dumps([]),
+                    synced_at=now,
+                )
+            )
+            s.commit()
+
+        org0 = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)
+        assert org0["items"][0]["owned_object_count"] == 2  # lb-1 + ans-1
+
+        org1 = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=1)
+        assert org1["items"][0]["owned_object_count"] == 1  # lb-1 only
+
+        # No org given (the cache-only preview endpoint): cluster-wide, but
+        # still DISTINCT — 2, not the old 3.
+        unscoped = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
+        assert unscoped["items"][0]["owned_object_count"] == 2
 
 
 class TestDryRunDelete:
@@ -533,3 +869,213 @@ class TestDryRunDelete:
             assert {"alice", "bob"} <= remaining
             # No audit row written
             assert s.exec(select(AuditLog)).all() == []
+
+
+# ── M14: zero successes is FAILED, never PARTIAL ──────────────────────────────
+
+
+def _job_row(job_id: str) -> Job:
+    from ts_admin.database import get_session
+
+    with get_session() as s:
+        return s.get(Job, job_id)
+
+
+def _audit_row(action_type: str) -> AuditLog:
+    from ts_admin.database import get_session
+
+    with get_session() as s:
+        rows = s.exec(select(AuditLog).where(AuditLog.action_type == action_type)).all()
+    assert len(rows) == 1, f"expected exactly one {action_type} audit row, got {len(rows)}"
+    return rows[0]
+
+
+def _action_record() -> UserActionRecord:
+    from ts_admin.database import get_session
+
+    with get_session() as s:
+        return s.exec(select(UserActionRecord)).first()
+
+
+class TestNothingSucceededIsFailedNeverPartial:
+    """
+    `status = "PARTIAL" if (failed or cancelled) else "SUCCESS"` used to be
+    evaluated BEFORE any `succeeded == 0` branch, so all three of this module's
+    write paths reported PARTIAL with zero items affected when their endpoint
+    404'd — which reads as "some of it worked, retry the rest". Reverting the
+    branch order fails every test in this class.
+    """
+
+    def test_transfer_where_every_chunk_fails_ends_failed(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.user_management_service import execute_transfer
+
+        _FakeClient.assign_should_fail = TSObjectNotFoundError(
+            object_type="resource",
+            identifier="/api/rest/2.0/metadata/assign",
+            detail="Not Found",
+        )
+        job_id = _create_job("transfer_ownership", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+                object_ids=["lb-1", "ans-1"],
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert "0 of 2 objects transferred" in (job.error or "")
+        assert "Not Found" in (job.error or "")  # the cause, not just the count
+
+        audit = _audit_row("transfer_ownership")
+        assert audit.status == "FAILED"
+        assert audit.items_affected == 0
+        assert _action_record().status == "FAILED"
+
+    def test_transfer_sharing_where_every_bucket_fails_ends_failed(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.user_management_service import execute_transfer_sharing
+
+        _FakeClient.principal_perm_results = [
+            {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"},
+        ]
+        _FakeClient.share_should_fail = TSObjectNotFoundError(
+            object_type="resource",
+            identifier="/api/rest/2.0/security/share",
+            detail="Not Found",
+        )
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert "0 of 1 objects re-shared" in (job.error or "")
+        assert "/api/rest/2.0/security/share" in (job.error or "")
+
+        audit = _audit_row("transfer_sharing")
+        assert audit.status == "FAILED"
+        assert audit.items_affected == 0
+
+    def test_transfer_sharing_with_an_empty_source_set_is_failed_not_complete(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+    ):
+        """`principals/fetch-permissions` degrades to `[]` on a response-shape
+        mismatch rather than raising, so "the user can see nothing" and "we
+        could not read what the user can see" are indistinguishable. Reporting
+        COMPLETE told an admin the handover was done when it may never have
+        started."""
+        from ts_admin.services.user_management_service import execute_transfer_sharing
+
+        _FakeClient.principal_perm_results = []
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        error = job.error or ""
+        assert "came back empty" in error
+        assert "fetch-permissions" in error
+        assert _audit_row("transfer_sharing").status == "FAILED"
+
+    def test_delete_where_every_user_fails_ends_failed(self, in_memory_db, patched_env, seeded, fast_retry):
+        from ts_admin.services.user_management_service import execute_delete
+
+        _FakeClient.delete_user_should_fail = {"bob", "carol"}
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob", "u-carol"],
+                user_identifiers=["bob", "carol"],
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert "0 of 2 users deleted" in (job.error or "")
+        assert "simulated failure deleting" in (job.error or "")
+
+        audit = _audit_row("delete_users")
+        assert audit.status == "FAILED"
+        assert audit.items_affected == 0
+
+    def test_a_genuinely_partial_delete_is_still_partial(self, in_memory_db, patched_env, seeded, fast_retry):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        from ts_admin.services.user_management_service import execute_delete
+
+        _FakeClient.delete_user_should_fail = {"carol"}
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob", "u-carol"],
+                user_identifiers=["bob", "carol"],
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "PARTIAL"
+        assert (job.get_result() or {})["succeeded"] == 1
+        assert _audit_row("delete_users").status == "PARTIAL"
+
+    def test_a_bug_in_our_own_code_fails_the_delete_instead_of_being_retried_ten_times(
+        self,
+        in_memory_db,
+        patched_env,
+        seeded,
+        fast_retry,
+        monkeypatch,
+    ):
+        """The per-identifier catch is narrowed to (TSAdminError,
+        httpx.HTTPError). A blanket `except Exception` there fed our own bugs
+        into the retry-to-10 loop and then reported them as a cluster-side
+        failure."""
+        from ts_admin.services.user_management_service import execute_delete
+
+        async def _boom(self, *, user_identifier):
+            _FakeClient.delete_attempts[user_identifier] = _FakeClient.delete_attempts.get(user_identifier, 0) + 1
+            raise TypeError("delete_user() got an unexpected keyword argument")
+
+        monkeypatch.setattr(_FakeClient, "delete_user", _boom)
+
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob"],
+                user_identifiers=["bob"],
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.error_type == "TypeError"
+        assert _FakeClient.delete_attempts.get("bob", 0) == 1, "our own bug must not be retried"

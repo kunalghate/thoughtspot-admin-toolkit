@@ -17,15 +17,25 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 from sqlmodel import Session
 
 import ts_admin.database as _db
 from ts_admin.models.cache.ts_metadata import CachedMetadata
+from ts_admin.services.lineage_service import _export_tml_resilient
+from ts_admin.ts_client.exceptions import TSAdminError
 
 logger = logging.getLogger(__name__)
 
 # TML backup directory: ~/.ts-admin/tml-exports/{job_id}/{guid}.tml
 TML_EXPORT_DIR = Path.home() / ".ts-admin" / "tml-exports"
+
+# ThoughtSpot's built-in content owner. Both tag-intake paths — the Bulk
+# Deleter's `deleter_service.resolve_tag` and Bulk Sharing's
+# `bulk_sharing_service.resolve_tag_to_guids` — exclude it, so the same tag name
+# yields the same set in both features. Kept here (the module both import) so the
+# literal cannot drift apart again.
+SYSTEM_OWNER_NAME = "System User"
 
 
 # ── Generic helpers ────────────────────────────────────────────────────────────
@@ -64,6 +74,108 @@ def _fetch_objects_by_guids(
     return results
 
 
+def _export_outcome(info: dict) -> tuple[str, str]:
+    """Return (status_code, error_message) for one `metadata/tml/export` entry.
+
+    The per-object result is nested one level deeper than it looks::
+
+        {"edoc": "…",
+         "info": {"id": "<guid>",
+                  "status": {"status_code": "OK" | "ERROR",
+                             "error_message": "…"}}}
+
+    Reading ``info["error_message"]`` — one level too shallow — is always None,
+    so every export failure was recorded as the generic placeholder
+    "TML export returned empty content" instead of the reason ThoughtSpot gave
+    (e.g. "Error Code: FORBIDDEN … Cannot download TML due to lack of access to
+    objects."), which is the only thing that tells an admin what to go fix.
+
+    Mirrors `archiver_service._import_outcome` on the import side, including its
+    tolerance for the flatter shape older clusters returned.
+    """
+    status = info.get("status")
+    if not isinstance(status, dict):
+        status = {}
+    return (
+        status.get("status_code") or "",
+        status.get("error_message") or info.get("error_message") or "",
+    )
+
+
+class _BackupExporter:
+    """
+    Client adapter that lets the delete path reuse `_export_tml_resilient`.
+
+    Most `metadata/tml/export` failures are per-object — the batch returns HTTP
+    200 and the un-exportable objects carry `info.status.status_code == "ERROR"`
+    (measured: 58 OK / 2 ERROR in one 60-object batch), which the caller handles
+    directly via `_export_outcome`. What still needs the bisect is the case that
+    fails the WHOLE batch: an unresolvable GUID 400s the entire request. Every
+    real cluster carries a few dozen un-exportable objects (measured: 43 on
+    se-demo, 36 on ps-internal-prod). `lineage_service._export_tml_resilient`
+    already bisects a failing batch until the offender is isolated to a batch of
+    one; this path needs the identical algorithm, so it wraps the client instead
+    of forking the bisect. Two things have to be adapted:
+
+      - **Request body.** `_export_tml_resilient` passes `edoc_format="JSON"`
+        because it `json.loads` the edoc. The delete path writes the edoc
+        verbatim into the `.tml` backup, so its request must keep sending no
+        `edoc_format` at all (see `ThoughtSpotClient.tml_export`). The kwarg is
+        absorbed here and never forwarded.
+      - **Per-object errors.** `_export_tml_resilient` records failures as bare
+        GUIDs. A batch of one is exactly one object's failure, so the exception
+        raised at that size IS that object's own error — captured here so the
+        ArchiveRecord shows it instead of the poison object's error being
+        stamped on all 49 innocent objects in its batch.
+    """
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self.errors: dict[str, str] = {}
+
+    async def tml_export(self, *, object_ids: list[str], edoc_format: str | None = None) -> list[dict]:
+        try:
+            return await self._client.tml_export(object_ids=object_ids)
+        except (TSAdminError, httpx.HTTPError) as exc:
+            if len(object_ids) == 1:
+                self.errors[object_ids[0]] = str(exc)
+            raise
+
+
+def _delete_failure_reason(
+    *,
+    total: int,
+    failed_tml: int,
+    failed_delete: int,
+    not_attempted: int,
+    cancelled: bool,
+    error_samples: dict[str, str],
+) -> str:
+    """Name why a delete job deleted nothing.
+
+    The old message — "0 objects deleted — N TML exports failed" — named only
+    one of the four buckets and never the error itself, so a run that failed
+    entirely at the delete call reported "0 TML exports failed" and left the
+    admin with nothing to act on.
+    """
+    if total == 0:
+        return "0 objects deleted — the request named no objects."
+    parts: list[str] = []
+    if failed_tml:
+        detail = error_samples.get("tml") or "no reason returned"
+        parts.append(f"{failed_tml} TML backup(s) failed, so those objects were never deleted — first error: {detail}")
+    if failed_delete:
+        detail = error_samples.get("delete") or "no reason returned"
+        parts.append(f"{failed_delete} delete call(s) failed — first error: {detail}")
+    if cancelled:
+        parts.append("the job was cancelled")
+    if not_attempted:
+        parts.append(f"{not_attempted} exported object(s) were never attempted")
+    if not parts:
+        parts.append("no delete call was attempted")
+    return f"0 of {total} objects deleted: " + "; ".join(parts) + "."
+
+
 # ── Phase 5: Delete with mandatory TML safety net ─────────────────────────────
 
 
@@ -78,18 +190,36 @@ async def _execute_delete(
     """
     Permanently delete objects with a mandatory TML backup before each deletion.
 
-    Phase A — TML Export:
+    Phase A — TML Export (resilient):
       Export TML for every object. Objects whose export fails are excluded from
       deletion and marked FAILED in ArchiveRecord — they are never deleted.
+      The export RESPONSE is reconciled against the REQUEST: ThoughtSpot omits
+      objects it cannot export from the response entirely (no error row), so a
+      requested GUID with no matching response entry is an export failure, not
+      a success.
+      A batch that raises is BISECTED (`_export_tml_resilient` via
+      `_BackupExporter`) until each un-exportable object is isolated to a batch
+      of one, so one poison GUID costs only itself and its 49 batch-mates are
+      still exported and still deleted. Only a whole-cluster failure (auth,
+      privileges, or the job-wide failure budget) fails a chunk wholesale.
 
     Phase B — Delete (cancel-aware):
       Delete only objects whose TML export succeeded. Checks job.is_cancelled
-      before each chunk and stops cleanly if set.
+      before each chunk and stops cleanly if set. GUIDs left unattempted by a
+      cancellation are counted, not dropped.
 
     Phase C — Audit:
       Write AuditLog + structured log line. `action_type` differentiates the
       caller in the audit trail (e.g. "delete" for Archiver, "bulk_delete"
       for Bulk Deleter).
+
+    Accounting invariant: every requested GUID ends in exactly one bucket —
+    deleted, failed_tml, failed_delete or not_attempted — and
+    `succeeded + failed_tml + failed_delete + not_attempted == len(object_ids)`.
+    A run that does not reconcile, or that leaves any non-deleted GUID, is
+    PARTIAL. Only a fully reconciled, fully deleted run is COMPLETE. A run that
+    deleted NOTHING is FAILED, never PARTIAL — including in the audit row, which
+    used to carry PARTIAL while the job itself said FAILED.
     """
     from sqlmodel import col
     from sqlmodel import delete as sql_delete
@@ -108,13 +238,17 @@ async def _execute_delete(
     from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.ts_client.models import MetadataType
 
-    total = len(object_ids)
+    # Dedupe, keeping request order: the buckets below are per-GUID, so a
+    # repeated GUID would otherwise be counted twice and break reconciliation.
+    requested = list(dict.fromkeys(object_ids))
+    requested_set = set(requested)
+    total = len(requested)
     mark_running(job_id, total)
 
     try:
         # ── Fetch object metadata early (before any concurrent sync can wipe rows)
         with Session(_db.get_engine()) as session:
-            cached_objs = _fetch_objects_by_guids(session, object_ids, cluster_id, org_id)
+            cached_objs = _fetch_objects_by_guids(session, requested, cluster_id, org_id)
         obj_map = {o.ts_guid: o for o in cached_objs}
 
         # ── Create TML export directory for this job
@@ -124,7 +258,7 @@ async def _execute_delete(
         # ── Batch-insert ArchiveRecord rows as PENDING ────────────────────────
         now = datetime.now(timezone.utc)
         archive_rows: list[ArchiveRecord] = []
-        for guid in object_ids:
+        for guid in requested:
             obj = obj_map.get(guid)
             archive_rows.append(
                 ArchiveRecord(
@@ -168,6 +302,20 @@ async def _execute_delete(
         # ── Phase A: TML Export ───────────────────────────────────────────────
         delete_batch: list[str] = []  # GUIDs successfully exported
         failed_tml: list[str] = []
+        accounted: set[str] = set()  # requested GUIDs the export response covered
+        # First error seen per phase. A terminal FAILED message that only counts
+        # ("0 objects deleted — 12 TML exports failed") tells an admin nothing
+        # they can act on; the reason ThoughtSpot gave does.
+        error_samples: dict[str, str] = {}
+
+        def _fail_export(guid: str, error: str) -> None:
+            """Bucket one GUID as an export failure. Idempotent per GUID."""
+            if guid in accounted:
+                return
+            accounted.add(guid)
+            failed_tml.append(guid)
+            error_samples.setdefault("tml", error)
+            _update_record(guid, tml_export_status="FAILED", tml_export_error=error[:500])
 
         cluster = _get_cluster(cluster_id)
 
@@ -175,15 +323,30 @@ async def _execute_delete(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
-            for chunk in _chunks(object_ids, 50):
+            exporter = _BackupExporter(client)
+            # Shared across chunks so `TML_EXPORT_FAILURE_BUDGET` is a job-wide
+            # ceiling: a cluster failing wholesale stops the bisect instead of
+            # burning one call per object.
+            isolated_failures: list[str] = []
+
+            for chunk in _chunks(requested, 50):
+                seen = len(isolated_failures)
+                tml_results: list[dict] = []
+                batch_error: str | None = None
                 try:
-                    tml_results = await client.tml_export(object_ids=chunk)
-                except Exception as exc:
+                    tml_results = await _export_tml_resilient(exporter, chunk, isolated_failures)
+                except (TSAdminError, httpx.HTTPError) as exc:
+                    # Not an isolatable object: an auth/privilege failure (a
+                    # whole-cluster condition `_export_tml_resilient` deliberately
+                    # re-raises) or the failure budget running out. The rest of
+                    # this chunk is unexportable and is bucketed below.
                     logger.warning("TML export chunk failed: %s", exc)
-                    for guid in chunk:
-                        failed_tml.append(guid)
-                        _update_record(guid, tml_export_status="FAILED", tml_export_error=str(exc)[:500])
-                    continue
+                    batch_error = str(exc)
+
+                # Objects the bisect isolated: each gets ITS OWN error, so one
+                # poison object never stamps its error on its batch-mates.
+                for guid in isolated_failures[seen:]:
+                    _fail_export(guid, exporter.errors.get(guid) or "TML export failed for this object")
 
                 for item in tml_results:
                     info = item.get("info") or {}
@@ -191,9 +354,30 @@ async def _execute_delete(
                     edoc = item.get("edoc") or ""
 
                     if not guid:
+                        # Unattributable row — it cannot be matched to a requested
+                        # GUID. The reconciliation pass below still accounts for
+                        # whichever GUID it was meant to answer for.
+                        logger.warning("TML export returned an entry with no info.id — ignored")
                         continue
 
-                    if edoc:
+                    if guid not in requested_set:
+                        logger.warning("TML export returned unrequested GUID %s — ignored", guid)
+                        continue
+
+                    if guid in accounted:
+                        logger.warning("TML export returned a duplicate entry for %s — ignored", guid)
+                        continue
+
+                    accounted.add(guid)
+
+                    # `tml/export` failures are PER-OBJECT, not all-or-nothing:
+                    # a batch comes back HTTP 200 with an ERROR status on just
+                    # the objects that could not be exported. An ERROR status
+                    # fails the object even if an edoc came with it — this
+                    # gates a permanent delete, so anything ThoughtSpot flagged
+                    # is treated as "no trustworthy backup".
+                    status_code, status_error = _export_outcome(info)
+                    if edoc and status_code != "ERROR":
                         tml_path = job_tml_dir / f"{guid}.tml"
                         tml_path.write_text(edoc, encoding="utf-8")
                         delete_batch.append(guid)
@@ -203,13 +387,26 @@ async def _execute_delete(
                             tml_path=str(tml_path),
                         )
                     else:
-                        error = info.get("error_message") or "TML export returned empty content"
+                        error = status_error or "TML export returned empty content"
+                        error_samples.setdefault("tml", error)
                         failed_tml.append(guid)
                         _update_record(
                             guid,
                             tml_export_status="FAILED",
                             tml_export_error=error[:500],
                         )
+
+                # Reconcile response against request: a GUID TS silently omitted
+                # is an export failure. Without this it would land in no bucket
+                # at all — invisible in every count, and stranded at PENDING.
+                # Whatever is still unaccounted after a whole-chunk failure lands
+                # here too, carrying that batch's error.
+                for guid in chunk:
+                    if guid in accounted:
+                        continue
+                    if batch_error is None:
+                        logger.warning("TML export response omitted requested GUID %s — treated as failed", guid)
+                    _fail_export(guid, batch_error or "TML export response omitted this object")
 
             logger.info(
                 "%s job=%s TML export done: %d ok, %d failed",
@@ -220,7 +417,7 @@ async def _execute_delete(
             )
 
             # ── Phase B: Delete (cancel-aware) ───────────────────────────────
-            succeeded = 0
+            deleted: list[str] = []
             failed_delete: list[str] = []
             cancelled = False
 
@@ -237,6 +434,7 @@ async def _execute_delete(
                     enum_type = MetadataType(obj_type)
                 except ValueError:
                     logger.warning("Unknown type %r — skipping %d objects", obj_type, len(guids))
+                    error_samples.setdefault("delete", f"{obj_type!r} is not a deletable metadata type")
                     failed_delete.extend(guids)
                     continue
 
@@ -248,25 +446,98 @@ async def _execute_delete(
 
                     try:
                         await client.delete_metadata(object_ids=chunk, object_type=enum_type)
-
-                        # Remove from CachedMetadata cache
-                        with Session(_db.get_engine()) as session:
-                            session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(chunk)))
-                            session.commit()
-
-                        succeeded += len(chunk)
-                    except Exception as exc:
+                    # ONLY the live call is guarded, and only against the two
+                    # families it can raise (`_request` maps every HTTP outcome
+                    # onto TSAdminError; httpx.HTTPError covers the transport).
+                    # The blanket `except Exception` that used to wrap the cache
+                    # purge too would have recorded a successful delete as
+                    # `failed_delete` if the purge threw — reporting an object
+                    # as still present when it is permanently gone.
+                    except (TSAdminError, httpx.HTTPError) as exc:
                         logger.warning("delete_metadata chunk failed: %s", exc)
+                        error_samples.setdefault("delete", str(exc))
                         failed_delete.extend(chunk)
+                        update_progress(job_id, len(deleted))
+                        continue
 
-                    update_progress(job_id, succeeded)
+                    # Remove from CachedMetadata cache. Scoped to
+                    # (cluster_id, org_id) like the sibling read in
+                    # `_fetch_objects_by_guids` — a GUID can exist in more
+                    # than one org and on more than one cluster, and an
+                    # unscoped purge wipes cache rows for objects that were
+                    # never deleted.
+                    with Session(_db.get_engine()) as session:
+                        session.exec(
+                            sql_delete(CachedMetadata).where(
+                                CachedMetadata.cluster_id == cluster_id,
+                                CachedMetadata.org_id == org_id,
+                                col(CachedMetadata.ts_guid).in_(chunk),
+                            )
+                        )
+                        session.commit()
 
-        # ── Phase C: Audit ───────────────────────────────────────────────────
-        status = "PARTIAL" if (failed_tml or failed_delete or cancelled) else "COMPLETE"
+                    deleted.extend(chunk)
+                    update_progress(job_id, len(deleted))
+
+            succeeded = len(deleted)
+            # Exported objects a cancellation (or a skipped type group) never
+            # reached: neither deleted nor failed, but still requested.
+            attempted = set(deleted) | set(failed_delete)
+            not_attempted = [guid for guid in delete_batch if guid not in attempted]
+
+        # ── Phase C: Reconcile, then audit ───────────────────────────────────
+        # Every requested GUID must sit in exactly one bucket. `unaccounted`
+        # should always be empty — it is computed anyway so a future regression
+        # shows up as a PARTIAL job instead of a silent under-report.
+        bucketed = set(deleted) | set(failed_tml) | set(failed_delete) | set(not_attempted)
+        unaccounted = [guid for guid in requested if guid not in bucketed]
+        reconciled = succeeded + len(failed_tml) + len(failed_delete) + len(not_attempted) == total
+        if unaccounted or not reconciled:
+            logger.error(
+                "%s job=%s accounting mismatch: %d requested vs %d deleted + %d failed_tml + %d failed_delete "
+                "+ %d not_attempted (%d unaccounted)",
+                action_type,
+                job_id,
+                total,
+                succeeded,
+                len(failed_tml),
+                len(failed_delete),
+                len(not_attempted),
+                len(unaccounted),
+            )
+
+        # COMPLETE means "every requested object was deleted, and the numbers
+        # add up". Zero deletions is FAILED, never PARTIAL — evaluated FIRST,
+        # because PARTIAL reads to an admin as "some of it worked, retry the
+        # rest" and a run that deleted nothing achieved nothing. Anything in
+        # between is PARTIAL.
+        if succeeded == 0:
+            status = "FAILED"
+        elif succeeded == total and not failed_tml and not failed_delete and not cancelled and reconciled:
+            status = "COMPLETE"
+        else:
+            status = "PARTIAL"
+        failure_reason = _delete_failure_reason(
+            total=total,
+            failed_tml=len(failed_tml),
+            failed_delete=len(failed_delete),
+            not_attempted=len(not_attempted),
+            cancelled=cancelled,
+            error_samples=error_samples,
+        )
         result = {
             "succeeded": succeeded,
             "failed_tml_export": len(failed_tml),
             "failed_delete": len(failed_delete),
+            "not_attempted": len(not_attempted),
+            "requested": total,
+            "reconciled": reconciled and not unaccounted,
+            # GUID-level detail so an admin can see exactly which objects were
+            # left behind. Capped — the exact counts are the fields above.
+            "failed_tml_guids": failed_tml[:200],
+            "failed_delete_guids": failed_delete[:200],
+            "not_attempted_guids": not_attempted[:200],
+            "unaccounted_guids": unaccounted[:200],
             "cancelled": cancelled,
             "job_id": job_id,
             "tml_export_path": str(job_tml_dir),
@@ -282,31 +553,39 @@ async def _execute_delete(
             )
             entry.set_parameters(
                 {
-                    "object_ids": object_ids,
+                    "object_ids": requested,
+                    "error": failure_reason if status == "FAILED" else "",
                     **result,
                 }
             )
             session.add(entry)
             session.commit()
 
-        if succeeded == 0 and not cancelled:
-            mark_failed(job_id, f"0 objects deleted — {len(failed_tml)} TML exports failed")
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
         elif status == "PARTIAL":
             mark_partial(job_id, result)
         else:
             mark_complete(job_id, result)
 
         logger.info(
-            "%s job=%s cluster=%s succeeded=%d failed_tml=%d failed_delete=%d cancelled=%s",
+            "%s job=%s cluster=%s status=%s succeeded=%d failed_tml=%d failed_delete=%d not_attempted=%d cancelled=%s",
             action_type,
             job_id,
             cluster_id,
+            status,
             succeeded,
             len(failed_tml),
             len(failed_delete),
+            len(not_attempted),
             cancelled,
         )
 
+    # Last-resort handler for a background task: this runs after the 202 is on
+    # the wire, so an exception that escapes is invisible to the caller and
+    # strands the Job row at RUNNING forever. Permitted to swallow ANY
+    # exception — none silently: each is logged with a traceback and re-reported
+    # as a FAILED job.
     except Exception as exc:
         logger.exception("_execute_delete job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)
@@ -368,7 +647,11 @@ async def dryrun(
             ]
             try:
                 dep_map = await client.fetch_dependents(objects=dep_objects)
-            except Exception as exc:
+            # Non-fatal by design — the dry-run still reports permissions
+            # without it. Narrowed to the two families a live call can raise so
+            # a bug in our own parsing no longer degrades to "no dependents",
+            # which would understate the blast radius of a delete.
+            except (TSAdminError, httpx.HTTPError) as exc:
                 logger.warning("fetch_dependents failed (non-fatal): %s", exc)
                 dep_map = {}
 
@@ -387,7 +670,14 @@ async def dryrun(
         ]
 
         for item in perm_results:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
+                # `return_exceptions=True` swallows EVERYTHING, including a bug
+                # in our own code, and would file it as a per-object "error" row
+                # in an otherwise COMPLETE dry-run. Only the two families a live
+                # call can raise are reportable that way; anything else re-raises
+                # and fails the dry-run.
+                if not isinstance(item, (TSAdminError, httpx.HTTPError)):
+                    raise item
                 errors.append({"ts_guid": "unknown", "error": str(item)})
                 continue
             guid, perms = item
@@ -437,6 +727,9 @@ async def dryrun(
             len(errors),
         )
 
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `_execute_delete`. Permitted to swallow ANY exception because
+    # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("dryrun job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)

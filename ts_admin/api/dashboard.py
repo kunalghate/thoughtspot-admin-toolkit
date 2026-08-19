@@ -70,8 +70,11 @@ class DashboardResponse(BaseModel):
     # replaces the SUCCESS row), so without this the UI cannot tell an in-flight
     # sync apart from a cluster that has never synced.
     syncing: dict[str, bool] = {}
-    # Change in record_count since the previous successful sync of each entity.
-    deltas: dict[str, int]
+    # NOTE: there is deliberately no per-entity record-count trend here. It was
+    # a `deltas` field that was structurally always 0 — `sync_log` upserts one
+    # row per (cluster, org, entity) and keeps no history, so the "two most
+    # recent successful syncs" it diffed were never two rows. Re-adding it needs
+    # a stored previous count, not another query. See dashboard_service._sync_state.
     attention: DashboardAttention
     recent_jobs: list[DashboardJob]
     running_jobs: list[DashboardRunningJob]

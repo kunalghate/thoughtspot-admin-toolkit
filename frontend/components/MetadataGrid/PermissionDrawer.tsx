@@ -25,6 +25,10 @@ const SHARE_MODE_COLORS: Record<string, { bg: string; color: string }> = {
 export default function PermissionDrawer({ object, clusterId, orgId, onClose }: Props) {
   const { clusterOnline } = useShell();
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  // Direct shares are almost always empty on a real cluster; without the
+  // effective count the drawer reports "no one has access" about an object
+  // the whole company can open.
+  const [effectiveCount, setEffectiveCount] = useState(0);
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState<string | null>(null);
 
@@ -39,11 +43,12 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
   useEffect(() => {
     if (!object) return;
     setPermissions([]);
+    setEffectiveCount(0);
     setError(null);
     setLoading(true);
 
     metadataApi.permissions(object.ts_guid, clusterId, orgId)
-      .then((res) => setPermissions(res.permissions))
+      .then((res) => { setPermissions(res.permissions); setEffectiveCount(res.effective_count ?? 0); })
       .catch((e) => setError(e.message ?? "Failed to load permissions"))
       .finally(() => setLoading(false));
   }, [object?.ts_guid, clusterId, orgId]);
@@ -129,8 +134,17 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
           )}
 
           {!loading && !error && permissions.length === 0 && (
-            <div style={{ color: theme.color.textMuted, fontSize: 13, textAlign: "center", marginTop: 40 }}>
-              No sharing permissions found.
+            <div style={{ color: theme.color.textMuted, fontSize: 13, textAlign: "center", marginTop: 40, padding: "0 24px", lineHeight: 1.6 }}>
+              Not shared with anyone directly.
+              {effectiveCount > 0 && (
+                <>
+                  {" "}
+                  <strong style={{ color: theme.color.textSecondary }}>
+                    {effectiveCount.toLocaleString()} principal{effectiveCount !== 1 ? "s" : ""}
+                  </strong>{" "}
+                  can still reach it through group membership.
+                </>
+              )}
             </div>
           )}
 
@@ -164,7 +178,8 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
             padding: "12px 24px", borderTop: `1px solid ${theme.color.border}`,
             fontSize: 12, color: theme.color.textMuted,
           }}>
-            {permissions.length} principal{permissions.length !== 1 ? "s" : ""} with access
+            {permissions.length} shared directly
+            {effectiveCount > 0 && ` · ${effectiveCount.toLocaleString()} with access in total`}
           </div>
         )}
       </div>

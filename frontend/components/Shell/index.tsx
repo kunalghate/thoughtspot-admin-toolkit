@@ -15,6 +15,7 @@ import { theme } from "@/lib/theme";
 import { clustersApi, jobsApi, syncApi } from "@/lib/api";
 import { useToast } from "../Toast";
 import type { Cluster, Org, SyncLog, EntityType } from "@/lib/types";
+import type { SyncLogOrUnknown } from "./Topbar.helpers";
 
 /** Heuristic: does a backend error string describe an expired/invalid session? */
 function looksLikeAuthError(message?: string | null): boolean {
@@ -119,7 +120,9 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   const [activeCluster, setActiveCluster] = useState<Cluster | null>(null);
   const [orgs, setOrgs]               = useState<Org[]>([]);
   const [activeOrg, setActiveOrg]     = useState<Org | null>(null);
-  const [syncLogs, setSyncLogs]       = useState<SyncLog[]>([]);
+  // `null` = not known (first read in flight, or it failed). Never conflate that
+  // with "no rows" — see SyncLogOrUnknown in Topbar.helpers.
+  const [syncLogs, setSyncLogs]       = useState<SyncLog[] | null>(null);
   const [isSyncing, setIsSyncing]     = useState(false);
   const [syncProgress, setSyncProgress] = useState<{ processed: number; total: number } | null>(null);
   const [clusterOnline, setClusterOnline] = useState<boolean | null>(null);
@@ -212,10 +215,23 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
     return () => { cancelled = true; };
   }, [activeCluster?.id]);
 
-  // Load sync status when cluster + org changes
+  // Load sync status when cluster + org changes.
+  //
+  // Clear first: without it the previous scope's answer keeps being asserted
+  // until the new one lands — switch from an org synced 3m ago to one that has
+  // never synced and the Topbar shows a green "Synced 3m ago" for the wrong
+  // org. A failed read leaves it unknown rather than falling back to a
+  // confident "Never synced".
   useEffect(() => {
     if (!activeCluster) return;
-    syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0).then(setSyncLogs).catch(() => {});
+    const clusterId = activeCluster.id;
+    const orgId = activeOrg?.org_id ?? 0;
+    let cancelled = false;
+    setSyncLogs(null);
+    syncApi.status(clusterId, orgId)
+      .then((logs) => { if (!cancelled) setSyncLogs(logs); })
+      .catch(() => { if (!cancelled) setSyncLogs(null); });
+    return () => { cancelled = true; };
   }, [activeCluster?.id, activeOrg?.org_id]);
 
   // Tick every 60s so relative sync timestamps stay fresh
@@ -227,15 +243,22 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   // Clean up polling on unmount
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
-  const activeSyncLog = entityType
-    ? syncLogs.find((l) => l.entity_type === entityType) ?? null
-    : null;
+  const activeSyncLog: SyncLogOrUnknown = !entityType
+    ? null
+    : syncLogs === null
+      ? undefined
+      : syncLogs.find((l) => l.entity_type === entityType) ?? null;
 
   // Lineage is DERIVED from the metadata cache, so the backend fails it closed
   // until a metadata sync is certified complete. Say so on the button rather
   // than letting the click queue a job that can only fail.
+  // Only assert "blocked" from a KNOWN status. A swallowed read used to disable
+  // Sync Lineage permanently, with a tooltip blaming a metadata cache that was
+  // in fact perfectly synced.
   const blockedReason =
-    entityType === "dependencies" && syncLogs.find((l) => l.entity_type === "metadata")?.status !== "SUCCESS"
+    entityType === "dependencies" &&
+    syncLogs !== null &&
+    syncLogs.find((l) => l.entity_type === "metadata")?.status !== "SUCCESS"
       ? "Sync Metadata first — lineage is built from the metadata cache."
       : null;
 

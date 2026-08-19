@@ -34,7 +34,13 @@ _ACTIVITY_SCAN_ROWS = 300
 # Activity older than this is history, not news — the feed hides it so a
 # months-old bulk delete cannot masquerade as "recent".
 ACTIVITY_MAX_AGE_DAYS = 30
-# Entities whose freshness and record-count deltas the dashboard reports.
+# Entities whose freshness the dashboard reports.
+#
+# It reports NO record-count trend: `sync_log` keeps no time series. Every
+# writer (`sync_service._write_sync_log`, `lineage_service._write_dependencies_sync_log`)
+# UPSERTS the single (cluster_id, org_id, entity_type) row and none append, so
+# there is never a prior row to diff against. A "change since the last sync"
+# needs a second stored number, not a second query.
 _TRACKED_ENTITIES = ("metadata", "users", "groups", "tags", "dependencies")
 _IN_FLIGHT_STATUSES = ("QUEUED", "PENDING", "RUNNING")
 
@@ -128,9 +134,7 @@ class DashboardService:
             ]
 
             activity = DashboardService._recent_activity(session, cluster_id=cluster_id, org_id=org_id)
-            synced, deltas, synced_at, syncing = DashboardService._sync_state(
-                session, cluster_id=cluster_id, org_id=org_id
-            )
+            synced, synced_at, syncing = DashboardService._sync_state(session, cluster_id=cluster_id, org_id=org_id)
             attention = DashboardService._attention(session, cluster_id=cluster_id, org_id=org_id, synced=synced)
 
         return {
@@ -147,7 +151,6 @@ class DashboardService:
             "synced": synced,
             "synced_at": synced_at,
             "syncing": syncing,
-            "deltas": deltas,
             "attention": attention,
             "recent_jobs": recent_jobs,
             "running_jobs": running_jobs,
@@ -158,18 +161,14 @@ class DashboardService:
     @staticmethod
     def _sync_state(
         session: Session, *, cluster_id: str, org_id: int
-    ) -> tuple[dict[str, bool], dict[str, int], dict[str, datetime | None], dict[str, bool]]:
+    ) -> tuple[dict[str, bool], dict[str, datetime | None], dict[str, bool]]:
         """
-        Per-entity "has this ever synced?" flags, record-count deltas, the
-        timestamp of the last successful sync, and "is a sync running now?".
+        Per-entity "has this ever synced?" flags, the timestamp of the last
+        successful sync, and "is a sync running now?".
 
         The flags exist so the UI can tell a real zero apart from a number we
         simply do not have yet — rendering "0 tags" for a cluster that has
         never run a tag sync is a lie, not a measurement.
-
-        The delta is the change in `record_count` between the two most recent
-        successful syncs of an entity (0 when there is no prior sync to compare
-        against), which is the only true time series the cache keeps.
 
         `synced_at` is per-entity on purpose: syncs are lazy and independent
         (ADR-005), so "when was this cluster last synced?" has no single answer.
@@ -185,11 +184,12 @@ class DashboardService:
         "Never synced" mid-sync and invites a second concurrent one.
         """
         synced: dict[str, bool] = {}
-        deltas: dict[str, int] = {}
         synced_at: dict[str, datetime | None] = {}
         in_flight: dict[str, bool] = {}
         for entity in _TRACKED_ENTITIES:
-            recent = session.exec(
+            # `.first()` is ordered `synced_at DESC` because `sync_log` has no
+            # unique constraint on (cluster_id, org_id, entity_type).
+            last_success = session.exec(
                 select(SyncLog)
                 .where(
                     SyncLog.cluster_id == cluster_id,
@@ -198,11 +198,9 @@ class DashboardService:
                     SyncLog.status == "SUCCESS",
                 )
                 .order_by(col(SyncLog.synced_at).desc())
-                .limit(2)
-            ).all()
-            synced[entity] = bool(recent)
-            deltas[entity] = recent[0].record_count - recent[1].record_count if len(recent) == 2 else 0
-            synced_at[entity] = _naive(recent[0].synced_at) if recent else None
+            ).first()
+            synced[entity] = last_success is not None
+            synced_at[entity] = _naive(last_success.synced_at) if last_success else None
 
             newest = session.exec(
                 select(SyncLog)
@@ -214,7 +212,7 @@ class DashboardService:
                 .order_by(col(SyncLog.synced_at).desc())
             ).first()
             in_flight[entity] = newest is not None and newest.status == "IN_PROGRESS"
-        return synced, deltas, synced_at, in_flight
+        return synced, synced_at, in_flight
 
     @staticmethod
     def _attention(session: Session, *, cluster_id: str, org_id: int, synced: dict[str, bool]) -> dict[str, int]:

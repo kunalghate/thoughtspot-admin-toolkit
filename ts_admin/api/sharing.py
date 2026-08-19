@@ -65,10 +65,21 @@ class PreviewRequest(BaseModel):
     mode: Literal["READ_ONLY", "MODIFY", "NO_ACCESS"]
 
 
+class SkippedObject(BaseModel):
+    object_guid: str
+    reason: str
+
+
 class PreviewResponse(BaseModel):
     items: list[PreviewRow]
     total: int
     will_change_count: int
+    # GUIDs the request named that are not in the metadata cache for this
+    # (cluster, org). Preview and execute resolve through the same code path, so
+    # these are exactly the objects execute will NOT touch — surfacing them here
+    # is what keeps the preview an honest account of what is about to happen.
+    skipped: list[SkippedObject] = []
+    skipped_count: int = 0
 
 
 class ExecuteRequest(BaseModel):
@@ -80,6 +91,11 @@ class ExecuteRequest(BaseModel):
     principal_types: list[Literal["USER", "USER_GROUP"]] | None = None
     mode: Literal["READ_ONLY", "MODIFY", "NO_ACCESS"]
     notify: bool = False
+    # `job_id` of the COMPLETE /sharing/dryrun the admin approved. When set,
+    # /sharing/execute acts on the GUID set that dry-run resolved instead of
+    # re-resolving `tag_name` — see `svc.load_dryrun_selection`. Optional for
+    # backward compatibility; omitting it keeps the old re-resolve behaviour.
+    dryrun_job_id: str | None = None
 
 
 class JobAcceptedResponse(BaseModel):
@@ -155,6 +171,49 @@ def _resolve_objects(body: PreviewRequest | ExecuteRequest, cluster_id: str) -> 
     raise HTTPException(status_code=422, detail="Either object_guids or tag_name is required")
 
 
+# The service returns a reason code, not a status — the HTTP mapping lives here.
+_DRYRUN_REASON_STATUS: dict[str, int] = {
+    svc.DRYRUN_NOT_FOUND: 404,
+    svc.DRYRUN_WRONG_TYPE: 422,
+    # The request is well-formed but conflicts with the state of the approval it
+    # names: still running, or approving something else entirely.
+    svc.DRYRUN_NOT_COMPLETE: 409,
+    svc.DRYRUN_MISMATCH: 409,
+    svc.DRYRUN_NOT_PREVIEWED: 409,
+}
+
+
+def _objects_for_execute(body: ExecuteRequest, cluster_id: str) -> list[str]:
+    """
+    The GUID set /sharing/execute will act on.
+
+    With `dryrun_job_id`, that is the set the named dry-run resolved — `tag_name`
+    is NOT re-resolved, because a tag/untag job, a metadata sync or a second
+    admin between the dry-run and the execute would otherwise change the set out
+    from under the approval (and for NO_ACCESS, revoke access on objects nobody
+    previewed). Without it, the legacy re-resolve path is kept so existing
+    clients keep working.
+
+    Refuses HERE, in the router, before `create_job` — a refusal raised inside
+    the background task lands after the 202 is on the wire and strands the Job
+    row at QUEUED.
+    """
+    if not body.dryrun_job_id:
+        return _resolve_objects(body, cluster_id)
+
+    object_guids, reason, detail = svc.load_dryrun_selection(
+        dryrun_job_id=body.dryrun_job_id,
+        cluster_id=cluster_id,
+        org_id=body.org_id,
+        principal_guids=body.principal_guids,
+        mode=body.mode,
+        requested_guids=body.object_guids,
+    )
+    if reason:
+        raise HTTPException(status_code=_DRYRUN_REASON_STATUS.get(reason, 409), detail=detail)
+    return object_guids
+
+
 @router.post("/preview", response_model=PreviewResponse)
 async def preview(body: PreviewRequest) -> PreviewResponse:
     """Diff (object × principal) — current ACL vs. proposed mode."""
@@ -175,6 +234,8 @@ async def preview(body: PreviewRequest) -> PreviewResponse:
         items=[PreviewRow(**r) for r in result["items"]],
         total=result["total"],
         will_change_count=result["will_change_count"],
+        skipped=[SkippedObject(**r) for r in result.get("skipped", [])],
+        skipped_count=result.get("skipped_count", 0),
     )
 
 
@@ -184,6 +245,10 @@ async def dryrun(body: ExecuteRequest, background_tasks: BackgroundTasks) -> Job
     Start a live, no-write impact check (current ACL vs. proposed mode) as a
     background job. This is the dry-run that gates the destructive execute —
     notably NO_ACCESS revokes. Poll /api/v1/jobs/{job_id} for the summary.
+
+    `tag_name` is resolved to GUIDs ONCE, here, and those GUIDs are stored in
+    `Job.parameters["object_guids"]`. Pass this `job_id` back as
+    `dryrun_job_id` on /sharing/execute to act on exactly that set.
     """
     if not body.principal_guids:
         raise HTTPException(status_code=422, detail="principal_guids must not be empty")
@@ -220,12 +285,19 @@ async def dryrun(body: ExecuteRequest, background_tasks: BackgroundTasks) -> Job
 
 @router.post("/execute", response_model=JobAcceptedResponse, status_code=202)
 async def execute(body: ExecuteRequest, background_tasks: BackgroundTasks) -> JobAcceptedResponse:
-    """Kick the share job."""
+    """
+    Kick the share job.
+
+    Send `dryrun_job_id` (the `job_id` from the COMPLETE /sharing/dryrun the
+    admin approved) to execute against exactly the GUID set that dry-run
+    resolved. Without it the request re-resolves `tag_name`, which can no longer
+    be assumed to name the same objects the admin saw.
+    """
     if not body.principal_guids:
         raise HTTPException(status_code=422, detail="principal_guids must not be empty")
 
     cluster_id = _resolve_cluster_id(body.cluster_id)
-    object_guids = _resolve_objects(body, cluster_id)
+    object_guids = _objects_for_execute(body, cluster_id)
     if not object_guids:
         raise HTTPException(status_code=422, detail="0 objects resolved — nothing to share")
 
@@ -251,6 +323,9 @@ async def execute(body: ExecuteRequest, background_tasks: BackgroundTasks) -> Jo
             "principal_guids": body.principal_guids,
             "mode": body.mode,
             "notify": body.notify,
+            # Which approval authorised this share — the durable link between the
+            # dry-run the admin read and the write that followed it.
+            "dryrun_job_id": body.dryrun_job_id,
         },
     )
     background_tasks.add_task(

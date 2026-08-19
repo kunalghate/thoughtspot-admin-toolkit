@@ -1,5 +1,6 @@
 import { theme } from "@/lib/theme";
 import type { EntityType, SyncLog } from "@/lib/types";
+import { parseUtc } from "@/lib/utils";
 
 /**
  * Pure helpers for the Topbar sync indicator.
@@ -26,8 +27,17 @@ const ENTITY_NOUNS: Partial<Record<EntityType, string>> = {
   dependencies: "objects",
 };
 
+/**
+ * `undefined` means the sync status is NOT KNOWN — the read has not landed yet,
+ * or it failed. `null` means it is known and there is no log row, i.e. genuinely
+ * never synced. Collapsing the two made a failed status read render as a
+ * confident "Never synced" (and, via `blockedReason`, permanently disabled the
+ * Sync Lineage button on a cluster whose metadata was perfectly synced).
+ */
+export type SyncLogOrUnknown = SyncLog | null | undefined;
+
 export function buildSyncLabel(
-  log: SyncLog | null,
+  log: SyncLogOrUnknown,
   isSyncing: boolean,
   progress: { processed: number; total: number } | null,
   now: number,
@@ -48,6 +58,7 @@ export function buildSyncLabel(
     }
     return "Syncing…";
   }
+  if (log === undefined) return "Sync status unknown";
   if (!log || log.status === "NOT_SYNCED") return "Never synced";
   if (log.status === "FAILED") return "Sync failed";
   // An IN_PROGRESS marker is written before the sync deletes the cache and is
@@ -59,7 +70,7 @@ export function buildSyncLabel(
   if (log.status === "IN_PROGRESS") return "Syncing…";
   if (!log.synced_at) return "Unknown";
 
-  const minutes = Math.floor((now - new Date(log.synced_at + "Z").getTime()) / 60_000);
+  const minutes = Math.floor((now - parseUtc(log.synced_at).getTime()) / 60_000);
   if (minutes < 2)  return "Synced just now";
   if (minutes < 60) return `Synced ${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -67,15 +78,16 @@ export function buildSyncLabel(
   return `Synced ${Math.floor(hours / 24)}d ago`;
 }
 
-export function buildSyncColor(log: SyncLog | null, isSyncing: boolean, now: number): string {
+export function buildSyncColor(log: SyncLogOrUnknown, isSyncing: boolean, now: number): string {
   if (isSyncing) return theme.color.accent;
+  if (log === undefined) return theme.color.textMuted;
   if (!log || log.status === "NOT_SYNCED") return theme.color.danger;
   if (log.status === "FAILED") return theme.color.danger;
   // Same token as the local isSyncing branch above — in-flight, not alarming.
   if (log.status === "IN_PROGRESS") return theme.color.accent;
   if (!log.synced_at) return theme.color.textMuted;
 
-  const hours = (now - new Date(log.synced_at + "Z").getTime()) / 3_600_000;
+  const hours = (now - parseUtc(log.synced_at).getTime()) / 3_600_000;
   if (hours < 1) return theme.color.success;
   if (hours < 6) return theme.color.textMuted;
   return theme.color.warn;

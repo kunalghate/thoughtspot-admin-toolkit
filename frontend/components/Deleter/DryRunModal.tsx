@@ -19,7 +19,7 @@ import { X, Loader2, AlertTriangle, Share2, CheckCircle, XCircle, AlertCircle } 
 
 import { jobsApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
-import type { DeleterItem, DryRunSummary, Job, PaginatedResponse } from "@/lib/types";
+import type { DeleterItem, DryRunSummary, Job, OffsetPaginatedResponse } from "@/lib/types";
 import { OBJECT_COLUMNS } from "./columns";
 
 type ModalState = "polling" | "ready" | "running" | "complete";
@@ -31,7 +31,7 @@ export interface DeleteApiAdapter {
   dryrunObjects: (
     job_id: string,
     params: { cluster_id: string; record_offset?: number; page_size?: number },
-  ) => Promise<PaginatedResponse<DeleterItem>>;
+  ) => Promise<OffsetPaginatedResponse<DeleterItem>>;
   /** Start the actual delete job; returns its id. */
   execute: (body: { cluster_id: string; org_id: number; object_ids: string[] }) => Promise<{ job_id: string }>;
 }
@@ -60,6 +60,8 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
   const [executeJob, setExecuteJob] = useState<Job | null>(null);
   const [confirmInput, setConfirmInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const gridRef = useRef<AgGridReact<DeleterItem>>(null);
 
   // ── Kick off dry-run on mount ──────────────────────────────────────────────
@@ -132,6 +134,15 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
 
   const handleConfirm = async () => {
     if (confirmInput !== "DELETE") return;
+    // Set synchronously, BEFORE the await. `state` does not leave "ready" until
+    // the POST returns, so without this the button stays live for the whole
+    // round-trip and a double-click starts two delete jobs on the same GUIDs —
+    // the modal would then only ever poll the second one. Same guard the share
+    // and transfer modals already have; a ref because two clicks can land in
+    // one React batch, where a state flag would still read stale.
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
       const { job_id } = await api.execute({
         cluster_id: clusterId,
@@ -142,6 +153,8 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
       setState("running");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start delete job");
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -182,6 +195,11 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
     if (!executeJob) return "failed";
     const r = (executeJob.result ?? {}) as Record<string, number>;
     if (executeJob.status === "FAILED" || r.succeeded === 0) return "failed";
+    // Lead on the job's own verdict. A delete cancelled from the Jobs page
+    // mid-run lands PARTIAL with zero failures, which every count-based test
+    // below reads as a clean sweep — so it used to render green while the
+    // objects past the cancellation point were never touched.
+    if (executeJob.status === "PARTIAL") return "partial";
     if (r.failed_tml_export > 0 || r.failed_delete > 0) return "partial";
     return "success";
   };
@@ -195,11 +213,19 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
   const resultText = () => {
     const r = ((executeJob?.result ?? {}) as Record<string, number>);
     const t = resultType();
-    if (t === "success") {
-      const n = r.succeeded ?? objectIds.length;
-      return `${n} object${n !== 1 ? "s" : ""} deleted successfully.`;
+    // Only ever quote a number the job itself reported — never fall back to the
+    // requested count, which would claim every object was deleted on a result
+    // payload that never said so.
+    const done = r.succeeded ?? 0;
+    if (t === "success") return `${done} object${done !== 1 ? "s" : ""} deleted successfully.`;
+    if (t === "partial") {
+      const skipped = (r.failed_tml_export ?? 0) + (r.failed_delete ?? 0);
+      const untouched = Math.max(0, objectIds.length - done - skipped);
+      const parts = [`${done} deleted`];
+      if (skipped) parts.push(`${skipped} skipped`);
+      if (untouched) parts.push(`${untouched} not attempted`);
+      return `${parts.join(" · ")}. View History for details.`;
     }
-    if (t === "partial") return `${r.succeeded} deleted · ${(r.failed_tml_export ?? 0) + (r.failed_delete ?? 0)} skipped. View History for details.`;
     return `Delete completed but 0 objects deleted — ${r.failed_tml_export ?? 0} TML export${r.failed_tml_export !== 1 ? "s" : ""} failed.`;
   };
 
@@ -461,19 +487,21 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
             </button>
             <button
               data-testid="dryrun-execute"
-              disabled={confirmInput !== "DELETE"}
+              disabled={confirmInput !== "DELETE" || submitting}
               onClick={handleConfirm}
               style={{
                 padding: "7px 16px", borderRadius: 6, fontSize: 13,
                 fontWeight: 500, fontFamily: theme.font.sans,
-                cursor: confirmInput === "DELETE" ? "pointer" : "default",
+                cursor: confirmInput === "DELETE" && !submitting ? "pointer" : "default",
                 border: "none",
-                background: confirmInput === "DELETE" ? theme.color.danger : theme.color.dangerBorder,
+                background: confirmInput === "DELETE" && !submitting ? theme.color.danger : theme.color.dangerBorder,
                 color: theme.color.onAccent,
                 transition: "background 0.15s",
               }}
             >
-              Delete {objectIds.length.toLocaleString()} object{objectIds.length !== 1 ? "s" : ""}
+              {submitting
+                ? "Starting…"
+                : `Delete ${objectIds.length.toLocaleString()} object${objectIds.length !== 1 ? "s" : ""}`}
             </button>
           </div>
         )}

@@ -1,3 +1,5 @@
+import { OBJECT_TYPES, TYPE_LABELS } from "@/lib/objectTypes";
+
 // ── AG Grid filter model → backend params ─────────────────────────────────
 // Maps AG Grid's getFilterModel() output to query-string params shared by
 // /archiver/results, /archiver/records, and /metadata. Returned object uses
@@ -22,10 +24,53 @@ export type SerializedFilters = {
   archived_after?: string;
 };
 
-const TYPE_KEYWORDS: Array<{ kw: string; type: string }> = [
-  { kw: "live", type: "LIVEBOARD" },
-  { kw: "answer", type: "ANSWER" },
-];
+/**
+ * A `types` value that matches nothing, for a Type filter whose term names no
+ * known type. The alternative — omitting the key — reads downstream as "no type
+ * filter", which showed the FULL list under a filter the user had just applied.
+ */
+export const NO_TYPE_MATCH = "__no_matching_type__";
+
+/**
+ * Resolve a Type-column search term to the `object_type` values it names.
+ *
+ * The Type column filters on the *label* (`filterValueGetter` → `TYPE_LABELS`),
+ * so the term the user types is "Model" or "SQL View", never `WORKSHEET`. Both
+ * vocabularies are matched — a label because that is what is on screen, a raw
+ * type because it is what the API and the CSV export use — and labels are
+ * many-to-one (`WORKSHEET`, `LOGICAL_TABLE` and `MODEL` are all "Model"), so a
+ * term resolves to a LIST of types, not one.
+ */
+function resolveTypeTerm(term: string): string[] {
+  const v = term.toLowerCase().trim();
+  if (!v) return [];
+  const matched = OBJECT_TYPES.filter(
+    (t) => (TYPE_LABELS[t] ?? t).toLowerCase().includes(v) || t.toLowerCase().includes(v),
+  );
+  // Aliases for the same label that are cached but not separately selectable —
+  // searching "Model" must also reach rows stored as LOGICAL_TABLE.
+  const labels = new Set(matched.map((t) => TYPE_LABELS[t] ?? t));
+  return Object.keys(TYPE_LABELS).filter(
+    (t) => matched.includes(t) || labels.has(TYPE_LABELS[t]),
+  );
+}
+
+/**
+ * Combine the Type column filter with the toolbar's type pills.
+ *
+ * They intersect. Before, callers wrote `f.types ?? toolbarTypes`, so a column
+ * filter silently REPLACED an active pill — answers listed under a lit
+ * "Liveboard" pill.
+ */
+export function intersectTypes(
+  filterTypes: string[] | undefined,
+  toolbarTypes: string[] | undefined,
+): string[] | undefined {
+  if (!filterTypes) return toolbarTypes;
+  if (!toolbarTypes || toolbarTypes.length === 0) return filterTypes;
+  const both = filterTypes.filter((t) => toolbarTypes.includes(t));
+  return both.length > 0 ? both : [NO_TYPE_MATCH];
+}
 
 function dateOnly(iso: string | undefined): string | undefined {
   if (!iso) return undefined;
@@ -44,10 +89,10 @@ export function serializeFilterModel(model: Record<string, any>): SerializedFilt
     }
 
     if (field === "object_type") {
-      const v = (entry.filter ?? "").toString().toLowerCase().trim();
+      const v = (entry.filter ?? "").toString().trim();
       if (!v) continue;
-      const matches = TYPE_KEYWORDS.filter(({ kw }) => kw.startsWith(v) || v.startsWith(kw)).map((k) => k.type);
-      if (matches.length) out.types = matches;
+      const matches = resolveTypeTerm(v);
+      out.types = matches.length > 0 ? matches : [NO_TYPE_MATCH];
       continue;
     }
 

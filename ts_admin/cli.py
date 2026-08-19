@@ -118,7 +118,7 @@ def update(check: bool) -> None:
         sys.exit(1)
 
     click.echo(f"\n  ✓ Updated to v{result.latest}.")
-    click.echo("    Your clusters, settings and cached data were left as they are.")
+    click.echo("    Nothing to set up again — your instances, sign-ins and synced data all stay.")
     click.echo("\n  Start it again with:  ts-admin-toolkit serve\n")
 
 

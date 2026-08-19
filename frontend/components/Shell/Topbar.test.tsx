@@ -87,6 +87,20 @@ describe("buildSyncLabel", () => {
     expect(buildSyncLabel(null, false, null, NOW)).toBe("Never synced");
   });
 
+  // `undefined` = the status read has not landed, or it failed. Reporting that
+  // as "Never synced" was a fail-open: a transient 500 told the admin their
+  // cache was empty, and blocked Sync Lineage with a tooltip blaming a metadata
+  // cache that was in fact synced.
+  it("does not claim never-synced when the status is not known", () => {
+    expect(buildSyncLabel(undefined, false, null, NOW)).toBe("Sync status unknown");
+    expect(buildSyncColor(undefined, false, NOW)).toBe(theme.color.textMuted);
+  });
+
+  it("still reports an in-flight sync while the status is unknown", () => {
+    expect(buildSyncLabel(undefined, true, null, NOW)).toBe("Syncing…");
+    expect(buildSyncColor(undefined, true, NOW)).toBe(theme.color.accent);
+  });
+
   it("reports NOT_SYNCED as never synced", () => {
     expect(buildSyncLabel(STATUS_FIXTURES.NOT_SYNCED, false, null, NOW)).toBe("Never synced");
   });

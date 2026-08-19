@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
@@ -5,6 +6,7 @@ import {
   LayoutDashboard, Users, UsersRound, FolderSearch,
   Archive, Trash2, Share2, GitFork, Briefcase, Settings,
 } from "lucide-react";
+import { healthApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import type { Cluster } from "@/lib/types";
 
@@ -112,13 +114,45 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
         </p>
       </div>
 
-      {/* Credit */}
-      <div style={{ padding: "8px 12px", borderTop: `1px solid ${theme.color.border}` }}>
+      {/* Credit + running version */}
+      <div style={{
+        padding: "8px 12px", borderTop: `1px solid ${theme.color.border}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+      }}>
         <p style={{ fontSize: 10, color: theme.color.textMuted, margin: 0, fontFamily: theme.font.sans }}>
           Built by Bibek Shrestha &amp; Kunal Ghate
         </p>
+        <AppVersion />
       </div>
     </aside>
+  );
+}
+
+/**
+ * The version this app is running, from the backend rather than a build-time
+ * constant — the Python package is what gets upgraded, so it is the only
+ * thing that knows. Renders nothing until it answers; a wrong version number
+ * is worse than none when someone is reporting a bug against it.
+ */
+function AppVersion() {
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    healthApi.check().then((h) => setVersion(h.version)).catch(() => setVersion(null));
+  }, []);
+
+  if (!version) return null;
+
+  return (
+    <span
+      title={`ThoughtSpot Admin Toolkit v${version}`}
+      style={{
+        fontSize: 10, color: theme.color.textMuted,
+        fontFamily: theme.font.mono, whiteSpace: "nowrap", flexShrink: 0,
+      }}
+    >
+      v{version}
+    </span>
   );
 }
 

@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from pydantic import ValidationError
@@ -27,6 +28,7 @@ from ts_admin.ts_client.exceptions import (
     TSInsufficientPrivilegesError,
     TSInvalidParametersError,
     TSObjectNotFoundError,
+    TSPartialSuccessError,
     TSResponseParseError,
     TSServerError,
     TSSSLError,
@@ -53,6 +55,25 @@ PAGE_SIZE = 500
 DETAIL_PAGE_SIZE = 200
 
 
+# `CachedMetadata.object_type` values that are NOT members of any ThoughtSpot v2
+# `type` enum. Every one of them is a logical table underneath — the five API
+# subtypes plus DATASET, which is our own derived value (an Analyst Studio table)
+# and has never existed on the wire at all. Any endpoint with an enum-typed
+# `type` field must collapse them, or ThoughtSpot rejects the request.
+#
+# `tests/unit/test_client_write_endpoints.py` iterates every `MetadataType`
+# member against each endpoint's real enum, so adding a member without adding it
+# here fails the build.
+LOGICAL_TABLE_SUBTYPES: dict[str, str] = {
+    MetadataType.WORKSHEET: "LOGICAL_TABLE",
+    MetadataType.ONE_TO_ONE_LOGICAL: "LOGICAL_TABLE",
+    MetadataType.AGGR_WORKSHEET: "LOGICAL_TABLE",
+    MetadataType.SQL_VIEW: "LOGICAL_TABLE",
+    MetadataType.USER_DEFINED: "LOGICAL_TABLE",
+    MetadataType.DATASET: "LOGICAL_TABLE",
+}
+
+
 # Cached `object_type` values → the `type` enum metadata/search accepts.
 # All tabular subtypes collapse to LOGICAL_TABLE; leaves keep their own type.
 _SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
@@ -77,6 +98,58 @@ _SEARCH_TYPE_FOR_DEPENDENTS: dict[str, str] = {
 # That connection is not returned by /connection/search, and the tables carry no
 # distinguishing subType — the warehouse type in metadata_detail is the only signal.
 _ANALYST_STUDIO_SOURCE_TYPE = "RDBMS_MODE"
+
+
+# `metadata/search` subtypes that ThoughtSpot only accepts from a given release
+# onwards. Sending one to an older cluster is an out-of-enum value, so the whole
+# request 400s. Source: the v2 reference's `subtypes` enum (checked 2026-08-18),
+# which tags SQL_VIEW "Version: 10.11.0.cl or later"; the other five subtypes we
+# query carry no version tag at all.
+_SUBTYPE_MIN_RELEASE: dict[str, tuple[int, int, int]] = {
+    MetadataType.SQL_VIEW: (10, 11, 0),
+}
+
+
+def _parse_release_version(release_version: str | None) -> tuple[int, int, int] | None:
+    """``"26.8.0.cl"`` → ``(26, 8, 0)``. None when the string is not a release number.
+
+    Cloud releases end `.cl` and on-prem ones `.sw`, so everything after the
+    leading numeric components is ignored. The field is documented nullable and
+    its own example value in the reference is the literal string ``"test"``, so
+    an unrecognisable value is ordinary rather than exceptional — this returns
+    None for it instead of raising.
+    """
+    if not release_version:
+        return None
+    parts: list[int] = []
+    for component in release_version.strip().split("."):
+        # `str.isdigit()` is True for superscripts and other non-ASCII digits that
+        # `int()` then rejects — require ASCII so this can never raise.
+        if not (component.isascii() and component.isdigit()):
+            break
+        parts.append(int(component))
+    if len(parts) < 2:
+        return None
+    major, minor, patch = (parts + [0, 0])[:3]
+    return major, minor, patch
+
+
+def _supports_subtype(subtype: str, release_version: str | None) -> bool:
+    """False ONLY when the cluster is known to predate the subtype's release.
+
+    Unknown cuts towards "current": an unparseable (or missing) version must
+    behave like an up-to-date cluster, because the failure mode of guessing the
+    other way is that a 26.8 customer silently loses every SQL view to a version
+    string we could not read. Guessing this way costs at worst one 400 on a truly
+    old cluster, which `search_metadata` now records and survives.
+    """
+    minimum = _SUBTYPE_MIN_RELEASE.get(subtype)
+    if minimum is None:
+        return True
+    parsed = _parse_release_version(release_version)
+    if parsed is None:
+        return True
+    return parsed >= minimum
 
 
 def _belongs_to_org(user: dict, org_id: int) -> bool:
@@ -412,8 +485,21 @@ class ThoughtSpotClient:
 
     # ── Metadata ───────────────────────────────────────────────────────────────
 
+    # Each spec: (api_type, subtypes_filter, effective_type_to_store)
+    _METADATA_SPECS: list[tuple[str, list[str] | None, "MetadataType"]] = [
+        ("LIVEBOARD", None, MetadataType.LIVEBOARD),
+        ("ANSWER", None, MetadataType.ANSWER),
+        ("LOGICAL_TABLE", ["WORKSHEET"], MetadataType.WORKSHEET),
+        ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"], MetadataType.ONE_TO_ONE_LOGICAL),
+        ("LOGICAL_TABLE", ["AGGR_WORKSHEET"], MetadataType.AGGR_WORKSHEET),
+        ("LOGICAL_TABLE", ["SQL_VIEW"], MetadataType.SQL_VIEW),
+        ("LOGICAL_TABLE", ["USER_DEFINED"], MetadataType.USER_DEFINED),
+    ]
+
     async def search_metadata(
         self,
+        *,
+        release_version: str | None = None,
     ) -> AsyncIterator[list[TSMetadataObject]]:
         """Yield pages of all content objects (Liveboards, Answers, Worksheets, Tables).
 
@@ -428,58 +514,115 @@ class ThoughtSpotClient:
         datasets can be told apart from ordinary tables — see _is_analyst_studio_dataset.
 
         /api/rest/2.0/metadata/search returns a list directly, so we paginate manually.
+
+        **One spec's failure must not discard the others.** Seven independent
+        requests share this generator, so letting the first failure propagate threw
+        away every page already yielded — an admin could end with no metadata cache
+        at all rather than a partial one. Each spec is therefore driven separately
+        and a per-request failure (400/404/5xx/unparseable body) is recorded and
+        skipped. `release_version` gates out subtypes the cluster is too old to
+        know about before they can 400 at all; the resilience below is what covers
+        every future version-gated value.
+
+        The caller does NOT get to ignore that: once every spec has run, a
+        `TSPartialSuccessError` naming the failed specs is raised **after** the
+        last page is yielded. Whatever was fetched is still the caller's to keep,
+        but a caller that does not handle the error fails loudly rather than
+        certifying a partial crawl as a complete one.
+
+        Whole-cluster conditions — auth, privileges, connectivity, rate limits —
+        are deliberately NOT caught: the remaining specs would fail identically,
+        so retrying them just multiplies the same failure.
         """
-        # Each spec: (api_type, subtypes_filter, effective_type_to_store)
-        specs = [
-            ("LIVEBOARD", None, MetadataType.LIVEBOARD),
-            ("ANSWER", None, MetadataType.ANSWER),
-            ("LOGICAL_TABLE", ["WORKSHEET"], MetadataType.WORKSHEET),
-            ("LOGICAL_TABLE", ["ONE_TO_ONE_LOGICAL"], MetadataType.ONE_TO_ONE_LOGICAL),
-            ("LOGICAL_TABLE", ["AGGR_WORKSHEET"], MetadataType.AGGR_WORKSHEET),
-            ("LOGICAL_TABLE", ["SQL_VIEW"], MetadataType.SQL_VIEW),
-            ("LOGICAL_TABLE", ["USER_DEFINED"], MetadataType.USER_DEFINED),
-        ]
+        succeeded_specs: list[str] = []
+        failed_specs: list[str] = []
 
-        for api_type, subtypes, effective_type in specs:
-            metadata_filter: dict = {"type": api_type}
-            if subtypes:
-                metadata_filter["subtypes"] = subtypes
-
-            body: dict = {"metadata": [metadata_filter], "include_stats": True}
-            # Only the tables pass pays for details — the response is ~10x larger
-            # (measured 18MB vs 1.8MB for 900 tables) and no other subtype needs it.
-            wants_details = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
-            if wants_details:
-                body["include_details"] = True
-            page_size = DETAIL_PAGE_SIZE if wants_details else PAGE_SIZE
-
-            offset = 0
-            while True:
-                data = await self._request(
-                    "POST",
-                    "/api/rest/2.0/metadata/search",
-                    json={**body, "record_offset": offset, "record_size": page_size},
-                    context="search_metadata",
+        for api_type, subtypes, effective_type in self._METADATA_SPECS:
+            spec_name = subtypes[0] if subtypes else api_type
+            if subtypes and not _supports_subtype(subtypes[0], release_version):
+                minimum = ".".join(str(n) for n in _SUBTYPE_MIN_RELEASE[subtypes[0]])
+                logger.info(
+                    "Skipping the %s metadata spec — cluster release %s predates %s",
+                    spec_name,
+                    release_version,
+                    minimum,
                 )
-                page: list = data if isinstance(data, list) else data.get("metadata_details", [])
-                if not page:
-                    break
-                # Stamp each item with the effective type so the model stores it correctly
-                for item in page:
-                    if wants_details and _is_analyst_studio_dataset(item):
-                        item["metadata_type"] = MetadataType.DATASET
-                    else:
-                        item["metadata_type"] = effective_type
+                # Not fetching it is still not fetching it: record it so the caller
+                # cannot mistake this crawl for a complete one.
+                failed_specs.append(f"{spec_name}: not supported before release {minimum}")
+                continue
+
+            # Driven by hand rather than `async for` so the `except` covers only the
+            # HTTP fetch — a consumer-body error must never be recorded as a spec failure.
+            pages = self._search_metadata_spec(api_type, subtypes, effective_type)
+            while True:
                 try:
-                    yield [TSMetadataObject.model_validate(m) for m in page]
-                except ValidationError as exc:
-                    raise TSResponseParseError(
-                        url="/api/rest/2.0/metadata/search",
-                        detail=str(exc),
-                    ) from exc
-                if len(page) < page_size:
+                    page = await anext(pages)
+                except StopAsyncIteration:
+                    succeeded_specs.append(spec_name)
                     break
-                offset += page_size
+                except (
+                    TSInvalidParametersError,
+                    TSObjectNotFoundError,
+                    TSResponseParseError,
+                    TSServerError,
+                ) as exc:
+                    logger.warning("Metadata spec %s failed, continuing with the rest: %s", spec_name, exc)
+                    failed_specs.append(f"{spec_name}: {exc}")
+                    break
+                yield page
+
+        if failed_specs:
+            raise TSPartialSuccessError(succeeded=succeeded_specs, failed=failed_specs)
+
+    async def _search_metadata_spec(
+        self,
+        api_type: str,
+        subtypes: list[str] | None,
+        effective_type: MetadataType,
+    ) -> AsyncIterator[list[TSMetadataObject]]:
+        """Yield every page of ONE metadata/search spec. Raises on the first failure."""
+        metadata_filter: dict = {"type": api_type}
+        if subtypes:
+            metadata_filter["subtypes"] = subtypes
+
+        body: dict = {"metadata": [metadata_filter], "include_stats": True}
+        # Only the tables pass pays for details — the response is ~10x larger
+        # (measured 18MB vs 1.8MB for 900 tables) and no other subtype needs it.
+        wants_details = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
+        if wants_details:
+            body["include_details"] = True
+        page_size = DETAIL_PAGE_SIZE if wants_details else PAGE_SIZE
+
+        offset = 0
+        while True:
+            data = await self._request(
+                "POST",
+                "/api/rest/2.0/metadata/search",
+                json={**body, "record_offset": offset, "record_size": page_size},
+                context="search_metadata",
+            )
+            page: list = data if isinstance(data, list) else data.get("metadata_details", [])
+            if not page:
+                break
+            # Stamp each item with the effective type so the model stores it correctly
+            for item in page:
+                if wants_details and _is_analyst_studio_dataset(item):
+                    item["metadata_type"] = MetadataType.DATASET
+                else:
+                    item["metadata_type"] = effective_type
+            try:
+                yield [TSMetadataObject.model_validate(m) for m in page]
+            except ValidationError as exc:
+                raise TSResponseParseError(
+                    url="/api/rest/2.0/metadata/search",
+                    detail=str(exc),
+                ) from exc
+            # `metadata/search` has no total-count field — the response is a bare
+            # array — so a short page is the only termination signal there is.
+            if len(page) < page_size:
+                break
+            offset += page_size
 
     # ── Tags ───────────────────────────────────────────────────────────────────
 
@@ -529,14 +672,22 @@ class ThoughtSpotClient:
         """
         Permanently delete a tag from the cluster.
 
+        POST /api/rest/2.0/tags/{tag_identifier}/delete — the identifier is a
+        PATH segment and the request carries NO body. 204 No Content on success.
+
+        `/api/rest/2.0/tags/delete` (what this used to POST, with a body of
+        `{"tag": [...]}`) is not a route: it 404s on every cluster, and our 404
+        handler renders that as "the object may have been deleted … run a sync
+        and retry", which sent admins re-syncing after a failure a sync can
+        never fix.
+
         Deleting a tag automatically removes it from every object it was
         assigned to (one API call instead of unassigning per-object first).
         Irreversible.
         """
         await self._request(
             "POST",
-            "/api/rest/2.0/tags/delete",
-            json={"tag": [{"identifier": tag_id}]},
+            f"/api/rest/2.0/tags/{quote(tag_id, safe='')}/delete",
             context="delete_tag",
         )
 
@@ -565,38 +716,51 @@ class ThoughtSpotClient:
         object_ids: list[str],
         principal_ids: list[str],
         permission: SharePermission = SharePermission.READ_ONLY,
+        message: str = "",
+        notify: bool = False,
     ) -> None:
         """
         Share a list of objects with a list of users or groups.
-        Raises TSPartialSuccessError if some objects fail.
-        """
 
+        POST /api/rest/2.0/security/metadata/share — 204 No Content on success,
+        so the response carries no evidence of what was shared. The REQUEST is
+        the only thing worth asserting in a test.
+
+        `/api/rest/2.0/security/share` (what this used to POST, with a body
+        keyed `metadata_list`) is not a route — it 404s on every cluster, and
+        `metadata_list` appears nowhere in the schema.
+
+        Body shape (`shareMetadata`, 9.0.0.cl+):
+          - `metadata`: [{identifier, type?}]. No `type` is sent: we always pass
+            GUIDs, for which the spec makes `type` optional, and our cache's
+            object_type values (WORKSHEET, DATASET, …) are not members of this
+            endpoint's type enum.
+          - `permissions`: [{principal: {identifier}, share_mode}].
+          - `message`: **required by the spec** — omitting the key is a 400.
+          - `notify_on_share`: defaults to **true** server-side, so it is always
+            sent explicitly. Left implicit, every share emails its recipients
+            no matter what the caller asked for.
+        """
         await self._request(
             "POST",
-            "/api/rest/2.0/security/share",
+            "/api/rest/2.0/security/metadata/share",
             json={
-                "metadata_list": [{"identifier": oid} for oid in object_ids],
+                "metadata": [{"identifier": oid} for oid in object_ids],
                 "permissions": [{"principal": {"identifier": pid}, "share_mode": permission} for pid in principal_ids],
+                "message": message,
+                "notify_on_share": notify,
             },
             context="share_objects",
         )
 
     # ── Permissions ────────────────────────────────────────────────────────────
 
-    # Subtypes that the permissions API doesn't know about — map them to LOGICAL_TABLE
-    _PERMISSIONS_TYPE_MAP: dict[str, str] = {
-        "WORKSHEET": "LOGICAL_TABLE",
-        "ONE_TO_ONE_LOGICAL": "LOGICAL_TABLE",
-        "AGGR_WORKSHEET": "LOGICAL_TABLE",
-        "SQL_VIEW": "LOGICAL_TABLE",
-        "USER_DEFINED": "LOGICAL_TABLE",
-    }
-
     async def fetch_permissions(
         self,
         *,
         ts_guid: str,
         object_type: str,
+        permission_type: str = "DEFINED",
     ) -> list[TSPermission]:
         """
         Fetch all users and groups that have access to a metadata object.
@@ -606,8 +770,21 @@ class ThoughtSpotClient:
 
         object_type may be a subtype (e.g. WORKSHEET); it's mapped to the
         TS API type (LOGICAL_TABLE) automatically.
+
+        `permission_type` (a real key on THIS endpoint, 10.3.0.cl+ — unlike on
+        `security/principals/fetch-permissions`, where it does not exist):
+
+          - "DEFINED"   — only principals the object was explicitly shared with.
+          - "EFFECTIVE" — everyone who can actually reach it, group membership
+            resolved. Omitting the key gives the same result as EFFECTIVE.
+
+        The gap between them is enormous on a real cluster and is not a rounding
+        error: measured on ps-internal-prod, 15 of 15 sampled liveboards had
+        DEFINED = 0 while EFFECTIVE = 129-139. A caller showing only DEFINED
+        must say so, or it reports "no one has access" about an object 138
+        people can open.
         """
-        api_type = self._PERMISSIONS_TYPE_MAP.get(object_type, object_type)
+        api_type = LOGICAL_TABLE_SUBTYPES.get(object_type, object_type)
 
         data = await self._request(
             "POST",
@@ -615,7 +792,7 @@ class ThoughtSpotClient:
             json={
                 "metadata": [{"identifier": ts_guid, "type": api_type}],
                 "record_size": -1,
-                "permission_type": "DEFINED",  # explicitly shared only, matches TS UI
+                "permission_type": permission_type,
             },
             context="fetch_permissions",
         )
@@ -650,11 +827,22 @@ class ThoughtSpotClient:
     # ── Metadata deletion ──────────────────────────────────────────────────────
 
     async def delete_metadata(self, *, object_ids: list[str], object_type: MetadataType) -> None:
-        """Permanently delete metadata objects. Irreversible."""
+        """
+        Permanently delete metadata objects. Irreversible.
+
+        `deleteMetadata`'s `type` enum is exactly
+        LIVEBOARD | ANSWER | LOGICAL_TABLE | LOGICAL_COLUMN | LOGICAL_RELATIONSHIP.
+        The caller (`deletion_service._execute_delete`) groups by
+        `CachedMetadata.object_type`, whose values also include WORKSHEET,
+        ONE_TO_ONE_LOGICAL, AGGR_WORKSHEET, SQL_VIEW, USER_DEFINED and our own
+        derived DATASET — none of them enum members. They collapse to
+        LOGICAL_TABLE here, exactly as they already do for fetch_permissions.
+        """
+        api_type = LOGICAL_TABLE_SUBTYPES.get(object_type, object_type)
         await self._request(
             "POST",
             "/api/rest/2.0/metadata/delete",
-            json={"metadata": [{"identifier": oid, "type": object_type} for oid in object_ids]},
+            json={"metadata": [{"identifier": oid, "type": api_type} for oid in object_ids]},
             context="delete_metadata",
         )
 
@@ -685,7 +873,13 @@ class ThoughtSpotClient:
         """
         body: dict = {
             "metadata": [{"identifier": oid} for oid in object_ids],
-            "export_associated_objects": "NONE",
+            # `export_associated` (boolean, spec default false). The key used to
+            # be spelled `export_associated_objects` with the value "NONE" —
+            # wrong name AND wrong type, so v2 silently ignored it and the
+            # behaviour was the server default by accident. Sent explicitly so
+            # it is pinned: a backup must contain the object we are deleting,
+            # not its whole dependency tree.
+            "export_associated": False,
             "export_fqn": True,
         }
         if edoc_format is not None:
@@ -774,8 +968,7 @@ class ThoughtSpotClient:
         self,
         *,
         principal_identifier: str,
-        metadata_types: list[str] | None = None,
-        permission_type: str = "DEFINED",
+        default_metadata_type: str | None = None,
     ) -> list[dict]:
         """
         Return everything a principal (user or group) has access to.
@@ -786,18 +979,36 @@ class ThoughtSpotClient:
         the leaving user could see, so we can re-share each item with the
         replacement at the same access level.
 
+        **The request schema has exactly five keys** — `principals` (required),
+        `metadata`, `record_offset`, `record_size`, `default_metadata_type` —
+        and v2 silently ignores anything else. Two keys this used to send were
+        therefore pure no-ops, both measured live on 26.8.0.cl:
+
+          - `permission_type` — not a key on THIS endpoint (it exists only on
+            `security/metadata/fetch-permissions`, 10.3.0.cl+). "DEFINED",
+            "EFFECTIVE" and omitting it returned identical results, i.e. always
+            the effective set, group-inherited access included. The old comment
+            claiming DEFINED meant "direct shares only" was false.
+          - `metadata_type: ["LIVEBOARD"]` — the real key is
+            `default_metadata_type` and it is a SINGLE STRING, not an array.
+            The array form returned all types (23,197 rows); the string form
+            returned 372. Callers needing several types loop.
+
         Returns a flat list of:
-          {metadata_id, metadata_name, metadata_type, share_mode}
+          {metadata_id, metadata_name, metadata_type, share_mode,
+           shared_permission, group_permissions, is_direct_share}
+
+        `share_mode` is the EFFECTIVE permission (`permission` on the wire).
+        `shared_permission` / `group_permissions` are carried through so a
+        caller can tell a share made to this principal by name from one
+        inherited through a group; `is_direct_share` is the derived flag.
         """
         body: dict = {
             "principals": [{"identifier": principal_identifier}],
             "record_size": -1,
-            # DEFINED = direct shares only (transfer-sharing re-shares these);
-            # EFFECTIVE additionally resolves group-inherited access (audit view).
-            "permission_type": permission_type,
         }
-        if metadata_types:
-            body["metadata_type"] = metadata_types
+        if default_metadata_type:
+            body["default_metadata_type"] = default_metadata_type
 
         data = await self._request(
             "POST",
@@ -813,7 +1024,9 @@ class ThoughtSpotClient:
         #     "metadata_type",
         #     "metadata_permissions": [{
         #       "metadata_id", "metadata_name",
-        #       "permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS"
+        #       "permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS",
+        #       "shared_permission": "READ_ONLY" | "MODIFY" | "NO_ACCESS",
+        #       "group_permission": [{"id", "name", "permission"}]
         #     }]
         #   }]
         # }]}
@@ -825,32 +1038,45 @@ class ThoughtSpotClient:
                     permission = item.get("permission", "NO_ACCESS")
                     if permission == "NO_ACCESS":
                         continue
+                    shared = item.get("shared_permission") or ""
+                    group_permissions = item.get("group_permission") or []
                     out.append(
                         {
                             "metadata_id": item.get("metadata_id", ""),
                             "metadata_name": item.get("metadata_name", ""),
                             "metadata_type": metadata_type,
                             "share_mode": permission,
+                            "shared_permission": shared,
+                            "group_permissions": group_permissions,
+                            "is_direct_share": bool(shared) and shared != "NO_ACCESS",
                         }
                     )
         return out
 
-    async def delete_users(self, *, user_identifiers: list[str]) -> None:
+    async def delete_user(self, *, user_identifier: str) -> None:
         """
-        Permanently delete one or more users from the cluster.
+        Permanently delete ONE user from the cluster.
 
-        POST /api/rest/2.0/users/delete
+        POST /api/rest/2.0/users/{user_identifier}/delete — the identifier is a
+        PATH segment and the request carries NO body. 204 No Content on success.
 
-        Each identifier may be a username or a user GUID. Irreversible — the
-        user is removed from every org and every group. Owned content stays
-        but becomes orphan-owned; transfer ownership first if you need to
-        preserve attribution.
+        There is deliberately no bulk variant: `/api/rest/2.0/users/delete`
+        (what this used to POST, with a body of `{"users": [...]}`) is not a
+        route and 404s on every cluster. Callers loop, which they already did —
+        one identifier per call keeps per-user retries isolated.
+
+        The identifier may be a username or a user GUID, so it is percent-encoded
+        before being interpolated: an unescaped `/` or `..` in a username would
+        otherwise rewrite the request path.
+
+        Irreversible — the user is removed from every org and every group. Owned
+        content stays but becomes orphan-owned; transfer ownership first if you
+        need to preserve attribution.
         """
         await self._request(
             "POST",
-            "/api/rest/2.0/users/delete",
-            json={"users": [{"identifier": uid} for uid in user_identifiers]},
-            context="delete_users",
+            f"/api/rest/2.0/users/{quote(user_identifier, safe='')}/delete",
+            context="delete_user",
         )
 
     async def fetch_dependents(

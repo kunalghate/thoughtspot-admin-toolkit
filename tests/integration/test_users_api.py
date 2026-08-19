@@ -279,3 +279,28 @@ class TestDeleteExecute:
         )
         assert r.status_code == 202, r.text
         assert r.json()["total"] == 1
+
+    def test_confirm_admin_delete_reaches_the_service(self, client, seeded, monkeypatch):
+        """
+        `execute_delete` refuses to delete a ThoughtSpot admin unless the caller
+        opts in. Without this plumbing the flag defaulted to False at the router
+        and an admin delete had no override path at all — the guard was a dead
+        end rather than a decision.
+        """
+        seen: list[bool] = []
+
+        async def _capture(*args, **kwargs):
+            seen.append(kwargs["confirm_admin_delete"])
+
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "execute_delete", _capture)
+
+        body = {"cluster_id": "c1", "org_id": 0, "user_guids": ["u-bob"], "user_identifiers": ["bob"]}
+        assert client.post("/api/v1/users/delete/execute", json=body).status_code == 202
+        assert (
+            client.post("/api/v1/users/delete/execute", json={**body, "confirm_admin_delete": True}).status_code == 202
+        )
+
+        # Defaults to refusing, and only opts in when the caller says so.
+        assert seen == [False, True]

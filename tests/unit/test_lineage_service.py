@@ -533,3 +533,172 @@ def test_missing_index_is_backfilled_on_an_existing_database(monkeypatch, tmp_pa
 
     db_module.init_db()  # the backfill runs on every startup
     assert "ix_ts_metadata_cluster_org_guid" in {i["name"] for i in inspect(engine).get_indexes("ts_metadata")}
+
+
+# ── Chunk-task lifecycle + cancellation ─────────────────────────────────────────
+#
+# `_sweep_dependents` creates every chunk task up front and drains with
+# `asyncio.as_completed`. The first task to raise used to propagate straight out
+# of the loop, leaving the rest neither awaited nor cancelled — and control then
+# left `build_object_graph`'s `async with ThoughtSpotClient(...)`, closing httpx
+# underneath still-running coroutines. On a 100-chunk cluster one transient 500
+# left ~99 orphans failing into "Task exception was never retrieved" on the same
+# event loop that serves /health.
+
+
+class _FlakyClient:
+    """search_dependents that raises on one chunk and stalls on the others.
+
+    The stall is the point: without it a fast fake finishes every task before the
+    failure is observed and the leak is invisible.
+    """
+
+    def __init__(self, *, fail_on: str):
+        self._fail_on = fail_on
+        self.started = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def search_dependents(self, *, object_ids, object_type, batch_size=100):
+        import asyncio
+
+        self.started += 1
+        if self._fail_on in object_ids:
+            raise RuntimeError("boom: transient 500 on one chunk")
+        await asyncio.sleep(30)  # never completes on its own
+        return {guid: [] for guid in object_ids}
+
+
+async def test_sweep_failure_leaves_no_orphan_tasks(monkeypatch, in_memory_db, patched_config):
+    """One failing chunk must not orphan the others, and must surface as itself."""
+    import asyncio
+
+    from ts_admin.services import lineage_service
+
+    # Chunk size is 100, so 250 guids → 3 chunks; the failure lands in chunk 2
+    # while chunks 1 and 3 are still in flight.
+    guids = [f"t{i}" for i in range(250)]
+    client = _FlakyClient(fail_on="t150")
+
+    before = {t for t in asyncio.all_tasks() if not t.done()}
+    with pytest.raises(RuntimeError, match="boom: transient 500"):
+        await lineage_service._sweep_dependents(client, guids, _make_job())
+
+    # CRUX: nothing the sweep created is still running once it returns.
+    leaked = {t for t in asyncio.all_tasks() if not t.done()} - before
+    assert leaked == set(), f"{len(leaked)} orphan chunk task(s) survived the failure"
+    assert client.started == 3  # anti-vacuity: all three chunks really were dispatched
+
+
+async def test_sweep_cancel_stops_the_crawl_and_writes_nothing(monkeypatch, in_memory_db, patched_config):
+    """Cancel during the crawl: SyncCancelled unwinds BEFORE delete-before-insert.
+
+    `build_object_graph` rebuilds the object edge tier with a delete followed by
+    an insert. A cancelled sweep holds a partial result, so it must not reach
+    that delete — the previous build has to survive untouched.
+    """
+    import asyncio
+
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+
+    # First build with the canned client: two edges on record.
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: _FakeClient())
+    await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    def _edge_pairs() -> set:
+        with Session(in_memory_db) as session:
+            edges = session.exec(select(CachedDependency).where(CachedDependency.cluster_id == CLUSTER_ID)).all()
+        return {(e.source_guid, e.target_guid) for e in edges}
+
+    assert _edge_pairs() == {("model-1", "table-1"), ("answer-1", "model-1")}
+
+    job_id = _make_job()
+
+    class _CancellingClient(_FakeClient):
+        """Trips the cancel flag as soon as the first chunk lands."""
+
+        async def search_dependents(self, *, object_ids, object_type, batch_size=100):
+            from ts_admin.database import get_session
+            from ts_admin.models.job import Job
+
+            with get_session() as session:
+                job = session.get(Job, job_id)
+                job.is_cancelled = True
+                session.add(job)
+                session.commit()
+            return await super().search_dependents(
+                object_ids=object_ids, object_type=object_type, batch_size=batch_size
+            )
+
+    cancelling = _CancellingClient()
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: cancelling)
+
+    before = {t for t in asyncio.all_tasks() if not t.done()}
+    with pytest.raises(lineage_service.SyncCancelled):
+        await lineage_service.build_object_graph(cluster_id=CLUSTER_ID, org_id=0, job_id=job_id)
+
+    assert {t for t in asyncio.all_tasks() if not t.done()} - before == set()
+    # The committed graph is exactly what it was — nothing deleted, nothing added.
+    assert _edge_pairs() == {("model-1", "table-1"), ("answer-1", "model-1")}
+
+
+async def test_cancelled_dependencies_sync_ends_partial_not_complete(monkeypatch, in_memory_db, patched_config):
+    """The admin-visible contract: cancel a dependencies sync → PARTIAL, never COMPLETE."""
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+    from ts_admin.services import lineage_service
+    from ts_admin.services.sync_service import run_sync
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    job_id = _make_job()
+
+    async def _cancelled_build(*, cluster_id, org_id, job_id, finalize=True):
+        raise lineage_service.SyncCancelled("dependency sweep cancelled after 100 object(s)")
+
+    monkeypatch.setattr(lineage_service, "build_object_graph", _cancelled_build)
+
+    await run_sync(entity_type="dependencies", org_id=0, job_id=job_id, cluster_id=CLUSTER_ID)
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+    assert job.status == "PARTIAL"
+    assert job.get_result()["cancelled"] is True
+
+
+async def test_cancelled_column_pass_does_not_complete_the_job(monkeypatch, in_memory_db, patched_config):
+    """A cancel in Phase 2 must not be swallowed by the `except Exception` that
+    deliberately tolerates a failed column pass — that swallow is exactly what
+    turned a cancel into a COMPLETE job."""
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+    from ts_admin.services import lineage_service
+    from ts_admin.services.sync_service import run_sync
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    job_id = _make_job()
+
+    async def _object_tier(*, cluster_id, org_id, job_id, finalize=True):
+        return 2
+
+    async def _cancelled_columns(*, cluster_id, org_id, job_id, incremental=True):
+        raise lineage_service.SyncCancelled("column map cancelled after 50 object(s)")
+
+    monkeypatch.setattr(lineage_service, "build_object_graph", _object_tier)
+    monkeypatch.setattr(lineage_service, "build_column_map", _cancelled_columns)
+
+    await run_sync(entity_type="dependencies", org_id=0, job_id=job_id, cluster_id=CLUSTER_ID)
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+    assert job.status == "PARTIAL"
+    result = job.get_result()
+    assert result["cancelled"] is True
+    # The object tier IS committed and reported — only the enrichment was dropped.
+    assert result["record_count"] == 2

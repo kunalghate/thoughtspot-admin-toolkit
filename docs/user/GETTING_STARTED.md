@@ -196,8 +196,10 @@ If you are already on the newest version, it tells you so and changes nothing.
 ts-admin-toolkit serve
 ```
 
-Your clusters, credentials, settings, job history and cached data are all kept —
-there is nothing to reconnect or re-sync afterwards.
+Nothing to set up again afterwards. Updating swaps out the program itself; your
+ThoughtSpot instances, your saved sign-ins, and all your synced data (users,
+groups, metadata, lineage, job history) are stored separately — in your home
+folder and your computer's keychain — so an update never touches them.
 
 To see what you are running now: `ts-admin-toolkit --version`. To check for a
 new version without installing it: `ts-admin-toolkit update --check`.

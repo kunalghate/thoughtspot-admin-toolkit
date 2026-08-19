@@ -22,6 +22,7 @@ import {
 import AppShell, { useShell } from "@/components/Shell";
 import { dashboardApi, syncApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { parseUtc } from "@/lib/utils";
 import { typeLabelPlural } from "@/lib/objectTypes";
 import type { DashboardSummary, EntityType } from "@/lib/types";
 
@@ -75,11 +76,6 @@ function retryableEntity(jobType: string): EntityType | null {
   return SYNCABLE_ENTITIES.includes(entity as EntityType) ? (entity as EntityType) : null;
 }
 
-/** Backend sends naive-UTC ISO; parse it as UTC rather than local time. */
-function parseUtc(iso: string): Date {
-  return new Date(iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z");
-}
-
 /** Whole minutes since `iso`, or null when it never happened. */
 function ageMinutes(iso: string | null | undefined): number | null {
   if (!iso) return null;
@@ -124,29 +120,33 @@ function DashboardContent() {
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<Set<string>>(new Set());
-  const cancelled = useRef(false);
+  // Generation counter, not a boolean ref: the effect below resets a boolean to
+  // false in the same commit that the cleanup sets it true, so a shared flag
+  // never rejects anything and a slow read for the PREVIOUS (cluster, org) can
+  // paint its numbers under the new one's Topbar. Same guard the grid pages
+  // use, and it survives being read from a stale `load` closure.
+  const loadIdRef = useRef(0);
 
   const clusterId = activeCluster?.id;
   const orgId = activeOrg?.org_id;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (loadId: number) => {
     if (!clusterId || orgId == null) return;
     try {
       const summary = await dashboardApi.summary(clusterId, orgId);
-      if (cancelled.current) return;
+      if (loadId !== loadIdRef.current) return;
       setData(summary);
       setError(null);
     } catch (e) {
-      if (cancelled.current) return;
+      if (loadId !== loadIdRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [clusterId, orgId]);
 
   useEffect(() => {
-    cancelled.current = false;
+    const loadId = ++loadIdRef.current;
     setData(null);
-    void load();
-    return () => { cancelled.current = true; };
+    void load(loadId);
   }, [load]);
 
   // Poll fast while work is in flight, slowly otherwise — this is also what
@@ -154,7 +154,7 @@ function DashboardContent() {
   const busy = (data?.running_jobs.length ?? 0) > 0 || syncing.size > 0;
   useEffect(() => {
     if (!clusterId || orgId == null) return;
-    const iv = setInterval(() => { void load(); }, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
+    const iv = setInterval(() => { void load(loadIdRef.current); }, busy ? LIVE_POLL_MS : IDLE_POLL_MS);
     return () => clearInterval(iv);
   }, [load, busy, clusterId, orgId]);
 
@@ -163,7 +163,7 @@ function DashboardContent() {
     setSyncing((prev) => new Set(prev).add(entity));
     try {
       await syncApi.trigger(clusterId, orgId, entity);
-      await load();
+      await load(loadIdRef.current);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -178,14 +178,26 @@ function DashboardContent() {
   if (error && !data) return <PageError message={error} />;
   if (!data) return <DashboardSkeleton />;
 
-  const { counts, synced, synced_at, deltas, attention } = data;
+  const { counts, synced, synced_at, attention } = data;
   const neverSynced = !synced.metadata && !synced.users;
   // Server-reported in-flight syncs, OR-ed with the local optimistic set. The
   // local set is per-mount React state, so it is empty after a reload/new tab
   // and cannot be the only source — a healthy multi-minute sync would otherwise
   // render as "Never synced — sync now".
   const inFlight = data.syncing ?? {};
-  const isSyncing = (entity: "users" | "groups" | "metadata") => syncing.has(entity) || inFlight[entity] === true;
+  // `syncing` (the server map) is derived from the IN_PROGRESS SyncLog marker,
+  // which only `_sync_metadata` writes — so for users and groups it is always
+  // false and a first sync rendered "Never synced — sync now" for its whole
+  // run, right below a RunningJobsBar saying the opposite, inviting a second
+  // concurrent sync. `running_jobs` carries `sync:{entity}` for every entity,
+  // so read that too.
+  const runningEntities = new Set(
+    data.running_jobs
+      .map((j) => (j.job_type.startsWith("sync:") ? j.job_type.slice(5) : null))
+      .filter((e): e is string => e !== null),
+  );
+  const isSyncing = (entity: "users" | "groups" | "metadata") =>
+    syncing.has(entity) || inFlight[entity] === true || runningEntities.has(entity);
 
   return (
     <div style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20, maxWidth: 1320 }}>
@@ -212,13 +224,13 @@ function DashboardContent() {
           Failed jobs are NOT a tile: that number already leads the attention
           band, and printing it twice makes the page read as two dashboards. */}
       <div className="dash-tiles">
-        <StatTile icon={Users} label="Users" value={counts.users} delta={deltas.users}
+        <StatTile icon={Users} label="Users" value={counts.users}
                   synced={synced.users} href="/users"
                   onSync={() => triggerSync("users")} syncing={isSyncing("users")} />
-        <StatTile icon={UsersRound} label="Groups" value={counts.groups} delta={deltas.groups}
+        <StatTile icon={UsersRound} label="Groups" value={counts.groups}
                   synced={synced.groups} href="/groups"
                   onSync={() => triggerSync("groups")} syncing={isSyncing("groups")} />
-        <StatTile icon={FolderSearch} label="Content objects" value={counts.objects_total} delta={deltas.metadata}
+        <StatTile icon={FolderSearch} label="Content objects" value={counts.objects_total}
                   synced={synced.metadata} href="/metadata"
                   onSync={() => triggerSync("metadata")} syncing={isSyncing("metadata")} />
         <StatTile icon={Archive} label="Archivable content" value={counts.archivable_total}
@@ -392,10 +404,9 @@ function RunningJobsBar({ jobs }: { jobs: DashboardSummary["running_jobs"] }) {
   );
 }
 
-function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, onSync, syncing }: {
+function StatTile({ icon: Icon, label, value, href, tone, synced, hint, onSync, syncing }: {
   icon: typeof Users; label: string; value: number; href: string;
   tone?: "warn" | "danger";
-  delta?: number;
   /** false → this entity has never synced, so `value` is unknown, not zero. */
   synced?: boolean;
   hint?: string;
@@ -434,14 +445,6 @@ function StatTile({ icon: Icon, label, value, href, tone, delta, synced, hint, o
           <span style={{ fontSize: 26, fontWeight: 700, color: valueColor, fontFamily: theme.font.mono, lineHeight: 1 }}>
             {known ? value.toLocaleString() : "—"}
           </span>
-          {known && delta !== undefined && delta !== 0 && (
-            <span style={{
-              fontSize: 11.5, fontFamily: theme.font.mono,
-              color: delta > 0 ? theme.color.success : theme.color.warn,
-            }}>
-              {delta > 0 ? "+" : ""}{delta.toLocaleString()}
-            </span>
-          )}
         </div>
         {!known && (
           onSync ? (

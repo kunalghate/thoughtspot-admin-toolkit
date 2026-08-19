@@ -172,6 +172,12 @@ class DeleteExecuteRequest(BaseModel):
     org_id: int = 0
     user_guids: list[str]
     user_identifiers: list[str] | None = None  # usernames preferred for TS API
+    # Deleting a ThoughtSpot admin is refused unless the caller opts in, because
+    # it is the one delete that can lock the admin out of their own cluster. The
+    # dry-run reports `admin_count`, so the UI knows to ask. There is no such
+    # escape hatch for deleting the account this toolkit signs in as — that is
+    # refused unconditionally in the service.
+    confirm_admin_delete: bool = False
 
 
 class UserHistoryItem(BaseModel):
@@ -538,6 +544,7 @@ async def delete_execute(
             "org_id": body.org_id,
             "user_guids": body.user_guids,
             "user_identifiers": body.user_identifiers,
+            "confirm_admin_delete": body.confirm_admin_delete,
         },
     )
     background_tasks.add_task(
@@ -547,5 +554,6 @@ async def delete_execute(
         org_id=body.org_id,
         user_guids=body.user_guids,
         user_identifiers=body.user_identifiers,
+        confirm_admin_delete=body.confirm_admin_delete,
     )
     return JobAcceptedResponse(job_id=job_id, total=len(body.user_guids))

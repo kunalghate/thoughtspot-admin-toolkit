@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { sharingApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
+import { formatAbsolute } from "@/lib/utils";
 import type { SharingHistoryItem } from "@/lib/types";
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
@@ -101,7 +102,7 @@ export function SharingHistoryTab({
                 padding: "10px 14px", fontSize: 12, alignItems: "center",
                 borderBottom: `1px solid ${theme.color.border}`, fontFamily: theme.font.sans,
               }}>
-                <div style={{ color: theme.color.textMuted }}>{new Date(r.executed_at).toLocaleString()}</div>
+                <div style={{ color: theme.color.textMuted }}>{formatAbsolute(r.executed_at)}</div>
                 <div style={{ textAlign: "right", color: theme.color.textPrimary }}>{r.object_count}</div>
                 <div style={{ textAlign: "right", color: theme.color.textPrimary }}>{r.principal_count}</div>
                 <div style={{ textAlign: "right", color: theme.color.textPrimary }}>{r.succeeded}</div>

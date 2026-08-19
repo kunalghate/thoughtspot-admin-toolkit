@@ -530,3 +530,95 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   sustained 30s export timeouts and retry backoff. Not corrupting — each pass is a
   full delete-and-rebuild scoped to (cluster, org), so last writer wins with a
   complete set — but it is self-inflicted load. Filed as S34.
+
+## ThoughtSpot REST v2 — facts established against the official reference
+
+Established 2026-08-18 by querying the ThoughtSpot REST API v2 reference
+(SpotterCode MCP) and confirming against a live cluster — not from training
+data, and not by reading our own client back to ourselves. Re-check with the
+same tool rather than assuming these still hold.
+
+- **A bearer token's org context is fixed at creation time and cannot be
+  re-scoped per request.** `auth/token/full` returns `scope: {access_type,
+  org_id}`; `auth/token/object`'s request documents `org_id` as "ID of the Org
+  context to log in to … if the Org ID is not specified and secret key is
+  provided then user will be logged into the org corresponding to the secret
+  key, and if secret key is not provided then user will be logged in to the Org
+  context of their previous login session." Consequence for us: `BearerTokenAuth`
+  dropping `org_id` (S37) is NOT fixable by adding an `org_id` field — the token
+  is what it is, and minting a new one needs username+password or a secret key,
+  the very credentials bearer auth exists to avoid.
+- **The org a session is really operating in IS observable, for every auth
+  type.** `GET /api/rest/2.0/auth/session/user` returns `current_org: {id,
+  name}` alongside the user's `orgs` list. Measured live on se-demo:
+  `current_org = {id: 0, name: "Primary"}` with ~190 orgs listed. This is the
+  mechanism for an auth-type-agnostic org guard (S42).
+- **`GET /api/rest/2.0/auth/session/token` does NOT carry an org scope.**
+  Measured live: it returns `token`, `creation_time_in_millis`,
+  `expiration_time_in_millis`, `valid_for_user_id`, `valid_for_username` — no
+  `scope` object, despite `scope` appearing in the token-*creation* responses.
+  So token introspection is not a route to "which org is this token for".
+- **Caveat on `orgs` vs `current_org`:** the reference warns that a user with
+  cluster administration privileges can access all Orgs, but the `orgs` list in
+  the session response includes only the Primary Org unless the admin was
+  explicitly added to each Org. Any org check must read `current_org`, never
+  membership.
+
+### v2 request/response facts measured on a live cluster (2026-08-18)
+
+- **v2 silently ignores unknown request-body keys.** Verified by sending
+  `totally_made_up_key_zzz` to `security/principals/fetch-permissions` and
+  getting byte-identical results. Consequence: an invented key is a **no-op
+  that reads like a working filter**, never an error. This is why three wrong
+  keys shipped unnoticed (`permission_type` and `metadata_type` on the
+  principals endpoint, `export_associated_objects` on tml/export).
+- **`permission_type` is a real key on `security/metadata/fetch-permissions`
+  (10.3.0.cl+) and does not exist on `security/principals/fetch-permissions`.**
+  Do not generalise from one to the other. On the metadata endpoint the values
+  differ enormously: measured on ps-internal-prod, 15 of 15 sampled liveboards
+  returned `DEFINED = 0` while `EFFECTIVE = 129-139`. Almost nothing on a real
+  cluster is shared directly; access is via group membership. Any UI showing
+  only DEFINED must say so or it reports "no one has access" about content the
+  whole company can read.
+- **`default_metadata_type` is a SINGLE STRING, not an array** (the principals
+  endpoint's real type filter). Measured: array-under-the-wrong-key form
+  returned 23,197 rows across 5 types; correct string form returned 372.
+  `LOGICAL_COLUMN` dominates real results — 20,425 of those 23,197 for one user.
+- **`metadata/tml/export` failures are PER-OBJECT, not all-or-nothing.** A
+  60-object batch returned HTTP 200 with 58 `info.status.status_code == "OK"`
+  and 2 `"ERROR"` carrying `info.status.error_message`. The only all-or-nothing
+  case is an **unresolvable GUID**, which 400s the whole batch and NAMES the
+  offending GUID in `error.message.debug` — the same structure
+  `client._unresolvable_guids()` already parses for 404s.
+- **`users/search` and `groups/search` are NOT scoped by the token's org.**
+  Measured with the session in org 0: unfiltered 622 users / 1250 groups;
+  `org_identifiers: [0]` gives 362 / 236. So passing `org_id` to auth changes
+  nothing for these two, and `_sync_users`/`_sync_groups` not passing it is
+  correct rather than a bug. `metadata/search` has no org parameter at all, so
+  for it the token IS the only mechanism — the three handlers look inconsistent
+  and each is right for its endpoint.
+- **`metadata/search` has no total-count field** — the response is a bare array
+  with no envelope, so `len(page) < page_size` is the only termination signal.
+  `record_size: -1` works; the default is 10.
+- **`security/metadata/share` returns a bare 204** with no per-object or
+  per-principal status, and no bulk-share endpoint provides one. A share can
+  only be verified by reading permissions back (S44).
+
+- **2026-08-18 (process): the SpotterCode MCP main endpoint began requiring
+  authentication mid-session.** `https://spottercode.thoughtspot.app/mcp` returns
+  `{"error":"invalid_token", "error_description":"Authentication is now required
+  … this endpoint was previously open"}`, so `execute-thoughtspot-code` —
+  live-cluster verification — is unavailable to an unauthenticated agent. The
+  read-only docs tools remain open at `/mcp/docs` and can be driven over plain
+  `curl` with the MCP JSON-RPC handshake (`initialize` → capture
+  `mcp-session-id` → `notifications/initialized` → `tools/call`). Any brief that
+  assumes an agent can verify against a live cluster via MCP needs re-scoping
+  until the client is re-authenticated; verify from the repo's own
+  `ThoughtSpotClient` against a configured cluster instead.
+- **2026-08-18: `release_version` is documented NULLABLE and the reference's own
+  example value is the literal string `"test"`.** Any version gate must fail
+  OPEN — treat unparseable or absent as current — or a real SW/dev cluster
+  silently loses whatever the gate protects. `_parse_release_version`
+  (`client.py:113`) returns `None` for `"test"`, `""`, `"10"`, `"v10.11.0"` and
+  non-ASCII digits (`str.isdigit()` is True for superscripts that `int()`
+  rejects, hence the `isascii()` guard).

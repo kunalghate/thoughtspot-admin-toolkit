@@ -53,6 +53,10 @@ export interface Job {
   error: string | null;
   error_type: string | null;
   error_traceback: string | null;
+  /** Cancellation was requested. Flips before the job stops — the crawl loops
+   *  check it at page/chunk boundaries, so a cancelled job is RUNNING with this
+   *  true until the in-flight call to ThoughtSpot returns, then lands PARTIAL. */
+  is_cancelled: boolean;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -131,6 +135,11 @@ export interface PermissionsResponse {
   ts_guid: string;
   object_name: string;
   permissions: Permission[];
+  /** Everyone who can actually reach the object, group membership resolved.
+   *  `permissions` above lists only DIRECT shares, which on a real cluster is
+   *  usually empty — so this is what stops the drawer reporting "no one has
+   *  access" about content the whole company can open. */
+  effective_count: number;
 }
 
 // ── API response wrappers ─────────────────────────────────────────────────────
@@ -160,6 +169,11 @@ export interface MetadataListResponse extends PaginatedResponse<MetadataObject> 
   hidden_system_count: number;
 }
 
+/**
+ * Page-numbered envelope. Only `/metadata` uses this — every other paginated
+ * endpoint sends `record_offset` and wants `OffsetPaginatedResponse`. Declaring
+ * `page` on those made the type promise a field that arrives `undefined`.
+ */
 export interface PaginatedResponse<T> {
   items: T[];
   total: number;
@@ -422,10 +436,20 @@ export interface SharingPreviewRow {
   will_change: boolean;
 }
 
+export interface SharingSkippedObject {
+  object_guid: string;
+  reason: string;
+}
+
 export interface SharingPreviewResponse {
   items: SharingPreviewRow[];
   total: number;
   will_change_count: number;
+  /** Objects the request named that are not in the metadata cache for this
+   *  (cluster, org) — the share will not touch them. Preview and execute
+   *  resolve through the same path, so this is exactly what execute skips. */
+  skipped?: SharingSkippedObject[];
+  skipped_count?: number;
 }
 
 export interface SharingHistoryItem {
@@ -580,7 +604,6 @@ export interface DashboardSummary {
    *  "never synced". Optional: older backends omit it. */
   syncing?: Partial<Record<EntityType, boolean>>;
   /** Change in record count since the previous successful sync of each entity. */
-  deltas: Partial<Record<EntityType, number>>;
   attention: DashboardAttention;
   recent_jobs: DashboardJob[];
   running_jobs: DashboardRunningJob[];

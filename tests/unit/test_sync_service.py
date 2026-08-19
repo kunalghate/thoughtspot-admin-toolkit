@@ -11,6 +11,7 @@ could never help — the credentials were always valid.
 from __future__ import annotations
 
 import pytest
+import respx
 from sqlmodel import create_engine
 
 from ts_admin.services import connection_status
@@ -514,9 +515,24 @@ def _meta_obj(guid: str, object_type: str):
     )
 
 
-def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = None, exc: BaseException | None = None):
+def _install_metadata_client(
+    monkeypatch,
+    pages,
+    *,
+    raise_after: int | None = None,
+    exc: BaseException | None = None,
+    release_version: str | None = "26.8.0.cl",
+    probe_exc: BaseException | None = None,
+) -> dict:
     """Fake ThoughtSpotClient whose search_metadata yields `pages`, optionally
-    raising `exc` after `raise_after` pages to simulate an interrupted crawl."""
+    raising `exc` after `raise_after` pages to simulate an interrupted crawl.
+
+    `test_connection` is part of the fake because `_sync_metadata` probes the
+    cluster's release version to decide which subtypes it may ask for; pass
+    `probe_exc` to make that probe fail. Returns a dict the caller can read the
+    recorded probe/crawl arguments back out of.
+    """
+    recorded: dict = {"release_version_passed": "<not called>", "probes": 0}
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -528,7 +544,14 @@ def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = No
         async def __aexit__(self, *exc_info):
             return False
 
-        async def search_metadata(self):
+        async def test_connection(self):
+            recorded["probes"] += 1
+            if probe_exc is not None:
+                raise probe_exc
+            return {"release_version": release_version or "unknown", "url": "https://prod.thoughtspot.cloud"}
+
+        async def search_metadata(self, *, release_version=None):
+            recorded["release_version_passed"] = release_version
             for idx, page in enumerate(pages):
                 if raise_after is not None and idx >= raise_after:
                     raise exc or TSConnectionError("upstream dropped the connection mid-crawl")
@@ -539,6 +562,7 @@ def _install_metadata_client(monkeypatch, pages, *, raise_after: int | None = No
         lambda self, org_id=None: None,
     )
     monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+    return recorded
 
 
 # WHY THESE TESTS INTERRUPT WITH CancelledError, NOT TSConnectionError
@@ -923,3 +947,707 @@ async def test_run_sync_rejects_an_unknown_cluster_id(monkeypatch, in_memory_db,
     assert called is False
     status, _ = _job_status(job_id)
     assert status == "FAILED"
+
+
+def test_sync_log_keeps_no_history_so_there_is_no_record_count_trend(in_memory_db, patched_config):
+    """
+    `sync_log` is a CURRENT-STATE table, not a time series.
+
+    Every writer upserts the single (cluster_id, org_id, entity_type) row and
+    none append, so "the two most recent successful syncs" is never two rows.
+    `dashboard_service` used to diff exactly that and therefore reported a delta
+    of 0 unconditionally — the Dashboard's trend indicator never rendered once.
+    The dead field is gone; this test is why it cannot come back as a second
+    query. Restoring it needs a stored previous count, not more SELECTs.
+
+    (The bound also matters on its own: `sync_log` has only single-column
+    indexes, which is acceptable only because it stays clusters x orgs x
+    entities in size.)
+    """
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+    from ts_admin.services.sync_service import _write_sync_log
+
+    for count in (356, 360, 411):
+        _write_sync_log("users", 0, status="SUCCESS", record_count=count, cluster_id=CLUSTER_ID)
+
+    with get_session() as session:
+        rows = session.exec(select(SyncLog).where(SyncLog.entity_type == "users")).all()
+
+    assert len(rows) == 1, "a writer started appending — sync_log is no longer bounded"
+    assert rows[0].record_count == 411  # anti-vacuity: the writes DID happen
+
+
+# ── Cache purge: rows deleted upstream (P2) ───────────────────────────────────
+#
+# Every sync was upsert-only except `_sync_groups`. A user deprovisioned in
+# ThoughtSpot by any route other than this toolkit (IdP/SCIM, the TS admin UI)
+# therefore stayed in the grid, in the inactive-user count and in the sharing
+# principal picker forever — and `dashboard_service`'s "orphaned content" signal,
+# defined as "owner not in ts_users", could never fire, so the one card built for
+# exactly this case read 0 and showed an all-clear.
+
+
+def _fake_user(guid: str, *, status: str = "ACTIVE"):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        id=guid,
+        name=f"user-{guid}",
+        display_name=f"User {guid}",
+        email=f"{guid}@example.io",
+        status=SimpleNamespace(value=status),
+        created=now,
+        modified=now,
+    )
+
+
+def _users_client(pages: list[list], monkeypatch):
+    """Install a fake ThoughtSpotClient whose search_users yields `pages`.
+
+    `pages` is captured by reference so a test can mutate it between syncs — the
+    purge is only observable across two sweeps.
+    """
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_users(self, *, org_id):
+            for page in pages:
+                yield page
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+
+def _cached_user_guids() -> set[str]:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_user import CachedUser
+
+    with get_session() as session:
+        return set(session.exec(select(CachedUser.ts_guid).where(CachedUser.cluster_id == CLUSTER_ID)).all())
+
+
+def _org_memberships() -> set[tuple[str, int]]:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_user import UserOrgMembership
+
+    with get_session() as session:
+        rows = session.exec(select(UserOrgMembership).where(UserOrgMembership.cluster_id == CLUSTER_ID)).all()
+    return {(r.ts_guid, r.org_id) for r in rows}
+
+
+@pytest.mark.anyio
+async def test_user_sync_purges_principals_absent_from_the_sweep(monkeypatch, in_memory_db, patched_config):
+    """A user gone upstream must leave BOTH ts_users and user_org_memberships."""
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _cached_user_guids() == {"u1", "u2"}
+    assert _org_memberships() == {("u1", 0), ("u2", 0)}
+
+    # u2 was deprovisioned in ThoughtSpot between syncs.
+    pages[:] = [[_fake_user("u1")]]
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    assert _cached_user_guids() == {"u1"}
+    assert _org_memberships() == {("u1", 0)}
+
+
+@pytest.mark.anyio
+async def test_user_sync_empty_sweep_deletes_nothing(monkeypatch, in_memory_db, patched_config):
+    """The `_sync_groups:280` guard, applied to users.
+
+    SQLAlchemy renders `not_in(<empty>)` as `NOT IN (NULL) OR (1 = 1)` — always
+    true — so an unguarded purge would empty the whole cache on one blank page
+    (wrong org context, transient upstream blip). A zero-result response is
+    indistinguishable from "the org really has no users", and guessing wrong here
+    is unrecoverable without a full re-sync.
+    """
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _cached_user_guids() == {"u1", "u2"}
+
+    pages[:] = []
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    assert _cached_user_guids() == {"u1", "u2"}
+    assert _org_memberships() == {("u1", 0), ("u2", 0)}
+
+
+@pytest.mark.anyio
+async def test_user_sync_keeps_members_of_other_orgs(monkeypatch, in_memory_db, patched_config):
+    """The purge is org-aware, and this is the part that could break a live cluster.
+
+    `ts_users` is cluster-scoped while the sweep is org-scoped (`search_users`
+    filters client-side off each record's own org list), so a naive
+    `not_in(seen_guids)` on ts_users would delete every user who happens to
+    belong only to a DIFFERENT org — silent, cross-org data loss on any
+    multi-org cluster. Deleting only users with no membership left anywhere on
+    the cluster is what makes that impossible.
+    """
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    # u1 + u2 are in org 0; then org 7 is synced and has u2 + u3.
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    pages[:] = [[_fake_user("u2"), _fake_user("u3")]]
+    await run_sync(entity_type="users", org_id=7, job_id=_make_job("users"))
+    assert _cached_user_guids() == {"u1", "u2", "u3"}
+
+    # Re-sync org 0 with u2 removed from THAT org (still on the cluster, in org 7).
+    pages[:] = [[_fake_user("u1")]]
+    job_id = _make_job("users")
+    await run_sync(entity_type="users", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    # u2 lost only its org-0 membership; u3 was never in the org-0 sweep at all.
+    assert _org_memberships() == {("u1", 0), ("u2", 7), ("u3", 7)}
+    assert _cached_user_guids() == {"u1", "u2", "u3"}
+
+
+@pytest.mark.anyio
+async def test_purged_owner_makes_orphaned_content_visible(monkeypatch, in_memory_db, patched_config):
+    """The end-to-end reason the purge matters.
+
+    `dashboard_service._attention` defines orphaned_content as "owner not in
+    ts_users". With no purge that predicate was unsatisfiable, so the Needs
+    Attention card showed an all-clear precisely when an owner had been
+    deprovisioned — the one situation it exists to catch.
+    """
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session
+
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services.dashboard_service import DashboardService
+
+    pages: list[list] = [[_fake_user("u1"), _fake_user("u2")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+
+    # A liveboard owned by u2.
+    with Session(in_memory_db) as session:
+        session.add(
+            CachedMetadata(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                ts_guid="lb-1",
+                name="Q3 Revenue",
+                object_type="LIVEBOARD",
+                owner_guid="u2",
+                owner_name="User u2",
+                synced_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    def _orphaned() -> int:
+        with Session(in_memory_db) as session:
+            return DashboardService._attention(
+                session,
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                synced={"users": True, "groups": False, "metadata": True},
+            )["orphaned_content"]
+
+    assert _orphaned() == 0  # owner still known — anti-vacuity for the assert below
+
+    pages[:] = [[_fake_user("u1")]]
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+
+    assert _orphaned() == 1
+
+
+@pytest.mark.anyio
+async def test_tag_sync_purges_deleted_tags_and_guards_the_empty_sweep(monkeypatch, in_memory_db, patched_config):
+    """Tags get the same treatment as groups: purge on a real sweep, never on an
+    empty one. `search_tags()` is a single complete org-scoped list and CachedTag
+    is (cluster, org)-keyed, so the sweep and the delete scope line up exactly."""
+    from types import SimpleNamespace
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_tag import CachedTag
+
+    tags: list = [
+        SimpleNamespace(id="t1", name="Certified", color="#0f0"),
+        SimpleNamespace(id="t2", name="Deprecated", color="#f00"),
+    ]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_tags(self):
+            return list(tags)
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    def _tag_guids(org_id: int = 0) -> set[str]:
+        with get_session() as session:
+            return set(
+                session.exec(
+                    select(CachedTag.ts_guid).where(CachedTag.cluster_id == CLUSTER_ID, CachedTag.org_id == org_id)
+                ).all()
+            )
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="tags", org_id=0, job_id=_make_job("tags"))
+    assert _tag_guids() == {"t1", "t2"}
+
+    # The same tags exist in another org — the purge must not reach across.
+    await run_sync(entity_type="tags", org_id=7, job_id=_make_job("tags"))
+
+    tags[:] = [SimpleNamespace(id="t1", name="Certified", color="#0f0")]
+    job_id = _make_job("tags")
+    await run_sync(entity_type="tags", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _tag_guids() == {"t1"}
+    assert _tag_guids(org_id=7) == {"t1", "t2"}
+
+    # Empty sweep: keep the cache.
+    tags[:] = []
+    job_id = _make_job("tags")
+    await run_sync(entity_type="tags", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _tag_guids() == {"t1"}
+
+
+# ── Cancellation is real, not a 204 that cancels nothing (P3) ─────────────────
+#
+# DELETE /jobs/{id}/cancel set is_cancelled and returned 204, but nothing in
+# sync_service or lineage_service ever read the flag. An admin who cancelled a
+# 30-minute crawl on the wrong org got a 204 while it ran to completion hammering
+# the cluster, then reported COMPLETE.
+
+
+def _cancel(job_id: str) -> None:
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        job.is_cancelled = True
+        session.add(job)
+        session.commit()
+
+
+def _sync_log_status(entity_type: str, org_id: int = 0) -> str | None:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.sync_log import SyncLog
+
+    with get_session() as session:
+        row = session.exec(
+            select(SyncLog).where(
+                SyncLog.cluster_id == CLUSTER_ID,
+                SyncLog.org_id == org_id,
+                SyncLog.entity_type == entity_type,
+            )
+        ).first()
+    return row.status if row else None
+
+
+@pytest.mark.anyio
+async def test_cancelled_metadata_sync_does_not_end_complete(monkeypatch, in_memory_db, patched_config):
+    """Cancel a running metadata sync at a page boundary.
+
+    Two things have to hold. The job must NOT read COMPLETE — it processed a
+    prefix of the pages, and COMPLETE claims it processed all of them. And the
+    metadata sync_log must stay non-SUCCESS: `_sync_metadata` deletes the org's
+    rows before it re-pages, so a cancel leaves a genuinely TRUNCATED cache that
+    `require_authoritative_metadata` has to keep refusing.
+    """
+    from types import SimpleNamespace
+
+    from ts_admin.ts_client.exceptions import StaleCacheError
+
+    holder: dict = {}
+    pages_fetched = 0
+
+    def _obj(guid: str):
+        return SimpleNamespace(
+            id=guid,
+            name=f"obj-{guid}",
+            type=SimpleNamespace(value="LIVEBOARD"),
+            owner_id="u1",
+            author_name="Alice",
+            tags=[],
+            created=None,
+            modified=None,
+            last_accessed=None,
+            view_count=0,
+        )
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def test_connection(self):
+            return {"release_version": "26.8.0.cl", "url": "https://prod.thoughtspot.cloud"}
+
+        async def search_metadata(self, *, release_version=None):
+            nonlocal pages_fetched
+            for guid in ("a", "b", "c"):
+                pages_fetched += 1
+                yield [_obj(guid)]
+                # The admin hits cancel while page 1 is being written.
+                _cancel(holder["job_id"])
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    from ts_admin.services.sync_service import run_sync
+
+    holder["job_id"] = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=holder["job_id"])
+
+    status, _ = _job_status(holder["job_id"])
+    assert status == "PARTIAL", "a cancelled sync must not report COMPLETE"
+    assert status != "COMPLETE"
+    # It actually stopped early rather than draining all three pages.
+    assert pages_fetched == 2
+
+    assert _sync_log_status("metadata") == "FAILED"
+    with pytest.raises(StaleCacheError):
+        from ts_admin.services.sync_status import require_authoritative_metadata
+
+        require_authoritative_metadata(cluster_id=CLUSTER_ID, org_id=0)
+
+
+@pytest.mark.anyio
+async def test_cancelled_group_sync_skips_the_purge(monkeypatch, in_memory_db, patched_config):
+    """A cancelled sweep must never purge.
+
+    `seen_guids` then holds only the pages the crawl reached, so purging would
+    delete every group it never got to — turning "stop early" into data loss.
+    """
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_group import CachedGroup
+
+    now = datetime.now(timezone.utc)
+    holder: dict = {}
+
+    def _group(guid: str):
+        return SimpleNamespace(
+            id=guid,
+            name=f"group-{guid}",
+            display_name=f"Group {guid}",
+            description="",
+            privileges=[],
+            member_users=[],
+            author_id="u-creator",
+            created=now,
+            modified=now,
+        )
+
+    cancel_after_first_page = False
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_groups(self, *, org_id):
+            yield [_group("g1")]
+            if cancel_after_first_page:
+                _cancel(holder["job_id"])
+            yield [_group("g2")]
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+    def _group_guids() -> set[str]:
+        with get_session() as session:
+            return set(session.exec(select(CachedGroup.ts_guid).where(CachedGroup.cluster_id == CLUSTER_ID)).all())
+
+    from ts_admin.services.sync_service import run_sync
+
+    holder["job_id"] = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=holder["job_id"])
+    assert _group_guids() == {"g1", "g2"}
+
+    cancel_after_first_page = True
+    holder["job_id"] = _make_job("groups")
+    await run_sync(entity_type="groups", org_id=0, job_id=holder["job_id"])
+
+    assert _job_status(holder["job_id"])[0] == "PARTIAL"
+    # g2 was never reached by the cancelled sweep — it must still be cached.
+    assert _group_guids() == {"g1", "g2"}
+
+
+# ── One metadata spec's failure must not destroy the whole sync (W3) ──────────
+#
+# `search_metadata` issues seven independent `metadata/search` requests. A
+# failure in one used to propagate out of the generator and take the whole sync
+# with it — discarding the specs that had already succeeded, so an admin could
+# end with NO metadata cache rather than a partial one. The reachable trigger is
+# the `SQL_VIEW` subtype, which the v2 reference tags "Version: 10.11.0.cl or
+# later" while we query it unconditionally.
+#
+# These tests drive the REAL ThoughtSpotClient over respx rather than the fake
+# above: the spec loop under test lives in the client, and a fake client would
+# assert the fix into existence instead of exercising it.
+
+PROD_URL = "https://prod.thoughtspot.cloud"
+
+
+def _wire_obj(guid: str) -> dict:
+    """A metadata/search record, in the shape the live endpoint returns."""
+    return {
+        "metadata_id": guid,
+        "metadata_name": f"obj-{guid}",
+        "metadata_header": {"id": guid, "name": f"obj-{guid}", "author": "u1", "authorDisplayName": "Alice"},
+    }
+
+
+def _install_live_metadata_cluster(
+    monkeypatch,
+    *,
+    release_version: str = "26.8.0.cl",
+    rows: dict[str, list] | None = None,
+    fail_on: str | None = None,
+) -> list[str]:
+    """Route /system and /metadata/search at respx. Returns the list that records
+    every spec reaching the wire, so a *skipped* spec is observable."""
+    import json as _json
+
+    import httpx
+
+    from ts_admin.ts_client.auth import BearerTokenAuth
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        metadata_filter = _json.loads(request.content)["metadata"][0]
+        subtypes = metadata_filter.get("subtypes")
+        spec = subtypes[0] if subtypes else metadata_filter["type"]
+        seen.append(spec)
+        if spec == fail_on:
+            return httpx.Response(400, json={"error": {"message": "Invalid parameter values: subtypes"}})
+        return httpx.Response(200, json=(rows or {}).get(spec, []))
+
+    respx.get(f"{PROD_URL}/api/rest/2.0/system").mock(
+        return_value=httpx.Response(200, json={"release_version": release_version, "name": "prod"})
+    )
+    respx.post(f"{PROD_URL}/api/rest/2.0/metadata/search").mock(side_effect=handler)
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: BearerTokenAuth(token="t"),
+    )
+    return seen
+
+
+def _job_result(job_id: str) -> dict | None:
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        return job.get_result()
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_a_failing_metadata_spec_keeps_what_the_other_specs_fetched(monkeypatch, in_memory_db, patched_config):
+    """The W3 bug end to end: SQL_VIEW 400s, everything else still lands."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    seen = _install_live_metadata_cluster(
+        monkeypatch,
+        rows={"LIVEBOARD": [_wire_obj("lb-1")], "ANSWER": [_wire_obj("a-1")], "WORKSHEET": [_wire_obj("w-1")]},
+        fail_on="SQL_VIEW",
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    # The specs that worked are cached — the whole point of the change.
+    assert {r.ts_guid for r in _metadata_rows()} == {"lb-1", "a-1", "w-1"}
+    # USER_DEFINED is issued AFTER SQL_VIEW: the crawl continued past the failure.
+    assert seen[-1] == "USER_DEFINED"
+
+    # …and the cache is not certified. A spec that never ran means a whole class
+    # of object is missing from a cache `_sync_metadata` had already emptied.
+    status, _ = _job_status(job_id)
+    assert status == "PARTIAL"
+    assert status != "COMPLETE"
+    result = _job_result(job_id)
+    assert result["record_count"] == 3
+    assert [f for f in result["failed_specs"] if f.startswith("SQL_VIEW")] == result["failed_specs"]
+    assert _metadata_marker_status() == "FAILED"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is False
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_a_clean_metadata_sync_is_still_certified(monkeypatch, in_memory_db, patched_config):
+    """Anti-vacuity for the test above: PARTIAL is conditional, not the new normal."""
+    from ts_admin.services.sync_status import metadata_is_authoritative
+
+    _install_live_metadata_cluster(monkeypatch, rows={"LIVEBOARD": [_wire_obj("lb-1")]})
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _metadata_marker_status() == "SUCCESS"
+    assert metadata_is_authoritative(cluster_id=CLUSTER_ID, org_id=0) is True
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_an_old_cluster_never_sends_the_sql_view_subtype(monkeypatch, in_memory_db, patched_config):
+    """The version gate, driven from the cluster's own /system response: below
+    10.11 the out-of-enum value must not reach the wire at all."""
+    seen = _install_live_metadata_cluster(
+        monkeypatch,
+        release_version="10.10.0.cl",
+        rows={"LIVEBOARD": [_wire_obj("lb-1")]},
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert "SQL_VIEW" not in seen
+    assert "USER_DEFINED" in seen  # the specs either side of it still ran
+    assert {r.ts_guid for r in _metadata_rows()} == {"lb-1"}
+    # A skipped spec is an unfetched spec, so this crawl is not a complete one.
+    assert _job_status(job_id)[0] == "PARTIAL"
+    assert _job_result(job_id)["failed_specs"] == ["SQL_VIEW: not supported before release 10.11.0"]
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_a_current_cluster_still_gets_its_sql_views(monkeypatch, in_memory_db, patched_config):
+    """Both live clusters are 26.8 — the gate must be invisible to them."""
+    seen = _install_live_metadata_cluster(
+        monkeypatch,
+        release_version="26.8.0.cl",
+        rows={"SQL_VIEW": [_wire_obj("sv-1")]},
+    )
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    assert "SQL_VIEW" in seen
+    assert {r.ts_guid for r in _metadata_rows()} == {"sv-1"}
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+
+@pytest.mark.anyio
+async def test_the_cluster_release_version_reaches_the_spec_gate(monkeypatch, in_memory_db, patched_config):
+    """Plumbing: whatever /system reports is what decides the specs."""
+    recorded = _install_metadata_client(monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], release_version="10.11.0.sw")
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="metadata", org_id=0, job_id=_make_job("metadata"))
+
+    assert recorded["probes"] == 1
+    assert recorded["release_version_passed"] == "10.11.0.sw"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"probe_exc": TSConnectionError("cluster unreachable")}, "the probe request failed"),
+        ({"release_version": None}, "the cluster reported no version at all"),
+    ],
+)
+async def test_an_unknown_release_version_does_not_disable_the_spec(
+    monkeypatch, in_memory_db, patched_config, kwargs, reason
+):
+    """Fail-open, and fail-open all the way down: an unreadable version must not
+    cost a current cluster its SQL views, and must not fail the sync either."""
+    recorded = _install_metadata_client(monkeypatch, [[_meta_obj("lb-1", "LIVEBOARD")]], **kwargs)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    # None is what `search_metadata` reads as "assume current" — see
+    # `_supports_subtype`, which issues every spec for it.
+    assert recorded["release_version_passed"] is None, reason
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _metadata_marker_status() == "SUCCESS"

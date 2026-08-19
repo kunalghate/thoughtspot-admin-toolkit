@@ -15,9 +15,19 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sync", tags=["sync"])
 
+# The entities a caller may sync. This is BOTH the trigger allowlist and the
+# render set for GET /sync, so an entry with no handler in
+# `sync_service.sync_handlers()` is a double lie: POST /sync/{entity} returns a
+# job id for a job that has already failed, and the status list carries a row
+# that can never leave NOT_SYNCED. `tests/unit/test_sync_entities.py` asserts
+# the two sets agree in both directions — "permissions" was listed here for
+# months with no handler behind it.
+#
 # "dependencies" (lineage graph) is a valid explicit sync target but is
 # deliberately excluded from trigger_sync_all — it is heavy and gated per ADR-005.
-VALID_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "permissions", "dependencies"}
+VALID_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "dependencies"}
+# Everything POST /sync/all fans out to. A strict subset of VALID_ENTITIES.
+STANDARD_ENTITIES = {"users", "groups", "metadata", "tags", "orgs"}
 
 
 # ── Response models ────────────────────────────────────────────────────────────
@@ -145,15 +155,14 @@ async def trigger_sync_all(
     org_id: int = 0,
     cluster_id: str | None = None,
 ) -> list[SyncTriggeredResponse]:
-    """Trigger sync for all standard entities (excludes permissions — too heavy)."""
+    """Trigger sync for all standard entities (excludes dependencies — too heavy)."""
     from ts_admin.services.job_service import create_job
     from ts_admin.services.sync_service import run_sync
 
     cluster_id = _resolve_cluster_id(cluster_id)
-    standard_entities = {"users", "groups", "metadata", "tags", "orgs"}
     results = []
 
-    for entity in standard_entities:
+    for entity in sorted(STANDARD_ENTITIES):
         job_id = create_job(
             job_type=f"sync:{entity}",
             parameters={

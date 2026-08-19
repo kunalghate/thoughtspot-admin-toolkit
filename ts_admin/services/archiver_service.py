@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 from sqlalchemy import asc, desc, func, nulls_last
@@ -28,6 +29,14 @@ from ts_admin.services.deletion_service import (
     _fetch_objects_by_guids,
 )
 from ts_admin.services.metadata_service import ARCHIVABLE_TYPES
+from ts_admin.ts_client.exceptions import (
+    TSAdminError,
+    TSAuthenticationError,
+    TSInsufficientPrivilegesError,
+)
+
+if TYPE_CHECKING:  # import only for annotations — the runtime import stays deferred
+    from ts_admin.models.archive_record import ArchiveRecord
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +512,7 @@ async def execute(
 
             succeeded = 0
             failed_ids: list[str] = []
+            first_error = ""
 
             for chunk in _chunks(object_ids, 50):
                 try:
@@ -510,54 +520,97 @@ async def execute(
                         await client.assign_tag(object_ids=chunk, tag_id=tag.id)
                     else:
                         await client.unassign_tag(object_ids=chunk, tag_id=tag.id)
-
-                    # Mirror the change in the SQLite cache
-                    with Session(_db.get_engine()) as session:
-                        cached = _fetch_objects_by_guids(session, chunk, cluster_id, org_id)
-                        for obj in cached:
-                            if action == "tag":
-                                obj.tag_names = _add_tag(obj.tag_names, tag_name)
-                            else:
-                                obj.tag_names = _remove_tag(obj.tag_names, tag_name)
-                            session.add(obj)
-                        session.commit()
-
-                    succeeded += len(chunk)
-                except Exception as exc:
+                # ONLY the live call is guarded, and only against the two
+                # families it can raise (`_request` maps every HTTP outcome onto
+                # TSAdminError; httpx.HTTPError covers the transport). The
+                # blanket `except Exception` that used to wrap the cache mirror
+                # too turned a bug in our own code into "this chunk failed
+                # upstream" and reported it as a PARTIAL job.
+                except (TSAdminError, httpx.HTTPError) as exc:
                     logger.warning("execute %s chunk failed: %s", action, exc)
                     failed_ids.extend(chunk)
+                    if not first_error:
+                        first_error = str(exc)
+                    update_progress(job_id, succeeded)
+                    continue
 
+                # Mirror the change in the SQLite cache
+                with Session(_db.get_engine()) as session:
+                    cached = _fetch_objects_by_guids(session, chunk, cluster_id, org_id)
+                    for obj in cached:
+                        if action == "tag":
+                            obj.tag_names = _add_tag(obj.tag_names, tag_name)
+                        else:
+                            obj.tag_names = _remove_tag(obj.tag_names, tag_name)
+                        session.add(obj)
+                    session.commit()
+
+                succeeded += len(chunk)
                 update_progress(job_id, succeeded)
 
-        # Audit log
+        # Zero successes is FAILED, never PARTIAL — see the note in
+        # `bulk_sharing_service.execute_share`. A tag run in which every chunk
+        # failed used to report PARTIAL with 0 objects tagged, which reads as
+        # "some of them got the tag, retry the rest".
+        if succeeded == 0:
+            status = "FAILED"
+        elif failed_ids:
+            status = "PARTIAL"
+        else:
+            status = "COMPLETE"
+        if not object_ids:
+            failure_reason = f"0 objects {action}ged — the request named no objects."
+        else:
+            failure_reason = (
+                f"0 of {len(object_ids)} objects {action}ged with {tag_name!r}: "
+                f"{len(failed_ids)} call(s) failed — first error: {first_error or 'unknown error'}."
+            )
+
+        # Audit log — same terminal status as the job. It used to be computed
+        # from an expression that could not say FAILED at all.
         with Session(_db.get_engine()) as session:
             entry = AuditLog(
                 cluster_id=cluster_id,
                 action_type=action,
                 entity_type="metadata",
                 items_affected=succeeded,
-                status="COMPLETE" if not failed_ids else "PARTIAL",
+                status=status,
             )
-            entry.set_parameters({"tag_name": tag_name, "object_ids": object_ids, "errors": failed_ids})
+            entry.set_parameters(
+                {
+                    "tag_name": tag_name,
+                    "object_ids": object_ids,
+                    "errors": failed_ids,
+                    "error": failure_reason if status == "FAILED" else "",
+                }
+            )
             session.add(entry)
             session.commit()
 
         result = {"succeeded": succeeded, "failed": len(failed_ids), "tag_name": tag_name}
-        if failed_ids:
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
+        elif status == "PARTIAL":
             mark_partial(job_id, result)
         else:
             mark_complete(job_id, result)
 
         logger.info(
-            "archive.%s job=%s cluster=%s tag=%r succeeded=%d failed=%d",
+            "archive.%s job=%s cluster=%s status=%s tag=%r succeeded=%d failed=%d",
             action,
             job_id,
             cluster_id,
+            status,
             tag_name,
             succeeded,
             len(failed_ids),
         )
 
+    # Last-resort handler for a background task: this runs after the 202 is on
+    # the wire, so an exception that escapes is invisible to the caller and
+    # strands the Job row at RUNNING forever. Permitted to swallow ANY
+    # exception — none silently: each is logged with a traceback and re-reported
+    # as a FAILED job.
     except Exception as exc:
         logger.exception("execute job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)
@@ -569,6 +622,95 @@ async def execute(
 
 # ── Phase 6: Restore & History ─────────────────────────────────────────────────
 
+# What restore does and does not do. Carried in the job result so the API — and
+# therefore the UI — states it plainly instead of implying an in-place undelete.
+RESTORE_NOTES: tuple[str, ...] = (
+    "Restore re-imports the TML backup, so ThoughtSpot creates a NEW object with a NEW GUID.",
+    "Sharing rules (ACLs) are not restored — the object comes back visible only to its owner.",
+    "Tags are not re-applied — re-tag the object if it needs its old tags.",
+    "Objects that pointed at the deleted GUID are not relinked to the new one.",
+)
+
+# Import batch size. Batches are additionally split so no two records in one
+# request share a name — see _name_unique_batches.
+_IMPORT_BATCH_SIZE = 10
+
+
+class _ImportOutcome(NamedTuple):
+    """One entry of a metadata/tml/import response, normalized."""
+
+    name: str
+    guid: str
+    status_code: str
+    error: str
+
+
+def _import_outcome(item: dict) -> _ImportOutcome:
+    """
+    Normalize one import-response entry across the shapes TS has shipped.
+
+    v2:    {"response": {"header": {"id_guid", "name"}, "status": {"status_code"}}}
+    newer: {"object_id", "name", "status": {"status_code", "error_message"}}
+    """
+    resp = item.get("response") or {}
+    header = resp.get("header") or item.get("header") or {}
+    status = resp.get("status") or item.get("status") or {}
+    return _ImportOutcome(
+        name=header.get("name") or item.get("name") or "",
+        guid=header.get("id_guid") or item.get("object_id") or item.get("id") or "",
+        status_code=status.get("status_code") or "UNKNOWN",
+        error=status.get("error_message") or "",
+    )
+
+
+def _restore_failure_reason(*, total: int, failed: int, skipped: int) -> str:
+    """Name why a restore restored nothing.
+
+    "0 objects restored — N imports failed" said nothing about the skipped
+    bucket, which is the far more common cause: a record is skipped when its TML
+    backup never succeeded, its `.tml` file is gone from disk, or it has already
+    been restored. An all-skipped run used to report COMPLETE.
+    """
+    if total == 0:
+        return "0 objects restored — the request named no archive records."
+    parts: list[str] = []
+    if failed:
+        parts.append(f"{failed} TML import(s) failed")
+    if skipped:
+        parts.append(
+            f"{skipped} record(s) were not restorable — no successful TML backup, the backup file is gone "
+            "from disk, or they were already restored"
+        )
+    if not parts:
+        parts.append("no import was attempted")
+    return f"0 of {total} objects restored: " + "; ".join(parts) + "."
+
+
+def _name_unique_batches(records: list[ArchiveRecord], size: int) -> Iterator[list[ArchiveRecord]]:
+    """
+    Yield batches of at most `size` records in which every `name` is unique.
+
+    The import response carries no reference to the pre-delete GUID, so the
+    object name is the only key that can tie a result back to its record. Making
+    the names unique within each request is what makes that key sound: a record
+    whose name is already in the current batch is deferred to a later one rather
+    than guessed at.
+    """
+    remaining = list(records)
+    while remaining:
+        batch: list[ArchiveRecord] = []
+        deferred: list[ArchiveRecord] = []
+        seen: set[str] = set()
+        for rec in remaining:
+            # The first record always enters the batch, so this terminates.
+            if len(batch) < size and rec.name not in seen:
+                seen.add(rec.name)
+                batch.append(rec)
+            else:
+                deferred.append(rec)
+        yield batch
+        remaining = deferred
+
 
 async def restore(
     job_id: str,
@@ -579,13 +721,25 @@ async def restore(
     """
     Background task: re-import TML files back into ThoughtSpot.
 
+    **Restore is not an undelete.** The TML is imported as a brand-new object, so
+    ThoughtSpot assigns it a NEW GUID. Consequences the caller must know about
+    (also returned verbatim in the job result as ``notes`` — see RESTORE_NOTES):
+
+      - sharing rules (ACLs) are NOT restored,
+      - tags are NOT re-applied (the cache row is written with no tags so it
+        cannot claim tags the cluster does not have),
+      - objects that referenced the deleted GUID are NOT relinked.
+
     For each archive record:
       1. Read TML file from disk (tml_path)
       2. POST to /metadata/tml/import — ThoughtSpot assigns a NEW GUID
       3. Update ArchiveRecord: restored_at, restored_as_guid, restored_by_job_id
-      4. Re-insert CachedMetadata row with the new GUID
+      4. Insert a placeholder CachedMetadata row for the new GUID, carrying
+         restore-time timestamps (the object really was created just now). The
+         next metadata sync replaces it with the cluster's own values.
 
-    Records with missing TML or tml_export_status != "SUCCESS" are skipped.
+    Records with missing TML, tml_export_status != "SUCCESS", or an existing
+    restored_at are skipped.
     """
     from ts_admin.models.archive_record import ArchiveRecord
     from ts_admin.models.audit_log import AuditLog
@@ -613,123 +767,170 @@ async def restore(
         failed: list[str] = []
         skipped: list[str] = []
 
+        # Partition up front: a record is restorable only when its TML export
+        # succeeded, the file is still on disk, and it has not been restored
+        # already (restoring twice would leave two copies in ThoughtSpot).
+        restorable: list[ArchiveRecord] = []
+        tml_by_record: dict[str, str] = {}
+        for rid in archive_record_ids:
+            rec = rec_map.get(rid)
+            if rec is None or rec.tml_export_status != "SUCCESS" or rec.restored_at is not None or not rec.tml_path:
+                skipped.append(rid)
+                continue
+            path = Path(rec.tml_path)
+            if not path.exists():
+                logger.warning("TML file missing for record %s: %s", rec.id, rec.tml_path)
+                skipped.append(rid)
+                continue
+            try:
+                tml_by_record[rec.id] = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                logger.warning("TML file unreadable for record %s: %s", rec.id, exc)
+                skipped.append(rid)
+                continue
+            restorable.append(rec)
+
         async with ThoughtSpotClient(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
-            for chunk_ids in _chunks(archive_record_ids, 10):
-                chunk_recs = [rec_map[rid] for rid in chunk_ids if rid in rec_map]
-
-                # Filter to restorable
-                restorable = [
-                    r for r in chunk_recs if r.tml_export_status == "SUCCESS" and r.restored_at is None and r.tml_path
-                ]
-                skip_ids = [r.id for r in chunk_recs if r not in restorable]
-                skipped.extend(skip_ids)
-
-                if not restorable:
-                    update_progress(job_id, succeeded)
-                    continue
-
-                # Read TML files from disk
-                tml_strings: list[str] = []
-                valid_recs: list[ArchiveRecord] = []
-                for rec in restorable:
-                    path = Path(rec.tml_path)
-                    if not path.exists():
-                        logger.warning("TML file missing for record %s: %s", rec.id, rec.tml_path)
-                        skipped.append(rec.id)
-                        continue
-                    tml_strings.append(path.read_text(encoding="utf-8"))
-                    valid_recs.append(rec)
-
-                if not tml_strings:
-                    continue
-
+            for batch in _name_unique_batches(restorable, _IMPORT_BATCH_SIZE):
                 try:
-                    import_results = await client.import_tml(tml_strings=tml_strings)
-                except Exception as exc:
-                    logger.warning("import_tml chunk failed: %s", exc)
-                    failed.extend([r.id for r in valid_recs])
+                    import_results = await client.import_tml(tml_strings=[tml_by_record[r.id] for r in batch])
+                except (TSAuthenticationError, TSInsufficientPrivilegesError):
+                    # Whole-cluster conditions — the next batch would fail the
+                    # same way. Let the outer handler fail the whole job.
+                    raise
+                except (TSAdminError, httpx.HTTPError) as exc:
+                    logger.warning("import_tml batch failed: %s", exc)
+                    failed.extend([r.id for r in batch])
                     update_progress(job_id, succeeded)
                     continue
 
-                # Map results back to records by index
+                # Match results back to records by NAME, never by list position.
+                # TS does not promise to echo the request order, and the response
+                # carries no reference to the pre-delete GUID — so a positional
+                # match writes another object's GUID onto the record. The batch
+                # was built with unique names precisely so this key is sound.
+                outcomes = [_import_outcome(item) for item in import_results]
+                by_name: dict[str, _ImportOutcome] = {}
+                ambiguous: set[str] = set()
+                for outcome in outcomes:
+                    if not outcome.name:
+                        continue
+                    if outcome.name in by_name:
+                        # Two results for one name: neither can be attributed.
+                        ambiguous.add(outcome.name)
+                        continue
+                    by_name[outcome.name] = outcome
+
+                # Degenerate fallback: a TS build that returns no names at all
+                # leaves position as the only key. Only usable when the response
+                # is 1:1 with the request, and loud about it.
+                positional: list[_ImportOutcome] | None = None
+                if not by_name and len(outcomes) == len(batch):
+                    logger.warning("import_tml response carried no object names — falling back to positional matching")
+                    positional = outcomes
+
                 now = datetime.now(timezone.utc)
-                for idx, rec in enumerate(valid_recs):
-                    result_item = import_results[idx] if idx < len(import_results) else {}
-                    # TS REST v2 import response shape:
-                    # {"response": {"header": {"id_guid": "..."}, "status": {"status_code": "OK"}}}
-                    resp = result_item.get("response") or {}
-                    new_guid = (
-                        resp.get("header", {}).get("id_guid")  # primary path (v2)
-                        or result_item.get("object_id")  # newer TS versions
-                        or result_item.get("id")
-                        or (result_item.get("header") or {}).get("id_guid")
-                        or ""
-                    )
-                    status_code = (
-                        resp.get("status", {}).get("status_code")  # primary path (v2)
-                        or result_item.get("status", {}).get("status_code")
-                        or "UNKNOWN"
-                    )
+                for idx, rec in enumerate(batch):
+                    outcome = by_name.get(rec.name)
+                    if outcome is None and positional is not None:
+                        outcome = positional[idx]
 
-                    if new_guid and status_code == "OK":
-                        # Update ArchiveRecord
-                        with Session(_db.get_engine()) as session:
-                            db_rec = session.get(ArchiveRecord, rec.id)
-                            if db_rec:
-                                db_rec.restored_at = now
-                                db_rec.restored_as_guid = new_guid
-                                db_rec.restored_by_job_id = job_id
-                                session.add(db_rec)
-                                session.commit()
+                    if outcome is None or rec.name in ambiguous:
+                        logger.warning(
+                            "restore record %s: no unambiguous import result for %r — not attributing a GUID",
+                            rec.id,
+                            rec.name,
+                        )
+                        failed.append(rec.id)
+                        continue
 
-                        # Re-insert CachedMetadata with the new GUID
-                        tags_json = rec.tags if rec.tags else "[]"
-                        new_row = CachedMetadata(
+                    if not outcome.guid or outcome.status_code != "OK":
+                        error_msg = outcome.error or f"Import returned status {outcome.status_code}"
+                        logger.warning("restore record %s failed: %s", rec.id, error_msg)
+                        failed.append(rec.id)
+                        continue
+
+                    new_guid = outcome.guid
+
+                    # Update ArchiveRecord
+                    with Session(_db.get_engine()) as session:
+                        db_rec = session.get(ArchiveRecord, rec.id)
+                        if db_rec:
+                            db_rec.restored_at = now
+                            db_rec.restored_as_guid = new_guid
+                            db_rec.restored_by_job_id = job_id
+                            session.add(db_rec)
+                            session.commit()
+
+                    # Placeholder CachedMetadata row for the new GUID.
+                    #
+                    # Every timestamp is restore-time on purpose. The object is
+                    # genuinely new in ThoughtSpot, and _stale_conditions treats
+                    # NULL modified_at/last_accessed_at as stale — so copying the
+                    # pre-deletion last_accessed_at and leaving the other two NULL
+                    # made the object satisfy BOTH halves of the staleness test and
+                    # come straight back as an Archiver delete candidate.
+                    #
+                    # tag_names is empty because no assign_tag call is made; the
+                    # cache must not claim tags the cluster does not have.
+                    with Session(_db.get_engine()) as session:
+                        existing = session.exec(
+                            select(CachedMetadata).where(
+                                CachedMetadata.cluster_id == cluster_id,
+                                CachedMetadata.org_id == org_id,
+                                CachedMetadata.ts_guid == new_guid,
+                            )
+                        ).first()
+                        row = existing or CachedMetadata(
                             cluster_id=cluster_id,
                             org_id=org_id,
                             ts_guid=new_guid,
-                            name=rec.name,
-                            object_type=rec.object_type,
-                            owner_guid=rec.owner_guid,
-                            owner_name=rec.owner_name,
-                            tag_names=tags_json,
-                            last_accessed_at=rec.last_accessed_at,
-                            synced_at=now,
                         )
-                        with Session(_db.get_engine()) as session:
-                            # Avoid duplicate if already exists
-                            existing = session.exec(
-                                select(CachedMetadata).where(
-                                    CachedMetadata.cluster_id == cluster_id,
-                                    CachedMetadata.ts_guid == new_guid,
-                                )
-                            ).first()
-                            if not existing:
-                                session.add(new_row)
-                                session.commit()
+                        row.name = rec.name
+                        row.object_type = rec.object_type
+                        row.owner_guid = rec.owner_guid
+                        row.owner_name = rec.owner_name
+                        row.tag_names = "[]"
+                        row.created_at = now
+                        row.modified_at = now
+                        row.last_accessed_at = now
+                        row.view_count = 0
+                        row.synced_at = now
+                        session.add(row)
+                        session.commit()
 
-                        succeeded += 1
-                    else:
-                        error_msg = (
-                            result_item.get("status", {}).get("error_message")
-                            or f"Import returned status {status_code}"
-                        )
-                        logger.warning("restore record %s failed: %s", rec.id, error_msg)
-                        failed.append(rec.id)
+                    succeeded += 1
 
                 update_progress(job_id, succeeded)
 
-        # Audit log
+        # Zero successes is FAILED, never PARTIAL and never COMPLETE — see the
+        # note in `bulk_sharing_service.execute_share`. The all-skipped case
+        # (every record already restored, or its TML gone from disk) used to
+        # fall through to mark_complete: a job that restored nothing reported
+        # COMPLETE with succeeded=0.
+        if succeeded == 0:
+            status = "FAILED"
+        elif failed:
+            status = "PARTIAL"
+        else:
+            status = "COMPLETE"
+        failure_reason = _restore_failure_reason(
+            total=total,
+            failed=len(failed),
+            skipped=len(skipped),
+        )
+
+        # Audit log — same terminal status as the job.
         with Session(_db.get_engine()) as session:
             entry = AuditLog(
                 cluster_id=cluster_id,
                 action_type="restore",
                 entity_type="metadata",
                 items_affected=succeeded,
-                status="COMPLETE" if not failed else "PARTIAL",
+                status=status,
             )
             entry.set_parameters(
                 {
@@ -738,28 +939,40 @@ async def restore(
                     "failed": len(failed),
                     "skipped": len(skipped),
                     "job_id": job_id,
+                    "error": failure_reason if status == "FAILED" else "",
                 }
             )
             session.add(entry)
             session.commit()
 
-        result = {"succeeded": succeeded, "failed": len(failed), "skipped": len(skipped)}
-        if succeeded == 0 and failed:
-            mark_failed(job_id, f"0 objects restored — {len(failed)} imports failed")
-        elif failed:
+        result = {
+            "succeeded": succeeded,
+            "failed": len(failed),
+            "skipped": len(skipped),
+            # Discoverability: the caller sees the new-GUID / no-ACL / no-tag
+            # semantics in the job result, not only in this docstring.
+            "notes": list(RESTORE_NOTES),
+        }
+        if status == "FAILED":
+            mark_failed(job_id, failure_reason)
+        elif status == "PARTIAL":
             mark_partial(job_id, result)
         else:
             mark_complete(job_id, result)
 
         logger.info(
-            "archive.restore job=%s cluster=%s succeeded=%d failed=%d skipped=%d",
+            "archive.restore job=%s cluster=%s status=%s succeeded=%d failed=%d skipped=%d",
             job_id,
             cluster_id,
+            status,
             succeeded,
             len(failed),
             len(skipped),
         )
 
+    # Last-resort handler for a background task — see the note on the matching
+    # handler in `execute`. Permitted to swallow ANY exception because an escape
+    # here strands the Job row at RUNNING; nothing is swallowed silently.
     except Exception as exc:
         logger.exception("restore job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)

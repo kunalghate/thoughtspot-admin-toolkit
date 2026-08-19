@@ -90,7 +90,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export const healthApi = {
-  check: () => request<{ status: string }>("/health"),
+  check: () => request<{ status: string; version: string }>("/health"),
 };
 
 // ── Updates ───────────────────────────────────────────────────────────────────
@@ -126,6 +126,9 @@ export const clustersApi = {
 
   testConnection: (id: string) =>
     request<{ success: boolean; ts_version?: string; error?: string }>(`/clusters/${id}/test`, { method: "POST" }),
+
+  activate: (id: string) =>
+    request<Cluster>(`/clusters/${id}/activate`, { method: "POST" }),
 
   listOrgs: (id: string) =>
     request<Org[]>(`/clusters/${id}/orgs`),
@@ -356,7 +359,7 @@ export const archiverApi = {
     if (params.sort_order)          q.set("sort_order", params.sort_order);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)           q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiverItem>>(`/archiver/results?${q}`);
+    return request<OffsetPaginatedResponse<ArchiverItem>>(`/archiver/results?${q}`);
   },
 
   tags: (params: {
@@ -390,7 +393,7 @@ export const archiverApi = {
     q.set("cluster_id", params.cluster_id);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiverItem>>(`/archiver/dryrun/${job_id}/objects?${q}`);
+    return request<OffsetPaginatedResponse<ArchiverItem>>(`/archiver/dryrun/${job_id}/objects?${q}`);
   },
 
   execute: (body: {
@@ -417,7 +420,7 @@ export const archiverApi = {
     q.set("org_id", String(params.org_id));
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiveSessionSummary>>(`/archiver/history?${q}`);
+    return request<OffsetPaginatedResponse<ArchiveSessionSummary>>(`/archiver/history?${q}`);
   },
 
   historySession: (job_id: string, params: {
@@ -429,7 +432,7 @@ export const archiverApi = {
     q.set("cluster_id", params.cluster_id);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<ArchiveRecord>>(`/archiver/history/${job_id}?${q}`);
+    return request<OffsetPaginatedResponse<ArchiveRecord>>(`/archiver/history/${job_id}?${q}`);
   },
 
   restore: (body: { cluster_id: string; org_id: number; archive_record_ids: string[] }) =>
@@ -528,7 +531,7 @@ export const deleterApi = {
     q.set("cluster_id", params.cluster_id);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)             q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<DeleterItem>>(`/deleter/dryrun/${job_id}/objects?${q}`);
+    return request<OffsetPaginatedResponse<DeleterItem>>(`/deleter/dryrun/${job_id}/objects?${q}`);
   },
 
   execute: (body: { cluster_id: string; org_id: number; object_ids: string[] }) =>
@@ -560,7 +563,7 @@ export const usersApi = {
     if (params.sort_order)              q.set("sort_order", params.sort_order);
     if (params.record_offset != null)  q.set("record_offset", String(params.record_offset));
     if (params.page_size)               q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<UserListItem>>(`/users?${q}`);
+    return request<OffsetPaginatedResponse<UserListItem>>(`/users?${q}`);
   },
 
   get: (ts_guid: string, cluster_id: string) =>
@@ -633,6 +636,9 @@ export const usersApi = {
     org_id: number;
     user_guids: string[];
     user_identifiers?: string[];
+    /** Required to delete a ThoughtSpot admin — the server refuses otherwise.
+     *  There is no override for deleting the account the toolkit signs in as. */
+    confirm_admin_delete?: boolean;
   }) =>
     request<{ job_id: string; total: number }>("/users/delete/execute", {
       method: "POST", body: JSON.stringify(body),
@@ -651,7 +657,7 @@ export const usersApi = {
     if (params.action_type)            q.set("action_type", params.action_type);
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)              q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<UserHistoryItem>>(`/users/history?${q}`);
+    return request<OffsetPaginatedResponse<UserHistoryItem>>(`/users/history?${q}`);
   },
 };
 
@@ -737,6 +743,20 @@ export const sharingApi = {
     principal_guids: string[];
     mode: SharePermissionMode;
     notify?: boolean;
+    /**
+     * `job_id` of a completed `/sharing/dryrun`. When present the server acts on
+     * the GUID set that dry-run resolved and IGNORES `tag_name`, so a tag whose
+     * membership changed between approval and execution cannot widen the write.
+     * The approved set is a ceiling: `object_guids` may narrow it, but a GUID
+     * outside it is a 409.
+     *
+     * The share modal does not send this today and does not need to — it always
+     * passes explicit `object_guids` from the grid selection and never a
+     * `tag_name`, so it has nothing to re-resolve. This exists for tag-based
+     * callers; wiring the modal to it would mean replacing its live `preview`
+     * with a polled dry-run job, which is a UX change, not a bug fix.
+     */
+    dryrun_job_id?: string;
   }) =>
     request<{ job_id: string; total: number }>("/sharing/execute", {
       method: "POST", body: JSON.stringify(body),
@@ -753,7 +773,7 @@ export const sharingApi = {
     if (params.org_id != null)        q.set("org_id", String(params.org_id));
     if (params.record_offset != null) q.set("record_offset", String(params.record_offset));
     if (params.page_size)              q.set("page_size", String(params.page_size));
-    return request<PaginatedResponse<SharingHistoryItem>>(`/sharing/history?${q}`);
+    return request<OffsetPaginatedResponse<SharingHistoryItem>>(`/sharing/history?${q}`);
   },
 };
 

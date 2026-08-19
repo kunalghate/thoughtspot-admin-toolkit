@@ -95,6 +95,13 @@ def fake_ts_client(monkeypatch):
     exception that does escape is ours, not the network's."""
 
     class FakeClient:
+        # `share_objects` really applies the share, so the post-execute
+        # verification read-back in `execute_share` sees what it asked for. A
+        # no-op share plus an always-empty `fetch_permissions` would make every
+        # share job here FAILED for a reason that has nothing to do with the
+        # stale-cache guard these tests are about.
+        acl: dict[tuple[str, str], str] = {}
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -107,14 +114,30 @@ def fake_ts_client(monkeypatch):
         async def fetch_dependents(self, *, objects):
             return {}
 
-        async def fetch_permissions(self, *, ts_guid, object_type):
-            return []
+        async def fetch_permissions(self, *, ts_guid, object_type, permission_type="DEFINED"):
+            from ts_admin.ts_client.models import TSPermission
+
+            return [
+                TSPermission(
+                    principal_id=pid,
+                    principal_name=pid,
+                    principal_type="USER_GROUP",
+                    share_mode=mode,
+                )
+                for (guid, pid), mode in FakeClient.acl.items()
+                # The real endpoint never returns a NO_ACCESS row.
+                if guid == ts_guid and mode != "NO_ACCESS"
+            ]
 
         async def assign_metadata_owner(self, *, object_ids, new_owner_identifier):
             return None
 
-        async def share_objects(self, *, object_ids, principal_ids, permission):
-            return None
+        async def share_objects(self, *, object_ids, principal_ids, permission, message="", notify=False):
+            for oid in object_ids:
+                for pid in principal_ids:
+                    FakeClient.acl[(oid, pid)] = str(permission)
+
+    FakeClient.acl = {}
 
     monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
     return FakeClient
