@@ -593,18 +593,39 @@ class ThoughtSpotClient:
         object_ids: list[str],
         principal_ids: list[str],
         permission: SharePermission = SharePermission.READ_ONLY,
+        message: str = "",
+        notify: bool = False,
     ) -> None:
         """
         Share a list of objects with a list of users or groups.
-        Raises TSPartialSuccessError if some objects fail.
-        """
 
+        POST /api/rest/2.0/security/metadata/share — 204 No Content on success,
+        so the response carries no evidence of what was shared. The REQUEST is
+        the only thing worth asserting in a test.
+
+        `/api/rest/2.0/security/share` (what this used to POST, with a body
+        keyed `metadata_list`) is not a route — it 404s on every cluster, and
+        `metadata_list` appears nowhere in the schema.
+
+        Body shape (`shareMetadata`, 9.0.0.cl+):
+          - `metadata`: [{identifier, type?}]. No `type` is sent: we always pass
+            GUIDs, for which the spec makes `type` optional, and our cache's
+            object_type values (WORKSHEET, DATASET, …) are not members of this
+            endpoint's type enum.
+          - `permissions`: [{principal: {identifier}, share_mode}].
+          - `message`: **required by the spec** — omitting the key is a 400.
+          - `notify_on_share`: defaults to **true** server-side, so it is always
+            sent explicitly. Left implicit, every share emails its recipients
+            no matter what the caller asked for.
+        """
         await self._request(
             "POST",
-            "/api/rest/2.0/security/share",
+            "/api/rest/2.0/security/metadata/share",
             json={
-                "metadata_list": [{"identifier": oid} for oid in object_ids],
+                "metadata": [{"identifier": oid} for oid in object_ids],
                 "permissions": [{"principal": {"identifier": pid}, "share_mode": permission} for pid in principal_ids],
+                "message": message,
+                "notify_on_share": notify,
             },
             context="share_objects",
         )

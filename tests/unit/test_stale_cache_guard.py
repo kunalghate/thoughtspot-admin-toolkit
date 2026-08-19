@@ -113,7 +113,7 @@ def fake_ts_client(monkeypatch):
         async def assign_metadata_owner(self, *, object_ids, new_owner_identifier):
             return None
 
-        async def share_objects(self, *, object_ids, principal_ids, permission):
+        async def share_objects(self, *, object_ids, principal_ids, permission, message="", notify=False):
             return None
 
     monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)

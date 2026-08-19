@@ -34,6 +34,7 @@ class _FakeClient:
     """Stand-in for ThoughtSpotClient; records every share_objects call."""
 
     share_calls: list[tuple[list[str], list[str], str]] = []  # (object_ids, principal_ids, permission)
+    share_kwargs: list[dict] = []  # (message, notify) per call
     permission_calls: list[tuple[str, str]] = []  # (ts_guid, object_type)
 
     def __init__(self, *args, **kwargs):
@@ -49,8 +50,9 @@ class _FakeClient:
         _FakeClient.permission_calls.append((ts_guid, str(object_type)))
         return []  # no existing ACL — every pair is a change
 
-    async def share_objects(self, *, object_ids, principal_ids, permission):
+    async def share_objects(self, *, object_ids, principal_ids, permission, message="", notify=False):
         _FakeClient.share_calls.append((list(object_ids), list(principal_ids), str(permission)))
+        _FakeClient.share_kwargs.append({"message": message, "notify": notify})
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -59,6 +61,7 @@ class _FakeClient:
 @pytest.fixture(autouse=True)
 def reset_fake():
     _FakeClient.share_calls = []
+    _FakeClient.share_kwargs = []
     _FakeClient.permission_calls = []
 
 

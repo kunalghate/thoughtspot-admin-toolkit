@@ -38,6 +38,11 @@ from ts_admin.ts_client.exceptions import StaleCacheError
 
 logger = logging.getLogger(__name__)
 
+# `security/metadata/share` marks `message` REQUIRED — omitting the key is a 400,
+# not a silent default. It is the body of the notification email, so it only
+# reaches a human when `notify_on_share` is true.
+SHARE_MESSAGE = "Shared with you by a ThoughtSpot administrator."
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -523,6 +528,11 @@ async def execute_share(
     Share `object_guids` with `principal_guids` at `mode`. One share_objects
     call per object_type group (the API requires a single type per call).
 
+    `notify` is forwarded to the API as `notify_on_share`. It used to be
+    recorded in the audit log and then dropped, and the wire default is TRUE —
+    so had the endpoint path been correct, every share would have emailed its
+    recipients while the audit row said `"notify": false`.
+
     Refuses on a non-authoritative metadata cache: objects are grouped by the
     `object_type` read from the cache, so a truncated cache drops objects from
     the share entirely — silently, and for NO_ACCESS revokes that means access
@@ -649,6 +659,8 @@ async def execute_share(
                             object_ids=chunk,
                             principal_ids=principal_guids,
                             permission=enum_mode,
+                            message=SHARE_MESSAGE,
+                            notify=notify,
                         )
                         pair_count = len(chunk) * len(principal_guids)
                         succeeded_pairs += pair_count
