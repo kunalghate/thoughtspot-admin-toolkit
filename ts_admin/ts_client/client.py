@@ -736,7 +736,13 @@ class ThoughtSpotClient:
         """
         body: dict = {
             "metadata": [{"identifier": oid} for oid in object_ids],
-            "export_associated_objects": "NONE",
+            # `export_associated` (boolean, spec default false). The key used to
+            # be spelled `export_associated_objects` with the value "NONE" —
+            # wrong name AND wrong type, so v2 silently ignored it and the
+            # behaviour was the server default by accident. Sent explicitly so
+            # it is pinned: a backup must contain the object we are deleting,
+            # not its whole dependency tree.
+            "export_associated": False,
             "export_fqn": True,
         }
         if edoc_format is not None:
