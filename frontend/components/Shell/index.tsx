@@ -255,22 +255,22 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
   // (sync_service._ensure_metadata_cache), so one click does the right thing.
   const blockedReason = null;
 
-  const handleSync = useCallback(async () => {
-    if (!activeCluster || !activeOrg || !entityType) return;
-    setIsSyncing(true);
-    setSyncProgress(null);
+  // Poll a sync job until it reaches a terminal state, driving the Topbar's
+  // syncing indicator. Shared by handleSync (jobs we start) and the adoption
+  // effect below (jobs already in flight when this page mounts).
+  const pollJob = useCallback((job_id: string) => {
+    if (!activeCluster) return;
+    const clusterId = activeCluster.id;
+    const orgId = activeOrg?.org_id ?? 0;
 
-    try {
-      const { job_id } = await syncApi.trigger(activeCluster.id, activeOrg.org_id, entityType);
-
-      // Poll until the job reaches a terminal state. The backend job lifecycle is
-      // QUEUED → RUNNING → COMPLETE | FAILED | PARTIAL, so only those three mean
-      // "done". Checking for terminal states (rather than "not running") avoids a
-      // race where the first tick catches a still-QUEUED job and wrongly concludes
-      // the sync already finished — which would reload stale data and stop the bar.
-      const TERMINAL = ["COMPLETE", "FAILED", "PARTIAL"];
-      let pollErrors = 0;
-      pollRef.current = setInterval(async () => {
+    // Poll until the job reaches a terminal state. The backend job lifecycle is
+    // QUEUED → RUNNING → COMPLETE | FAILED | PARTIAL, so only those three mean
+    // "done". Checking for terminal states (rather than "not running") avoids a
+    // race where the first tick catches a still-QUEUED job and wrongly concludes
+    // the sync already finished — which would reload stale data and stop the bar.
+    const TERMINAL = ["COMPLETE", "FAILED", "PARTIAL"];
+    let pollErrors = 0;
+    pollRef.current = setInterval(async () => {
         try {
           const updated = await jobsApi.get(job_id);
           pollErrors = 0;
@@ -303,7 +303,7 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           }
 
           // Refresh sync log then reload page data
-          const logs = await syncApi.status(activeCluster.id, activeOrg?.org_id ?? 0);
+          const logs = await syncApi.status(clusterId, orgId);
           setSyncLogs(logs);
           onSyncComplete?.();
         } catch {
@@ -318,12 +318,51 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
           toast.error("Lost track of the sync", { hint: "Check the Jobs page for status." });
         }
       }, 2000);
+  }, [activeCluster?.id, activeOrg?.org_id, onSyncComplete, router, toast]);
+
+  const handleSync = useCallback(async () => {
+    if (!activeCluster || !activeOrg || !entityType) return;
+    setIsSyncing(true);
+    setSyncProgress(null);
+
+    try {
+      const { job_id } = await syncApi.trigger(activeCluster.id, activeOrg.org_id, entityType);
+      pollJob(job_id);
     } catch (e) {
       setIsSyncing(false);
       setSyncProgress(null);
       toast.error("Couldn't start sync", { hint: e instanceof Error ? e.message : String(e) });
     }
-  }, [activeCluster?.id, activeOrg?.org_id, entityType, onSyncComplete, router, toast]);
+  }, [activeCluster?.id, activeOrg?.org_id, entityType, pollJob, toast]);
+
+  // Adopt a sync already in flight for this page's entity — started from the
+  // dashboard, another tab, or before a reload. Without this the Topbar keeps
+  // asserting the last FINISHED sync's outcome ("Sync failed") while a new one
+  // is visibly running on the dashboard.
+  useEffect(() => {
+    if (!activeCluster || !activeOrg || !entityType) return;
+    if (pollRef.current) return; // already tracking a sync we started
+    let cancelled = false;
+    jobsApi
+      .list({
+        cluster_id: activeCluster.id,
+        job_types: [`sync:${entityType}`],
+        statuses: ["QUEUED", "RUNNING"],
+        page_size: 5,
+      })
+      .then((res) => {
+        if (cancelled || pollRef.current) return;
+        const job = res.items.find((j) => (j.org_id ?? 0) === activeOrg.org_id);
+        if (!job) return;
+        setIsSyncing(true);
+        setSyncProgress(job.total > 0 ? { processed: job.progress, total: job.total } : null);
+        pollJob(job.id);
+      })
+      .catch(() => {
+        // Discovery is best-effort — the page still works without it.
+      });
+    return () => { cancelled = true; };
+  }, [activeCluster?.id, activeOrg?.org_id, entityType, pollJob]);
 
   return (
     <ShellContext.Provider value={{ activeCluster, activeOrg, clusterOnline }}>

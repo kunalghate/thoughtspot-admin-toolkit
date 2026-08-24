@@ -103,3 +103,26 @@ def test_cancel_rejects_a_finished_job(client, in_memory_db, status):
 
 def test_cancel_unknown_job_is_404(client, in_memory_db):
     assert client.delete("/api/v1/jobs/nope/cancel").status_code == 404
+
+
+def test_job_responses_carry_the_org_from_parameters(client, in_memory_db):
+    """
+    Jobs have no org column — org lives in the parameters JSON. The UI needs it
+    to match a job to the org it is viewing (the Topbar adopts an in-flight
+    `sync:{entity}` job for its cluster+org instead of asserting the last
+    FINISHED sync's outcome while a new one runs). A job recorded before the
+    field existed serializes org_id as null, never as a guess.
+    """
+    with Session(in_memory_db) as session:
+        with_org = Job(id="j-org", cluster_id="c1", job_type="sync:dependencies", status="RUNNING")
+        with_org.set_parameters({"entity_type": "dependencies", "org_id": 928000883})
+        without_org = Job(id="j-none", cluster_id="c1", job_type="archive", status="COMPLETE")
+        session.add(with_org)
+        session.add(without_org)
+        session.commit()
+
+    listed = {j["id"]: j for j in client.get("/api/v1/jobs?cluster_id=c1").json()["items"]}
+    assert listed["j-org"]["org_id"] == 928000883
+    assert listed["j-none"]["org_id"] is None
+
+    assert client.get("/api/v1/jobs/j-org").json()["org_id"] == 928000883
