@@ -9,27 +9,7 @@ detail entry here.
 
 ## Index
 
-### S27 — Lineage unit suite is mutation-vacuous
-
-`P1` · **done** · protected: no
-
-**Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded
-
-**Acceptance criteria:** Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes
-
-**Closed 2026-08-24.** The coverage shipped in PRs #21/#22; the row stayed
-`in-review` only because one of its three enumerated mutations — "reordering the
-post-persist write" — describes the *rejected* S7 branch and has never existed
-on `main` (the M9 failure mode, inside the row filed to prevent it). Re-measured
-against current `main` before closing, and the criteria's general clause holds:
-dropping `_changed`'s `modified_at > last_built` comparison, forcing `_changed`
-to always re-crawl, and dropping either `org_id` or `cluster_id` from the
-`last_built` watermark read each turn at least one test red (4/4 killed). The
-one criterion that cannot be met is dropped as unmeetable rather than faked.
-Answer-index coverage — the same gap in the byte-identical twin — is tracked
-separately as **S30**.
-
-### Done items (21)
+### Done items (28)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -54,6 +34,13 @@ separately as **S30**.
 | F5 | P4 | Dashboard: vertically align the per-job status pills | — |
 | F6 | — | Repeated Sync clicks start duplicate syncs (closed via S24/S34) | — |
 | F7 | P3 | Direct table-to-answer arrow drawn even when the answer sits on a model | — |
+| S27 | P1 | Lineage unit suite is mutation-vacuous | — |
+| S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
+| S23 | P2 | Interrupted metadata sync reads as fully synced | — |
+| S33 | P3 | Topbar sync label/color has no test | — |
+| M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
+| M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
+| F12 | P2 | Browser serves stale UI after a pip upgrade until hard refresh | yes (`ts_admin/main.py`) |
 
 ## Completed items
 
@@ -236,3 +223,103 @@ Nothing prevents two dependency syncs running concurrently for the same (cluster
 **Triage + acceptance criteria:** CONFIRMED. ThoughtSpot's `dependent_objects` sweep for a physical table returns transitive dependents, and `_edges_from_dependents` (`lineage_service.py:307-368`) writes every pair, so both ANSWER→MODEL and ANSWER→DB_TABLE edges land in the cache and both render. Criteria: a transitive ANSWER/LIVEBOARD→table edge is suppressed when a path through a model exists in the same build (post-pass transitive reduction in `build_object_graph`, not a render-only hide — `_downstream_closure_count` and the consumer drawer count through the cache); a genuinely table-backed answer keeps its direct edge; unit test covers both
 
 **Done:** `_reduce_transitive_edges` in `lineage_service.py` drops answer→table shortcut edges when a path through a model exists; unit tests in `test_lineage_service.py` cover both the reduction and the genuinely table-backed answer keeping its direct edge
+
+### S27 — Lineage unit suite is mutation-vacuous
+
+`P1` · **done** · protected: no
+
+**Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded
+
+**Acceptance criteria:** Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes
+
+**Closed 2026-08-24.** The coverage shipped in PRs #21/#22; the row stayed
+`in-review` only because one of its three enumerated mutations — "reordering the
+post-persist write" — describes the *rejected* S7 branch and has never existed
+on `main` (the M9 failure mode, inside the row filed to prevent it). Re-measured
+against current `main` before closing, and the criteria's general clause holds:
+dropping `_changed`'s `modified_at > last_built` comparison, forcing `_changed`
+to always re-crawl, and dropping either `org_id` or `cluster_id` from the
+`last_built` watermark read each turn at least one test red (4/4 killed). The
+one criterion that cannot be met is dropped as unmeetable rather than faked.
+Answer-index coverage — the same gap in the byte-identical twin — is tracked
+separately as **S30**.
+
+### S36 — Startup crash-recovery purges cache rows for never-deleted objects
+
+`P1` · **done** · protected: yes (`ts_admin/main.py`)
+
+Startup crash-recovery deletes `CachedMetadata` rows for objects that were never deleted, is not cluster/org-scoped, and ignores Bulk Deleter jobs. `main.py:70` matches `job_type == "archive"` only (the Deleter creates `bulk_delete`, so it gets no recovery at all), and `:73-88` infers "deleted" from `tml_export_status == "SUCCESS"` — but `_execute_delete` exports EVERY object in Phase A before Phase B deletes any, so the most likely crash window is exactly where that inference is maximally wrong: the recovery purges the cache for N objects of which zero were deleted. The admin then sees them vanish from Metadata Explorer and the Archiver while they are still live in ThoughtSpot, and their `ArchiveRecord`s report `is_restorable=True`, so "restoring" them creates duplicates. `:82`'s `sql_delete` also has no `cluster_id`/`org_id` predicate, though the stuck `Job` row carries `cluster_id`
+
+**Acceptance criteria:** Crash recovery does not infer deletion from TML-export status: either `_execute_delete` records per-GUID delete confirmation (an `ArchiveRecord` field set only after `delete_metadata` returns) and recovery purges only confirmed rows, or recovery purges nothing and instead marks the metadata `sync_log` non-authoritative so the next read re-syncs. The delete is scoped to the stuck job's `cluster_id` and org. Recovery behaves identically for `job_type="bulk_delete"`. Tests: (a) a RUNNING archive delete job with all records `tml_export_status="SUCCESS"` and no confirmed deletes removes zero `CachedMetadata` rows; (b) the same `ts_guid` in two clusters, recovery for a stuck job in cluster A leaves cluster B's row intact
+
+**Cycle note (2026-08-24):** Fixed by making delete confirmation explicit rather
+than inferred. `ArchiveRecord` gains `deleted_confirmed_at`, written in the same
+transaction as the cache purge and only after `delete_metadata` returns for that
+chunk; crash-recovery now purges only confirmed rows, scoped to the stuck job's
+`cluster_id` and each record's `org_id`, and `_is_delete_job` covers
+`bulk_delete` as well as `archive`+`action=delete`. The restore path and
+`is_restorable` read the same field, which closes the duplicate-object half of
+the bug. Existing installs get an additive `ALTER TABLE` with a one-shot
+backfill stamping historical SUCCESS rows, so upgrading does not retroactively
+make old archives unrestorable. 10/10 mutations killed — table in
+[docs/dev/TESTING.md](docs/dev/TESTING.md).
+
+**Closed 2026-08-24 (reconcile).** Its PR merged to `main`; the row was never flipped out of `in-review` because the merge happens outside the cycle. Re-verified against current `main` before closing.
+
+### S23 — Interrupted metadata sync reads as fully synced
+
+`P2` · **done** · protected: no
+
+`_sync_metadata` is delete-all-then-repage-in-spec-order, so an interrupted metadata sync leaves a **non-empty but truncated** cache (liveboards + answers present, every model and table missing) that reads as fully synced
+
+**Acceptance criteria:** An interrupted metadata sync is distinguishable from a complete one — either the delete+repopulate happens in one transaction, or a completeness marker (e.g. the `sync_log` SUCCESS row) is required before any consumer treats `CachedMetadata` as authoritative; a test simulates a mid-pagination failure and asserts the cache is not reported as synced
+
+**Closed 2026-08-24 (reconcile).** Its PR merged to `main`; the row was never flipped out of `in-review` because the merge happens outside the cycle. Re-verified against current `main` before closing.
+
+### S33 — Topbar sync label/color has no test
+
+`P3` · **done** · protected: no
+
+The Topbar sync label/color has no test: S23 fixed a fail-open where `IN_PROGRESS` fell through to the "Synced Xm ago" branch and rendered green, and the fix (`"Syncing…"` + accent) is verified by reading only. `tsc` and `next build` cannot catch a wrong string or token, and vitest is not a CI gate, so a future edit could silently restore the fail-open with every gate green
+
+**Acceptance criteria:** `frontend/components/Shell/Topbar.tsx`'s `buildSyncLabel`/`buildSyncColor` are covered for every `SyncStatus` value including `IN_PROGRESS`, so a status with no branch fails a test rather than rendering as healthy
+
+**Closed 2026-08-24 (reconcile).** Its PR merged to `main`; the row was never flipped out of `in-review` because the merge happens outside the cycle. Re-verified against current `main` before closing.
+
+### M6 — No REJECT route when acceptance criteria are themselves the bug
+
+`P2` · **done** · protected: no
+
+The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop
+
+**Acceptance criteria:** The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle
+
+**Closed 2026-08-24 (reconcile).** Its PR merged to `main`; the row was never flipped out of `in-review` because the merge happens outside the cycle. Re-verified against current `main` before closing.
+
+### M9 — Criteria-prescribed mechanisms are never soundness-checked before build
+
+`P2` · **done** · protected: no
+
+A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier
+
+**Acceptance criteria:** The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built
+
+**Closed 2026-08-24 (reconcile).** Its PR merged to `main`; the row was never flipped out of `in-review` because the merge happens outside the cycle. Re-verified against current `main` before closing.
+
+### F12 — Browser serves stale UI after a pip upgrade until hard refresh
+
+`P2` · Bug · **done** · protected: yes (`ts_admin/main.py`)
+
+**Ask:** Reported 2026-08-24: after upgrading 0.3 → 0.4 the app kept running the
+old cached UI; a hard refresh was required to see the new version.
+
+**Triage + acceptance criteria:** CONFIRMED. `main.py` mounts the built frontend
+with plain Starlette `StaticFiles`, which sends `ETag`/`Last-Modified` but no
+`Cache-Control`, so browsers heuristically reuse cached copies (including
+`index.html`) without revalidating — every upgrade shows the old UI. Criteria:
+HTML and all non-hashed files are served `Cache-Control: no-cache` (revalidate
+every load; conditional requests still 304 and the 304 carries the header);
+content-hashed `/_next/static/*` assets are `public, max-age=31536000,
+immutable`; an integration test pins both policies and the 304 case.
+
+**Closed 2026-08-24 (reconcile).** Shipped in PR #35 (`c2afdbe`). Verified on current `main`: [ts_admin/main.py:46-48](ts_admin/main.py#L46-L48) sets `public, max-age=31536000, immutable` for hashed `/_next/static/*` and `no-cache` elsewhere, and `tests/integration/test_static_cache_headers.py` pins both policies plus the 304 case (3 passed).

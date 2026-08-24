@@ -9,11 +9,14 @@ changed by a different process. Do not blur them.
 | [BACKLOG.md](../../BACKLOG.md) | **Tasks** (the work queue) | every cycle — Status / notes / new rows only |
 | `docs/org-memory/` | **Facts** (discoveries about the code) | every cycle, at the **Records** step |
 
-## The two facts files
+## The three facts files
 
 - [codebase.md](codebase.md) — verified facts about the code, in topical `##`
   sections. This is the file every agent reads *before* starting work.
 - [retros.md](retros.md) — one line per cycle on process friction.
+- [findings.md](findings.md) — CONFIRMED bugs found but **not** queued, because
+  filing is capped by the burn rate. Real, evidenced, unpromoted. Only a human
+  moves an entry from here into `BACKLOG.md`. Dedupe against it before filing.
 
 ## Conventions
 
