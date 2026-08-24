@@ -7,7 +7,10 @@ cycle's **Records** step.
 append **notes**, and append **new rows**. A cycle may NEVER edit an item's
 **Priority** or **Acceptance criteria**, and NEVER delete a row. Priority and
 criteria are the human's lever — they are set and re-scoped by a person, not by an
-agent. (See [CLAUDE.md](CLAUDE.md) → "How the org works".)
+agent. (See [CLAUDE.md](CLAUDE.md) → "How the org works".) The one sanctioned
+removal: when an item becomes **done** (completed/resolved), its index line and
+detail entry are MOVED verbatim to
+[BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md) — a move, never a deletion.
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -17,83 +20,610 @@ agent. (See [CLAUDE.md](CLAUDE.md) → "How the org works".)
 | **R** | Refactors — improve the app without changing behavior |
 | **W** | Keep-current — ThoughtSpot REST v2 drift, dependency drift |
 | **M** | Org / process — improve the agents, skills, and gates themselves |
+| **F** | User feedback — items reported by real users, tracked in the Feedback section below |
 
 **Priority:** P1 (urgent) → P4 (nice-to-have). **Status:** `open` · `in-progress`
 · `in-review` · `done`. **Protected:** does the item likely touch a
 [protected path](CLAUDE.md)? (If yes, its PR needs the `human-approved` label.)
 
-## Rows
+## How this file is organized
 
-| ID | P | Item | Acceptance criteria | Status | Protected |
-|----|---|------|---------------------|--------|-----------|
-| S1 | P3 | Wire frontend `vitest` into the suite | `cd frontend && npm test` runs at least one real component test and passes; CI `frontend` job runs it; [docs/dev/TESTING.md](docs/dev/TESTING.md) updated to drop "not yet wired" | in-review | no |
-| S2 | P3 | Add a `/health` smoke check to CI | CI (via TestClient or a booted app) asserts `GET /health` returns 200; check runs in the pipeline and is documented in TESTING.md | open | yes (`.github/workflows/*`) |
-| W1 | P3 | Add `mypy ts_admin/` to CI | `mypy ts_admin/` runs in the CI `backend` job and is green (baseline existing errors if needed, with a tracking note) | open | yes (`.github/workflows/*`) |
-| M1 | P4 | Single-source the protected-path list | The protected-path patterns live in ONE place; the `guard` job and CLAUDE.md reference/derive from it (or a check fails on drift), so the two can't silently diverge | open | yes (`.github/workflows/*`, `CLAUDE.md`) |
-| S3 | P2 | Group Management (read-only v1): group grid + detail drawer, user audit drawer, and the ThoughtSpot `fetch-permissions` API-drift fix | `GET /api/v1/groups` and `/groups/{guid}` serve the Groups page from cache (cluster + org scoped); `/users/{guid}/access` returns live EFFECTIVE permissions; `principal_permissions` hits `security/principals/fetch-permissions` with the correct body key and parses the real nested response; full verification bar green | done | no |
-| S4 | P2 | Group detail drawer disagreed with the grid: `get_group_detail` was not org-scoped | `get_group_detail` scopes the group row, member count, and member list to a single org; a regression test seeds one GUID in two orgs and asserts the drawer count equals the grid count for each | done | no |
-| S5 | P3 | Nested group membership is missing: `_sync_groups` parses `sub_groups` but never persists them | Users who belong to a group only via a sub-group appear in that group's `member_count` and member list (or the UI states explicitly that counts are direct members only); a unit test covers a group whose sole member arrives through a sub-group | open | no |
-| M2 | P2 | The PR #14 merge silently reverted PR #12's vitest wiring, leaving `npm test` red on `main` with no gate to catch it | `frontend/vitest.config.mts`, `vitest.setup.ts`, the Legend test, and the testing-library/jsdom devDeps are restored and `npm test` is green; a CI gate (or the S1 CI wiring) runs `npm test` so a future merge cannot silently delete the suite again | in-review | yes (`.github/workflows/*` for the CI half) |
-| S6 | P2 | Lineage edges whose **target** is deleted outlive it — ghost nodes in the graph | A model deleted in TS while its consuming liveboard is unchanged leaves no `CachedDependency`/`CachedColumnUsage` row behind; a unit test deletes a target from `CachedMetadata`, rebuilds, and asserts the edge is gone. (Phase 1 owns `USES`/non-LIVEBOARD, `_persist_column_map` owns `CONNECTS` + LIVEBOARD `USES`; neither purges by target GUID, and `build_column_map`'s `if not table_guids and not lb_guids: return 0` early-return skips the purge entirely) | done | no |
-| S7 | P2 | `has_lb_edges` self-heal makes `incremental=True` a permanent full TML crawl on any org that legitimately yields zero liveboard edges | The self-heal fires at most once per org (keyed off a persisted "liveboard tier last built" marker, not "are there any rows"), so an org whose liveboards are all TML-inaccessible (403 stubs) does not re-export every liveboard on every dependencies sync forever; a unit test covers two consecutive incremental builds that produce zero liveboard edges and asserts the second exports nothing | open | no |
-| S8 | P3 | `principal_permissions` / `fetch_permissions` have no wire-shape coverage and fail silently to `[]`, which `execute_transfer_sharing` records as SUCCESS | A test feeds each parser a recorded v2 response payload and asserts the extracted rows; `execute_transfer_sharing` does not write a SUCCESS audit-log row when the fetch returns zero rows for a user whose preview reported N | open | no |
-| S9 | P3 | `_is_admin` joins on `cluster_id` only, so membership synced for one org blocks transfers executed in another | `_is_admin` (and the `admin_count` snapshot) scope membership to the org the operation runs in; a unit test seeds an admin membership in org 0 and asserts a transfer in org 5 is not blocked by it | open | no |
-| M3 | P3 | New cluster-scoped **detail** read endpoints can't be registered in `READ_ENDPOINTS` (its extractor assumes `body["items"]`), so `/groups/{guid}` and `/users/{guid}/access` are unguarded | `READ_ENDPOINTS` (or a sibling registry) accepts detail-shaped responses and the two endpoints above are registered, OR CLAUDE.md documents the live-passthrough exemption explicitly so the rule isn't stated unconditionally while having a silent carve-out | open | yes (`tests/integration/test_cluster_isolation.py`) |
-| W2 | P2 | `ruff format` drift breaks the format gate: unbounded `ruff>=0.4.0` pin lets a newer local/CI ruff reformat 5 files inherited from PR #10 | `ruff format --check ts_admin/ tests/` is green both locally and in CI. Resolve by (a) `ruff format`-ing the 5 drifted files (`ts_admin/services/lineage_service.py`, `tests/unit/test_lineage_columns.py`, `tests/unit/test_lineage_models.py`, `tests/unit/test_lineage_service.py`, `tests/integration/test_relationships_api.py`) AND (b) bounding the ruff version in `pyproject.toml` `[dev]` (e.g. a `~=` pin) so formatter output is reproducible across runs. Confirm whether CI's resolved ruff actually reddens `main` before/after. | done | no |
-| S10 | P1 | The `Stale (90d unused)` tile counted objects the Archiver cannot touch: `MetadataService.stats` treated a null `last_accessed_at` as disuse across ALL object types, so tables/worksheets/SQL views (which carry no access telemetry) dominated it — 2,546 of 2,650 on a real cluster — while the tile linked to an Archiver scoped to `LIVEBOARD`/`ANSWER` | `stats` scopes staleness to `ARCHIVABLE_TYPES` and excludes System User content (mirroring the Archiver's own conditions); "aged out" (`stale_90d`) and "no access data" (`never_accessed`) are separate counts; unit tests cover both the type scoping and the System User exclusion | done | no |
-| S11 | P1 | A never-synced entity rendered as a confident `0` (the Tags tile read "0" while Data freshness said "never synced" two cards down) | The dashboard payload carries a per-entity `synced` flag; the UI renders `—` plus a sync action instead of a number for any entity that has never synced successfully; an integration test asserts the flag is false before the first sync and true after | done | no |
-| S12 | P1 | Failed jobs were shown without a reason: `Job.error`/`error_type`/`error_traceback` are persisted and `DashboardJob.error` was carried through the API, but the page rendered only a red `FAILED` pill, so diagnosing meant leaving the dashboard | Failed rows in Recent jobs show `error_type: error` inline (full text on hover) and a Retry action for sync jobs that re-triggers `POST /sync/{entity}`; an integration test asserts the failure reason reaches the client | done | no |
-| S13 | P2 | `failed_jobs_7d` was computed by filtering the newest 200 jobs in Python, so on a busy cluster genuine failures fell out of the window and the tile under-reported | `failed_jobs_7d` is a SQL `COUNT` over the 7-day window with no row cap; a regression test seeds 250 newer jobs behind a failure and asserts it is still counted | done | no |
-| S14 | P2 | `MetadataService.stats` loaded every `CachedMetadata` row into Python to count them — fine at 2,650 objects, linear memory at 100k | Inventory counts come from a SQL `GROUP BY`; staleness counts are `COUNT` queries; no full-table materialization remains in `stats` | done | no |
-| S15 | P2 | The dashboard showed no signal an admin could act on: inactive users, empty groups, ungrouped users, and content owned by deleted users were all already in SQLite and never surfaced | The payload exposes an `attention` block (`inactive_users`, `empty_groups`, `users_without_group`, `orphaned_content`) as cheap aggregate queries; the page leads with a "Needs attention" band that shows an explicit all-clear when every count is zero; each signal returns 0 until BOTH entities it joins have synced, so an un-synced cluster raises no false alarm; integration tests cover the counts and the un-synced guard | done | no |
-| S16 | P2 | "Recent admin activity" showed four identical 4-month-old rows: grouping was per `job_id` only and the feed had no age bound, so history read as current activity | Activity is bounded to `ACTIVITY_MAX_AGE_DAYS` and identical adjacent entries collapse into one row with a `×N` count; tests cover both the age cutoff and the collapse | done | no |
-| S17 | P3 | Every dashboard number was a point-in-time count with no trend, and the page never polled — a running sync was invisible and relative timestamps froze at mount | `SyncLog.record_count` deltas between the two most recent successful syncs are shown next to each tile; `running_jobs` (with progress/total) is exposed and rendered as a progress bar; the page polls fast while work is in flight and slowly otherwise | done | no |
-| S18 | P3 | Dashboard UX: blank page on first paint (`if (!data) return null`), a silently swallowed sync-status failure that rendered as "never synced", inventory and problems given identical visual weight, and ~40% of the viewport unused on a wide screen | Loading renders a skeleton; a failed read surfaces instead of being swallowed; problems and inventory are visually separated; the layout uses the available width. (Tags KPI and the Data freshness card were removed at the human's direction during this cycle) | done | no |
-| S19 | P3 | Signals still unused in the cache: `view_count` (never-viewed content), `created_at` growth over time, `ContentPermission` (over-shared content), and `CachedDependency` dead-end models — the last being provable staleness rather than the access-date guesswork of S10 | At least the dependency-based signal ships: models/worksheets with no downstream consumer are counted and surfaced as a safe-to-review cleanup target, sourced from `CachedDependency` and scoped by cluster + org | open | no |
-| S20 | P3 | Multi-cluster is a v1 pillar but the dashboard is single-cluster: no roll-up and no signal that another configured cluster has failing syncs | The dashboard indicates cross-cluster health (at minimum: other clusters with failed jobs in the last 7 days) without requiring a cluster switch; counts stay cluster-scoped | open | no |
-| S21 | P3 | `_recent_activity` scans a fixed 300 raw rows per audit source, so one bulk share of 500 objects fills the window and hides every other activity type | The feed's per-source window cannot let a single large session crowd out other kinds of activity (e.g. group in SQL, or scan per-kind); a test seeds one oversized share session plus a deletion and asserts both appear | open | no |
-| S22 | P2 | Ghost lineage nodes render as *normal* nodes: the `accessible` flag is plumbed end-to-end but nothing ever sets it `False`. **Proposed as the safe replacement for S6's deletion approach** — `ts_dependency.py:6-9` documents "inaccessible stubs" as a supported edge endpoint, so the ghost is a read-path gap, not a cache-integrity problem | `get_lineage_graph` sets `accessible=False` on any node whose `guid` has no `CachedMetadata` row for the same `(cluster_id, org_id)`, so a deleted-in-TS target renders dashed/0.6-opacity with the existing "Inaccessible" Legend key instead of as a normal node; no rows are deleted; a unit test deletes a target from `CachedMetadata`, reads the graph, and asserts the node comes back `accessible=False`. **Depends on S25** — the existence lookup this needs is exactly the one that goes quadratic without a composite index; do S25 first or resolve the node set with a single set-membership query rather than a per-node lookup | done | no |
-| S23 | P2 | `_sync_metadata` is delete-all-then-repage-in-spec-order, so an interrupted metadata sync leaves a **non-empty but truncated** cache (liveboards + answers present, every model and table missing) that reads as fully synced | An interrupted metadata sync is distinguishable from a complete one — either the delete+repopulate happens in one transaction, or a completeness marker (e.g. the `sync_log` SUCCESS row) is required before any consumer treats `CachedMetadata` as authoritative; a test simulates a mid-pagination failure and asserts the cache is not reported as synced | in-review | no |
-| S24 | P3 | `POST /sync/{entity}` has no concurrency guard, so a metadata sync and a dependencies build interleave on the same event loop while the metadata cache is mid-repopulation (`api/sync.py:85-138` creates jobs unconditionally) | Triggering a sync for an entity that already has a running job is rejected (or queued) rather than starting a second concurrent run; a test asserts the second trigger does not start while the first is RUNNING | open | no |
-| S25 | P2 | `CachedMetadata` has only single-column indexes (`cluster_id`, `org_id`, `ts_guid`), so any correlated subquery or join keyed on `(cluster_id, org_id, ts_guid)` picks `ix_ts_metadata_cluster_id` — the least selective — and goes quadratic. The app never runs `ANALYZE` and sets no pragmas (`database.py:30-34`), so SQLite's no-stats heuristic has nothing better to choose | A `(cluster_id, org_id, ts_guid)` composite index exists on `ts_metadata` and `EXPLAIN QUERY PLAN` for a correlated lookup shows `SEARCH ts_metadata USING COVERING INDEX ... (cluster_id=? AND org_id=? AND ts_guid=?)`. **`create_all` does NOT add an index to an already-existing table**, so it ships as an explicit `CREATE INDEX IF NOT EXISTS` in `init_db()` (or a sentinel bump) and is verified against a DB created before the change | done | no |
-| S26 | P2 | Sync background tasks block the FastAPI event loop: `api/sync.py:113` `background_tasks.add_task(run_sync, ...)` with an `async` target means Starlette awaits it inline, and `_persist_column_map` is synchronous — so slow DB work in a sync freezes ALL HTTP handling, including the job-status polling the UI uses to show sync progress, and `/health`. Compounded by the engine setting no `journal_mode` (no WAL), so a long write transaction holds the DB write lock | Long-running/blocking sync work does not occupy the event loop (e.g. the blocking section runs via `to_thread`/`run_in_executor`, or the job runs off the request path entirely), and job-status polling stays responsive while a large sync runs; WAL is enabled or the decision not to is recorded with a reason | open | no |
-| M4 | P3 | A "spares X" guard test placed on a code path that full-rebuilds X is vacuous — `test_orphan_purge_spares_connects_edges` passed with its entire `relation == "USES"` restriction deleted, because `_persist_column_map` delete-alls and re-inserts CONNECTS after the purge in the same run | The org's review checklist (or the `reviewer` agent brief) requires every "spares/preserves X" guard test to be falsified by deleting the predicate it guards, and the test must be placed on a path that does not rebuild X; the lesson is recorded in `docs/dev/TESTING.md` | open | no |
-| M5 | P2 | The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan) | CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins | open | yes (`CLAUDE.md`) |
-| M6 | P2 | The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop | The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle | in-review | no |
-| S27 | P1 | **Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded | Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes | in-review | no |
-| S28 | P2 | The liveboard incremental watermark is a bare timestamp, which cannot express "not yet crawled": a liveboard that has existed in TS since 2020 but enters `CachedMetadata` only after the first build (late/interrupted metadata sync, or newly shared with the admin — a permission grant does not bump `modified_at`) has `modified_at ≤ watermark` and is never crawled, so its USES edges are never built. **Verified present on `main` today** — not introduced by the rejected S7 diff, but S7's persisted marker made it permanent where the accidental `NULL`-watermark reset used to mask it | A liveboard whose lineage has never been built is crawled regardless of its `modified_at` — e.g. the changed-set is computed from a persisted crawled-GUID set (or `max(modified_at, metadata_first_seen)`) rather than a bare timestamp comparison; a unit test seeds a liveboard with a 2020 `modified_at` that arrives in `CachedMetadata` after the first build and asserts the second build exports it | open | no |
-| S29 | P2 | `_persist_column_map` commits its DELETEs before inserting (`session.commit()` between the delete block and the insert loop), so a crash in that window — process kill, `serve` restart, sqlite lock timeout, or an S24 interleave — leaves a durably-empty scope. Today this self-heals only by accident, via `max(CachedColumnLineage.synced_at)` reading NULL; the rejected S7 diff removed that accident and made the loss permanent | The delete+repopulate in `_persist_column_map` is atomic (single transaction), or a crash in the window is detectable so the next build rebuilds the scope rather than trusting it; a test simulates a raise between the delete commit and the insert loop and asserts the following build restores the edges | open | no |
-| M8 | P2 | Gate serialization is violated in practice by **file writes**, not just ports: during the S7 review, reviewer/QA agents wrote five scratch repro files into `tests/unit/` of the **shared** checkout, flipping `pytest tests/unit/` from green to red mid-verification and making QA's gate result untrustworthy. CLAUDE.md serializes port-bound gates but says nothing about agents writing into the working tree they share | The agent briefs (and CLAUDE.md's gate-serialization note) require review/QA repro artifacts to live in a `git worktree` or the scratchpad, never in `tests/` of the shared checkout; QA reports the working tree state it observed so a polluted run is visible rather than silent | open | yes (`CLAUDE.md`) |
-| M9 | P2 | A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier | The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built | in-review | no |
-| S30 | P2 | `build_answer_index`'s `_changed` twin (`lineage_service.py:897`) is byte-identical to `build_column_map`'s but has **zero** mutation coverage: dropping its `last_built is None` disjunct leaves the entire 37-test lineage suite green, while the same mutation at `:559` is now killed by S27. Answer-index incrementality is unpinned, and `build_answer_index` carries the same watermark shape S7 was rejected over (`max(CachedColumnUsage.synced_at)` over *surviving* rows, so partial deletion is permanent) | The ANSWER tier's incremental predicates are each killed by at least one test — at minimum, dropping `last_built is None` or the `modified_at > last_built` comparison at `lineage_service.py:897` turns a test red; the mutations and results are appended to the table in [docs/dev/TESTING.md](docs/dev/TESTING.md) | open | no |
-| M7 | P3 | `docs/org-memory/` was effectively append-only, so a fact that a later PR had already fixed kept steering agents wrong: the "KNOWN RED `ruff format --check`" bullet was resolved by W2 in PR #11 but still misled two agents in the S6 cycle (one wrote a "record the pre-existing failure" instruction into its plan) | The Records step requires **pruning** — every cycle re-verifies the org-memory facts its work touched and DELETES or amends the ones that no longer hold, not just appends new ones; `docs/org-memory/README.md` states this and the ~120-line cap is described as enforced by pruning stale facts first | open | no |
-| S31 | P2 | `preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope | `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0 | open | no |
-| S32 | P3 | `cache_authoritative` is produced end-to-end and consumed nowhere: `api/metadata.py` computes it on both metadata responses and `frontend/lib/types.ts` types it, but no component reads it (grep returns only the type declarations), so after an interrupted sync the Metadata Explorer still presents a truncated list as complete. Same produced-but-never-rendered shape as the `accessible` flag already recorded in org-memory | The metadata list/stats UI visibly marks the data as possibly-partial when `cache_authoritative` is false (banner, badge, or equivalent), so the flag's stated contract — "the UI must not present the list as complete" — is actually met; a frontend test or an explicit manual-verification note records it | open | no |
-| S33 | P3 | The Topbar sync label/color has no test: S23 fixed a fail-open where `IN_PROGRESS` fell through to the "Synced Xm ago" branch and rendered green, and the fix (`"Syncing…"` + accent) is verified by reading only. `tsc` and `next build` cannot catch a wrong string or token, and vitest is not a CI gate, so a future edit could silently restore the fail-open with every gate green | `frontend/components/Shell/Topbar.tsx`'s `buildSyncLabel`/`buildSyncColor` are covered for every `SyncStatus` value including `IN_PROGRESS`, so a status with no branch fails a test rather than rendering as healthy | in-review | no |
-| S34 | P2 | Nothing prevents two dependency syncs running concurrently for the same (cluster, org). Observed live: three simultaneous TML crawls on ps-internal-prod (one script + two UI "Sync Lineage" clicks) produced sustained 30s `metadata/tml/export` timeouts and retry backoff, tripling the wall-clock of all three. Not corrupting — each pass is a full delete-and-rebuild scoped to (cluster, org), so last writer wins with a complete set — but the UI gives no signal that a build is already in flight and happily starts another | Triggering a `dependencies` sync while one is already RUNNING for the same (cluster, org) either refuses with an actionable message or returns the in-flight job instead of starting a second crawl; a test asserts the second trigger does not produce a second RUNNING job | open | no |
-| M11 | P2 | A best-effort pass that fails silently reports success at every level, and no gate catches it. `_sync_dependencies` swallows the column-map failure by design (the object tier must survive), so on a cluster where the TML pass aborted every time the job read COMPLETE, the Topbar read "Synced 2m ago", and the cache held 9,247 USES edges with **zero** CONNECTS and zero column rows. The full verification bar was green throughout — unit tests exercise the pass against canned TML that never fails, so the all-or-nothing batch flaw and the Model-alias parse gap were both invisible. Partially addressed (`column_error` now rides in the job result), but nothing asserts a degraded pass is visible to the user | Either a gate or a guard test makes a silently-degraded sync detectable: a `dependencies` sync whose column pass fails does not present as a clean COMPLETE in the Jobs UI, and the org's test conventions require best-effort passes to be exercised against a failing dependency, not only a happy-path fake | open | no |
-| M10 | P2 | A fail-closed guard placed inside a Starlette background-task target is fail-**silent**, and the org's review/test conventions do not catch it: S23 shipped guards in `execute_share`/`execute_transfer` that raise after the 202 is already on the wire, so the 409 never reaches the caller and the `Job` row strands at `QUEUED`/`error=None` until a restart. All 241 unit tests passed on the broken guard because service-level tests call the coroutine directly — the one thing production cannot do | The `reviewer`/`implementer` briefs (or `docs/dev/TESTING.md`) require that any refusal on a `background_tasks.add_task`-dispatched endpoint is (a) checked in the router before `create_job` and (b) covered by a TestClient test asserting the status code AND that no `Job` row was created; a service-level unit test alone is documented as insufficient for this class | open | no |
-| M12 | P2 | Frontend `vitest` executes on **zero** automated entry points, so a test written to satisfy a backlog row guards nothing. `.github/workflows/ci.yml` runs only `npm ci` → `npx tsc --noEmit` → `npm run build` (no `npm test` step), and `Makefile:20` `test:` is `pytest tests/ -v` with no frontend target — while CLAUDE.md documents `make test` as "pytest + vitest + Playwright". Found during S33: its 37 new tests are enforced by CI only where they produce a *type* error. Broader than S1 ("wire vitest into CI"), which understates it by not covering `make test` or the CLAUDE.md drift | `npm test` runs in CI AND from a documented make target; CLAUDE.md's description of `make test` matches what the Makefile does (or the claim is corrected); a deliberately-broken frontend assertion is caught by a gate rather than only by a human running vitest by hand | open | yes (`.github/workflows/*`, `CLAUDE.md`) |
-| S36 | P1 | Startup crash-recovery deletes `CachedMetadata` rows for objects that were never deleted, is not cluster/org-scoped, and ignores Bulk Deleter jobs. `main.py:70` matches `job_type == "archive"` only (the Deleter creates `bulk_delete`, so it gets no recovery at all), and `:73-88` infers "deleted" from `tml_export_status == "SUCCESS"` — but `_execute_delete` exports EVERY object in Phase A before Phase B deletes any, so the most likely crash window is exactly where that inference is maximally wrong: the recovery purges the cache for N objects of which zero were deleted. The admin then sees them vanish from Metadata Explorer and the Archiver while they are still live in ThoughtSpot, and their `ArchiveRecord`s report `is_restorable=True`, so "restoring" them creates duplicates. `:82`'s `sql_delete` also has no `cluster_id`/`org_id` predicate, though the stuck `Job` row carries `cluster_id` | Crash recovery does not infer deletion from TML-export status: either `_execute_delete` records per-GUID delete confirmation (an `ArchiveRecord` field set only after `delete_metadata` returns) and recovery purges only confirmed rows, or recovery purges nothing and instead marks the metadata `sync_log` non-authoritative so the next read re-syncs. The delete is scoped to the stuck job's `cluster_id` and org. Recovery behaves identically for `job_type="bulk_delete"`. Tests: (a) a RUNNING archive delete job with all records `tml_export_status="SUCCESS"` and no confirmed deletes removes zero `CachedMetadata` rows; (b) the same `ts_guid` in two clusters, recovery for a stuck job in cluster A leaves cluster B's row intact | open | yes (`ts_admin/main.py`) |
-| S37 | P2 | `BearerTokenAuth` silently discards `org_id`, so every sync on a bearer-token cluster stamps one org's data with another org's id. `config.py:74-76` accepts `org_id` and throws it away for `AuthType.BEARER` (`ts_client/auth.py:170-176` has no `org_id` field at all, unlike `BasicAuth:86` and `TrustedAuth:133`) — despite `build_auth_strategy`'s own docstring stating org context is the ONLY way the TS API scopes content. Bearer is a first-class option in the Connections UI. An admin on org 5 syncing metadata gets org 0's objects written with `org_id=5`; the Archiver and Bulk Delete then build their input set from that cache, so a cleanup the admin believes is scoped to org 5 selects org 0's production content — and the dry-run agrees with itself, because preview and execute read the same mis-stamped cache. Related: `_sync_users`/`_sync_groups` pass no `org_id` while `_sync_metadata` and every lineage build do, so the handlers disagree about the contract | A `BEARER` cluster cannot silently produce org-mismatched cache rows: either `BearerTokenAuth` carries and applies an org context, or `build_auth_strategy(org_id=...)` fails loudly (surfaced as a FAILED sync with an actionable message) when the strategy cannot honour the org, or the Connections UI blocks BEARER on multi-org clusters. A unit test asserts `build_auth_strategy(org_id=5)` on a BEARER cluster does not return an object that silently ignores 5. The org-scoping contract in `config.py:62-64` and the four sync handlers agree on whether `org_id` is passed | open | yes (`ts_admin/config.py`) |
-| S38 | P2 | `POST /api/v1/deleter/delete-tag-only` is a destructive, synchronous, cluster-wide write with no dry-run, in a product whose non-negotiable UX pattern is "dry-run required for all destructive operations". `api/deleter.py:156-176` calls `client.delete_tag` inline — no job, no preview of how many objects lose the label — and it is absent from `DRYRUN_ENDPOINTS`, while being wired into the UI at `frontend/lib/api.ts:485`. Compounding it: the TS-side delete removes the tag cluster-wide but the local strip is scoped to one org (`deleter_service.py:195-197`), so every other org's cached rows keep showing a tag that no longer exists | A dry-run (endpoint or preview field) reports the count of objects that would lose the tag before any write; the endpoint is registered in `DRYRUN_ENDPOINTS`; the local tag strip is applied across every org of the cluster (or the tag cache is invalidated). A test asserts a second org's cached rows no longer carry the deleted tag | open | yes (`tests/integration/test_dryrun_safety.py`) |
-| S39 | P3 | The audit log has seven writers and zero readers, and no `org_id`. `AuditLog` is written by `deletion_service`, `bulk_sharing_service`, `deleter_service`, `user_management_service` (×3) and `archiver_service` (×2); no router, service or frontend file reads it — grep returns only writers and tests. "Audit log" is listed as an MVP v1 feature in CLAUDE.md, yet today an admin can only see it by opening the SQLite file. The model also carries no `org_id`, so even once a reader exists it cannot be org-scoped like `ArchiveRecord`, `ShareRecord` and `UserActionRecord` all are | A cluster+org-scoped `GET /api/v1/audit` serves the audit trail and is registered in `READ_ENDPOINTS`; `AuditLog` gains `org_id` and every writer sets it; a test asserts a destructive action in org 5 does not appear in org 0's feed | open | yes (`tests/integration/test_cluster_isolation.py`) |
-| S40 | P3 | The transfer-ownership modal's type chips collapse to the current selection, making multi-type selection impossible and hiding what the user actually owns. `user_management_service.py:279-282` computes `by_type` from the ALREADY-FILTERED rows, and `TransferOwnershipModal.tsx:125-135` renders the chip row straight from that response, refetching on every chip click. A user owning 12 liveboards and 8 answers shows both chips; clicking `Liveboard` makes the `Answer 8` chip disappear, so there is no way to select both and the modal now states the user owns nothing but liveboards — if the admin proceeds, 8 answers are silently left on the departing account. Secondary: entering the `confirming` step re-fires `loadPreview`, so every transfer runs the preview query twice | The chip set is derived from an UNFILTERED preview (a separate unfiltered `by_type`, or the chips are held from the first response and not overwritten), so every type the user owns stays selectable and multi-type selection works, with each chip's count reflecting the owned total for that type. A test previews a user owning two types, selects one, and asserts both chips are still rendered | open | no |
-| S41 | P3 | Grid selection is silently lost past ~2,000 rows on the infinite row model. `pages/sharing.tsx:198-201`, `pages/archiver.tsx:425-431` and `pages/users.tsx:168-170` derive the action set from `api.getSelectedRows()` with `maxBlocksInCache={10}` × `cacheBlockSize={200}`; when AG Grid evicts a block its row nodes go with it, so checkboxes ticked near the top of a 10k-object org stop being returned once the admin scrolls far enough. The "N selected" counter changes without the admin unchecking anything, and the bulk action runs on a subset. Graded PLAUSIBLE — needs confirmation against the pinned AG Grid version before fixing | Selection is held in page state keyed by GUID and survives block eviction, or the grid caps/warns when a selection can no longer be guaranteed. A test (or a recorded manual measurement against a >2,000-row org) establishes the behaviour at the pinned version first | open | no |
-| M13 | P2 | Two bug-hunt passes graded the three grid pages' stale-response guards "clean" while sorting was dead in production on all three: the guard returned from AG Grid's `getRows` without calling `successCallback` OR `failCallback`, leaking the block loader's concurrency slots (cap 2), so the grid stopped issuing requests after the second superseded load. Reading only our code the guard looks correct — the bug is only visible against the LIBRARY's contract. No gate could see it either: `tsc` and `next build` pass, and there is no browser-level check of any interaction | The `bug-hunter` and `reviewer` briefs require checking the third-party contract whenever our code short-circuits inside a library-supplied callback (done in this cycle — verify it stays), AND the org gains at least one automated interaction check that would have caught it: a Playwright (or vitest + AG Grid) test that sorts a grid twice and asserts rows are still rendered, running in a gate rather than by hand | open | no |
-| S42 | P2 | No sync verifies that the session is actually operating in the org whose id it stamps on every cached row. `build_auth_strategy(org_id=...)` is best-effort — `BearerTokenAuth` discards it outright (S37), and `_sync_users`/`_sync_groups` never pass it at all — yet `_sync_metadata` writes `org_id=N` onto every row regardless. When auth and stamp disagree, one org's content is cached under another org's id, and the Archiver and Bulk Deleter then build their input set from that cache: a cleanup the admin believes is scoped to org 5 selects org 0's production content, and the dry-run agrees with itself because preview and execute read the same mis-stamped cache. Verified live that the org a session is really in is observable: `GET /api/rest/2.0/auth/session/user` returns `current_org: {id, name}` for every auth type (`auth/session/token` does NOT carry an org scope, so token introspection is not the route) | Before a sync writes any row stamped `org_id=N`, it confirms the live session's `current_org.id == N` and fails the job with an actionable message otherwise — one check per sync, not per page. The guard is auth-type agnostic, so it fails closed on BEARER (S37) and on any future auth mechanism that silently ignores org. It reads `current_org`, NOT the `orgs` membership list, since the docs state a cluster admin's `orgs` contains only Primary unless explicitly added to each Org. Tests: (a) a session whose `current_org.id` is 0 while the sync runs for org 5 fails the job and writes zero `CachedMetadata` rows; (b) a matching org proceeds normally; (c) the check is issued once per sync run | open | no |
-| W3 | P2 | `search_metadata` queries the `SQL_VIEW` subtype unconditionally, but the `subtypes` enum tags it **Version: 10.11.0.cl or later** — and the seven specs run in a single generator loop, so one spec's 400 raises `TSInvalidParametersError` and kills the WHOLE metadata sync, discarding the specs that already succeeded. A customer below 10.11 therefore may have no metadata cache at all, and the failure names a subtype rather than the version gate. Not visible on ps-internal-prod or se-demo, both 26.8 | The `SQL_VIEW` spec is skipped when the cluster's `release_version` is below 10.11.0 (`test_connection` already retrieves it). Independently — and this is the load-bearing half — a failure in ONE spec of `search_metadata` is recorded and the remaining specs still run: a test injects a 400 on the `SQL_VIEW` spec and asserts LIVEBOARD/ANSWER/WORKSHEET results are still yielded and the sync completes as PARTIAL rather than FAILED | open | no |
-| W4 | P3 | `permission_type` on `security/metadata/fetch-permissions` is tagged **Version: 10.3.0.cl or later**, and below that release the key is silently ignored (v2 drops unknown body keys without erroring). The difference is not cosmetic: measured on ps-internal-prod, `DEFINED` returns 0 principals for a liveboard where the effective set is 138. So a customer below 10.3 sees the EFFECTIVE set in the Metadata Explorer drawer and in the bulk-sharing preview diff while the UI labels it as direct shares — the exact inverse of the bug fixed in `be64fd5`, and with no warning | The permissions path is version-aware: when the cluster's `release_version` parses below 10.3.0, the drawer and the sharing preview either label their result as effective access or the direct/effective split is disabled with an explicit message. A unit test drives both branches off a stubbed `release_version` | open | no |
-| W5 | P3 | `metadata/search` is paginated with `include_stats` and `include_details`, neither of which is on the documented list of parameters that support pagination — the reference says "if you are using other parameters to search metadata, set `record_size` to `-1` and `record_offset` to `0`". Tested live and it currently holds (3x200 pages = 365 records, 365 unique, identical set to `record_size: -1`, zero duplicates), so this is a documented-contract violation rather than an observed bug — but it is precisely the shape that silently drops objects on a larger cluster or a future release, and "objects mysteriously missing from the cache" is a symptom this project has chased before | For each of the seven `search_metadata` specs, a live comparison on the largest available org asserts the paged GUID set equals the `record_size: -1` GUID set with zero duplicates, run against both live clusters. Any spec that diverges switches to `record_size: -1`. The result is recorded in `docs/org-memory/codebase.md` so the next person does not re-derive it | open | no |
-| W6 | P2 | Follow-on to W3, which is a strict improvement but leaves a sharp edge. Below 10.11.0 the `SQL_VIEW` subtype value does not exist, so W3 skips that spec — and records a skipped spec exactly like a failed one, which is correct (those objects genuinely go unenumerated) but means the metadata sync on such a cluster ends **PARTIAL forever**. `require_authoritative_metadata` therefore keeps refusing, so the Archiver, Bulk Delete, Bulk Sharing and transfer previews 409 permanently. Better than the old behaviour (one spec's 400 killed the whole crawl and left no cache at all), but a customer below 10.11 still cannot use the destructive features. Note the docs place the 10.11 tag on the `subtypes` FILTER VALUE, not on SQL Views themselves — the objects exist, we just cannot ask for them by that name | Below 10.11.0 the metadata crawl falls back to a single unfiltered `LOGICAL_TABLE` pass and derives each object's effective subtype from the response, so the spec set is complete and the sync can certify SUCCESS. A test drives a stubbed `release_version` of 10.10.0, asserts no request carries `subtypes: ["SQL_VIEW"]`, asserts SQL-view objects still land in `CachedMetadata` with the right `object_type`, and asserts the sync completes SUCCESS rather than PARTIAL | open | no |
-| S43 | P3 | `BasicAuth` omits `org_id` when it is `None`, and the spec states that a token minted with no `org_id` and no secret key logs the user into "the Org context of their **previous login session**" — i.e. whichever org the admin last used in the ThoughtSpot browser UI. So any token-scoped call made through a basic-auth connection with no org selected lands in a non-deterministic org. `_sync_tags` does pass `org_id` so it is protected today, but the next `build_auth_strategy()` call with no org on a token-scoped endpoint is a coin flip that presents as "the sync worked yesterday and returned different data today". `TrustedAuth` is deterministic (the secret key's org) | `BasicAuth`/`TrustedAuth` with `org_id=None` either default to `0` explicitly or log a warning naming the resolved org; after login the session's actual org is asserted via `GET /auth/session/user` -> `current_org.id` (see S42) and a mismatch fails loudly rather than silently caching another org's content. A unit test covers the `org_id=None` path | open | yes (`ts_admin/config.py`, `ts_admin/ts_client/auth.py`) |
-| S44 | P2 | A bulk share cannot be verified, because `security/metadata/share` returns a bare **204 No Content** — no per-object, no per-principal status — and no alternative bulk-share endpoint reports one. So "the share succeeded" is currently an assumption, and the audit-log row recording it is a guess rather than a record. This is an API limitation, not a coding defect, but it is exactly the gap that let the 404-ing `security/share` path (fixed in `9b60fa5`) go unnoticed. The read-back already exists: `bulk_sharing_service` calls `security/metadata/fetch-permissions` per object to build the PREVIEW diff | After `execute_share`, each object is re-read with the same helper the preview uses and the result is compared to what was requested; the job result and the audit row record `verified_ok` / `verified_failed` counts, and a run where nothing changed is not reported as SUCCESS. A test whose stub returns unchanged permissions asserts `verified_failed == n` | open | no |
-| S45 | P3 | `COLLECTION` is a first-class ThoughtSpot object type that this app never syncs — 6 exist on ps-internal-prod. It is in the `type` enum for `metadata/search`, `security/metadata/share` (with dual `share_mode` + `content_share_mode`), `tags/assign` and `principals/fetch-permissions`, so collections are invisible in the Metadata Explorer, unshareable via Bulk Sharing, and un-archivable. `INSIGHT_SPEC` (7 on the same cluster) and the `PRIVATE_WORKSHEET` subtype are likewise unqueried | `COLLECTION` is synced into `CachedMetadata` like any other type and appears in the Metadata Explorer with a label in `TYPE_LABELS`; sharing a collection sends `content_share_mode` as well as `share_mode`, since the two control different things and omitting the former silently defaults collection contents to `READ_ONLY`. A decision on `INSIGHT_SPEC`/`PRIVATE_WORKSHEET` is recorded either way | open | no |
-| M14 | P2 | A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete | A job in which zero items succeeded reports FAILED, never PARTIAL — the `succeeded == 0` branch is evaluated first at every such site, with a test per site. Separately, the org's review checklist requires that a blanket `except Exception` wrapping a batch loop is either narrowed to named exception classes or justified in a comment naming what it is allowed to swallow; CLAUDE.md already forbids bare `except Exception`, so the ~20 pre-existing sites are inventoried and tracked rather than left implicit | open | no |
-| S35 | P3 | The Topbar header layout has no automated guard, and jsdom cannot provide one — it does not lay out, so a vitest render test can only assert inline style strings, not geometry. S33's review found two CONFIRMED layout regressions (offline badge painting on top of the sync indicator; page title collapsing to width 0) that `tsc`, `next build` and 39 green vitest tests were all blind to; they were caught only by an agent measuring a hand-built CSS replica in headless Chromium. A residual overlap of 3–20px also remains below 720px offline, where the header is over-subscribed even with the title column at zero width | A Playwright viewport assertion covers the header's non-overlap invariant at the widths that matter (at minimum 1024 and 900, offline and online): the offline badge's right edge stays left of the sync column's left edge, and the org selector stays within the viewport; the &lt;720px residual is either fixed with a responsive badge (icon-only + `title`) or explicitly accepted in the test as an out-of-support width | open | no |
+The **Index** below is the scan view — one line per item. The **detail entry**
+(under Open / In review / Done / Feedback) is the authoritative record: it holds
+the full problem statement and acceptance criteria, verbatim. When a Status
+changes, update it in BOTH the index line and the detail entry's status line.
+New rows get an index line plus a detail entry in the matching section. When
+an item reaches `done`, move its index line and detail entry to
+[BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
+
+## Index
+
+### Open (43)
+
+| ID | P | Item | Protected |
+|----|---|------|-----------|
+| S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
+| M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
+| M8 | P2 | Gate serialization violated by file writes into the shared checkout | yes (`CLAUDE.md`) |
+| M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
+| M11 | P2 | A silently-degraded best-effort pass reports success at every level | — |
+| M12 | P2 | Frontend vitest executes on zero automated entry points | yes (`.github/workflows/*`, `CLAUDE.md`) |
+| M13 | P2 | Library-contract blindness: dead grid sorting graded 'clean' twice | — |
+| M14 | P2 | Blanket except in batch loops: total failure reports PARTIAL | — |
+| S7 | P2 | has_lb_edges self-heal makes incremental a permanent full crawl | — |
+| S26 | P2 | Sync background tasks block the FastAPI event loop | — |
+| S28 | P2 | Bare-timestamp watermark cannot express 'not yet crawled' | — |
+| S29 | P2 | _persist_column_map delete-commit crash window | — |
+| S30 | P2 | build_answer_index incremental predicates have zero mutation coverage | — |
+| S31 | P2 | preview_delete trusts a possibly-truncated cache ('0 owned objects') | — |
+| S34 | P2 | Concurrent dependency syncs for the same (cluster, org) | — |
+| S37 | P2 | BearerTokenAuth silently discards org_id | yes (`ts_admin/config.py`) |
+| S38 | P2 | delete-tag-only is destructive with no dry-run | yes (`tests/integration/test_dryrun_safety.py`) |
+| S42 | P2 | No sync verifies the session org matches the stamped org_id | — |
+| S44 | P2 | A bulk share cannot be verified (bare 204) | — |
+| W3 | P2 | SQL_VIEW subtype below 10.11 kills the whole metadata sync | — |
+| W6 | P2 | Below 10.11 the metadata sync ends PARTIAL forever | — |
+| M3 | P3 | READ_ENDPOINTS cannot register detail-shaped endpoints | yes (`tests/integration/test_cluster_isolation.py`) |
+| M4 | P3 | Vacuous 'spares X' guard tests | — |
+| M7 | P3 | org-memory was append-only; stale facts mislead agents | — |
+| S2 | P3 | Add a /health smoke check to CI | yes (`.github/workflows/*`) |
+| S5 | P3 | Nested group membership never persisted | — |
+| S8 | P3 | principal_permissions fails silently to [] (recorded as SUCCESS) | — |
+| S9 | P3 | _is_admin joins on cluster_id only | — |
+| S19 | P3 | Unused cache signals (dead-end models, view_count, over-sharing) | — |
+| S20 | P3 | Dashboard is single-cluster despite multi-cluster v1 | — |
+| S21 | P3 | _recent_activity window crowd-out by one bulk session | — |
+| S24 | P3 | POST /sync/{entity} has no concurrency guard | — |
+| S32 | P3 | cache_authoritative is produced end-to-end and consumed nowhere | — |
+| S35 | P3 | Topbar header layout has no automated guard (jsdom can't) | — |
+| S39 | P3 | Audit log: seven writers, zero readers, no org_id | yes (`tests/integration/test_cluster_isolation.py`) |
+| S40 | P3 | Transfer-ownership type chips collapse to the current selection | — |
+| S41 | P3 | Grid selection silently lost past ~2,000 rows | — |
+| S43 | P3 | org_id=None basic-auth lands in a nondeterministic org | yes (`ts_admin/config.py`, `ts_admin/ts_client/auth.py`) |
+| S45 | P3 | COLLECTION objects are never synced | — |
+| W1 | P3 | Add mypy to CI | yes (`.github/workflows/*`) |
+| W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
+| W5 | P3 | metadata/search paginated outside the documented contract | — |
+| M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
+
+### In review (7)
+
+| ID | P | Item | Protected |
+|----|---|------|-----------|
+| S27 | P1 | Lineage unit suite is mutation-vacuous | — |
+| M2 | P2 | PR #14 silently reverted the vitest wiring | yes (`.github/workflows/*` for the CI half) |
+| S23 | P2 | Interrupted metadata sync reads as fully synced | — |
+| S1 | P3 | Wire frontend vitest into the suite | — |
+| S33 | P3 | Topbar sync label/color has no test | — |
+| M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
+| M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
+
+### Done
+
+Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
+
+### Feedback (11)
+
+| ID | P | Type | Item | Status | Protected |
+|----|---|------|------|--------|-----------|
+| F1 | P3 | Feature | Connections list page with per-connection object counts | open | yes (`tests/integration/test_cluster_isolation.py`) |
+| F2 | P3 | Feature | Connection + external db/schema/table on the table list and in lineage | open | — |
+| F3 | P4 | Feature | 'Created by' on the users list; 'Created' date on the groups list | open | — |
+| F4 | P2 | Bug | Lineage zoom controls near-invisible in dark mode | open | — |
+| F5 | P4 | Bug | Dashboard: vertically align the per-job status pills | open | — |
+| F6 | — | Bug | Repeated Sync clicks start duplicate syncs of the same type | see S24/S34 | — |
+| F7 | P3 | Bug | Direct table-to-answer arrow drawn even when the answer sits on a model | open | — |
+| F8 | P4 | Feature | CSV export for Users and Groups | open | — |
+| F9 | P3 | Feature | Export tagged content to TML without deleting | open | — |
+| F10 | P3 | Feature | Transfer ownership of selected objects from the Metadata screen | open | yes (`tests/integration/test_dryrun_safety.py`) |
+| F11 | P3 | Feature | Select-all on the Archiver results grid | open | — |
 
 > Seeded 2026-07-15 at bootstrap (BOOT) from Step 0 discovery. Run
 > `/improve-cycle discover` to add more rows from a bug-hunt sweep.
+
+## Open items
+
+Ordered by priority, then ID.
+
+### S36 — Startup crash-recovery purges cache rows for never-deleted objects
+
+`P1` · **open** · protected: yes (`ts_admin/main.py`)
+
+Startup crash-recovery deletes `CachedMetadata` rows for objects that were never deleted, is not cluster/org-scoped, and ignores Bulk Deleter jobs. `main.py:70` matches `job_type == "archive"` only (the Deleter creates `bulk_delete`, so it gets no recovery at all), and `:73-88` infers "deleted" from `tml_export_status == "SUCCESS"` — but `_execute_delete` exports EVERY object in Phase A before Phase B deletes any, so the most likely crash window is exactly where that inference is maximally wrong: the recovery purges the cache for N objects of which zero were deleted. The admin then sees them vanish from Metadata Explorer and the Archiver while they are still live in ThoughtSpot, and their `ArchiveRecord`s report `is_restorable=True`, so "restoring" them creates duplicates. `:82`'s `sql_delete` also has no `cluster_id`/`org_id` predicate, though the stuck `Job` row carries `cluster_id`
+
+**Acceptance criteria:** Crash recovery does not infer deletion from TML-export status: either `_execute_delete` records per-GUID delete confirmation (an `ArchiveRecord` field set only after `delete_metadata` returns) and recovery purges only confirmed rows, or recovery purges nothing and instead marks the metadata `sync_log` non-authoritative so the next read re-syncs. The delete is scoped to the stuck job's `cluster_id` and org. Recovery behaves identically for `job_type="bulk_delete"`. Tests: (a) a RUNNING archive delete job with all records `tml_export_status="SUCCESS"` and no confirmed deletes removes zero `CachedMetadata` rows; (b) the same `ts_guid` in two clusters, recovery for a stuck job in cluster A leaves cluster B's row intact
+
+### M5 — A green verification bar is necessary but not sufficient
+
+`P2` · **open** · protected: yes (`CLAUDE.md`)
+
+The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan)
+
+**Acceptance criteria:** CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins
+
+### M8 — Gate serialization violated by file writes into the shared checkout
+
+`P2` · **open** · protected: yes (`CLAUDE.md`)
+
+Gate serialization is violated in practice by **file writes**, not just ports: during the S7 review, reviewer/QA agents wrote five scratch repro files into `tests/unit/` of the **shared** checkout, flipping `pytest tests/unit/` from green to red mid-verification and making QA's gate result untrustworthy. CLAUDE.md serializes port-bound gates but says nothing about agents writing into the working tree they share
+
+**Acceptance criteria:** The agent briefs (and CLAUDE.md's gate-serialization note) require review/QA repro artifacts to live in a `git worktree` or the scratchpad, never in `tests/` of the shared checkout; QA reports the working tree state it observed so a polluted run is visible rather than silent
+
+### M10 — Fail-closed guard inside a background task is fail-silent
+
+`P2` · **open** · protected: no
+
+A fail-closed guard placed inside a Starlette background-task target is fail-**silent**, and the org's review/test conventions do not catch it: S23 shipped guards in `execute_share`/`execute_transfer` that raise after the 202 is already on the wire, so the 409 never reaches the caller and the `Job` row strands at `QUEUED`/`error=None` until a restart. All 241 unit tests passed on the broken guard because service-level tests call the coroutine directly — the one thing production cannot do
+
+**Acceptance criteria:** The `reviewer`/`implementer` briefs (or `docs/dev/TESTING.md`) require that any refusal on a `background_tasks.add_task`-dispatched endpoint is (a) checked in the router before `create_job` and (b) covered by a TestClient test asserting the status code AND that no `Job` row was created; a service-level unit test alone is documented as insufficient for this class
+
+### M11 — A silently-degraded best-effort pass reports success at every level
+
+`P2` · **open** · protected: no
+
+A best-effort pass that fails silently reports success at every level, and no gate catches it. `_sync_dependencies` swallows the column-map failure by design (the object tier must survive), so on a cluster where the TML pass aborted every time the job read COMPLETE, the Topbar read "Synced 2m ago", and the cache held 9,247 USES edges with **zero** CONNECTS and zero column rows. The full verification bar was green throughout — unit tests exercise the pass against canned TML that never fails, so the all-or-nothing batch flaw and the Model-alias parse gap were both invisible. Partially addressed (`column_error` now rides in the job result), but nothing asserts a degraded pass is visible to the user
+
+**Acceptance criteria:** Either a gate or a guard test makes a silently-degraded sync detectable: a `dependencies` sync whose column pass fails does not present as a clean COMPLETE in the Jobs UI, and the org's test conventions require best-effort passes to be exercised against a failing dependency, not only a happy-path fake
+
+### M12 — Frontend vitest executes on zero automated entry points
+
+`P2` · **open** · protected: yes (`.github/workflows/*`, `CLAUDE.md`)
+
+Frontend `vitest` executes on **zero** automated entry points, so a test written to satisfy a backlog row guards nothing. `.github/workflows/ci.yml` runs only `npm ci` → `npx tsc --noEmit` → `npm run build` (no `npm test` step), and `Makefile:20` `test:` is `pytest tests/ -v` with no frontend target — while CLAUDE.md documents `make test` as "pytest + vitest + Playwright". Found during S33: its 37 new tests are enforced by CI only where they produce a *type* error. Broader than S1 ("wire vitest into CI"), which understates it by not covering `make test` or the CLAUDE.md drift
+
+**Acceptance criteria:** `npm test` runs in CI AND from a documented make target; CLAUDE.md's description of `make test` matches what the Makefile does (or the claim is corrected); a deliberately-broken frontend assertion is caught by a gate rather than only by a human running vitest by hand
+
+### M13 — Library-contract blindness: dead grid sorting graded 'clean' twice
+
+`P2` · **open** · protected: no
+
+Two bug-hunt passes graded the three grid pages' stale-response guards "clean" while sorting was dead in production on all three: the guard returned from AG Grid's `getRows` without calling `successCallback` OR `failCallback`, leaking the block loader's concurrency slots (cap 2), so the grid stopped issuing requests after the second superseded load. Reading only our code the guard looks correct — the bug is only visible against the LIBRARY's contract. No gate could see it either: `tsc` and `next build` pass, and there is no browser-level check of any interaction
+
+**Acceptance criteria:** The `bug-hunter` and `reviewer` briefs require checking the third-party contract whenever our code short-circuits inside a library-supplied callback (done in this cycle — verify it stays), AND the org gains at least one automated interaction check that would have caught it: a Playwright (or vitest + AG Grid) test that sorts a grid twice and asserts rows are still rendered, running in a gate rather than by hand
+
+### M14 — Blanket except in batch loops: total failure reports PARTIAL
+
+`P2` · **open** · protected: no
+
+A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete
+
+**Acceptance criteria:** A job in which zero items succeeded reports FAILED, never PARTIAL — the `succeeded == 0` branch is evaluated first at every such site, with a test per site. Separately, the org's review checklist requires that a blanket `except Exception` wrapping a batch loop is either narrowed to named exception classes or justified in a comment naming what it is allowed to swallow; CLAUDE.md already forbids bare `except Exception`, so the ~20 pre-existing sites are inventoried and tracked rather than left implicit
+
+### S7 — has_lb_edges self-heal makes incremental a permanent full crawl
+
+`P2` · **open** · protected: no
+
+`has_lb_edges` self-heal makes `incremental=True` a permanent full TML crawl on any org that legitimately yields zero liveboard edges
+
+**Acceptance criteria:** The self-heal fires at most once per org (keyed off a persisted "liveboard tier last built" marker, not "are there any rows"), so an org whose liveboards are all TML-inaccessible (403 stubs) does not re-export every liveboard on every dependencies sync forever; a unit test covers two consecutive incremental builds that produce zero liveboard edges and asserts the second exports nothing
+
+### S26 — Sync background tasks block the FastAPI event loop
+
+`P2` · **open** · protected: no
+
+Sync background tasks block the FastAPI event loop: `api/sync.py:113` `background_tasks.add_task(run_sync, ...)` with an `async` target means Starlette awaits it inline, and `_persist_column_map` is synchronous — so slow DB work in a sync freezes ALL HTTP handling, including the job-status polling the UI uses to show sync progress, and `/health`. Compounded by the engine setting no `journal_mode` (no WAL), so a long write transaction holds the DB write lock
+
+**Acceptance criteria:** Long-running/blocking sync work does not occupy the event loop (e.g. the blocking section runs via `to_thread`/`run_in_executor`, or the job runs off the request path entirely), and job-status polling stays responsive while a large sync runs; WAL is enabled or the decision not to is recorded with a reason
+
+### S28 — Bare-timestamp watermark cannot express 'not yet crawled'
+
+`P2` · **open** · protected: no
+
+The liveboard incremental watermark is a bare timestamp, which cannot express "not yet crawled": a liveboard that has existed in TS since 2020 but enters `CachedMetadata` only after the first build (late/interrupted metadata sync, or newly shared with the admin — a permission grant does not bump `modified_at`) has `modified_at ≤ watermark` and is never crawled, so its USES edges are never built. **Verified present on `main` today** — not introduced by the rejected S7 diff, but S7's persisted marker made it permanent where the accidental `NULL`-watermark reset used to mask it
+
+**Acceptance criteria:** A liveboard whose lineage has never been built is crawled regardless of its `modified_at` — e.g. the changed-set is computed from a persisted crawled-GUID set (or `max(modified_at, metadata_first_seen)`) rather than a bare timestamp comparison; a unit test seeds a liveboard with a 2020 `modified_at` that arrives in `CachedMetadata` after the first build and asserts the second build exports it
+
+### S29 — _persist_column_map delete-commit crash window
+
+`P2` · **open** · protected: no
+
+`_persist_column_map` commits its DELETEs before inserting (`session.commit()` between the delete block and the insert loop), so a crash in that window — process kill, `serve` restart, sqlite lock timeout, or an S24 interleave — leaves a durably-empty scope. Today this self-heals only by accident, via `max(CachedColumnLineage.synced_at)` reading NULL; the rejected S7 diff removed that accident and made the loss permanent
+
+**Acceptance criteria:** The delete+repopulate in `_persist_column_map` is atomic (single transaction), or a crash in the window is detectable so the next build rebuilds the scope rather than trusting it; a test simulates a raise between the delete commit and the insert loop and asserts the following build restores the edges
+
+### S30 — build_answer_index incremental predicates have zero mutation coverage
+
+`P2` · **open** · protected: no
+
+`build_answer_index`'s `_changed` twin (`lineage_service.py:897`) is byte-identical to `build_column_map`'s but has **zero** mutation coverage: dropping its `last_built is None` disjunct leaves the entire 37-test lineage suite green, while the same mutation at `:559` is now killed by S27. Answer-index incrementality is unpinned, and `build_answer_index` carries the same watermark shape S7 was rejected over (`max(CachedColumnUsage.synced_at)` over *surviving* rows, so partial deletion is permanent)
+
+**Acceptance criteria:** The ANSWER tier's incremental predicates are each killed by at least one test — at minimum, dropping `last_built is None` or the `modified_at > last_built` comparison at `lineage_service.py:897` turns a test red; the mutations and results are appended to the table in [docs/dev/TESTING.md](docs/dev/TESTING.md)
+
+### S31 — preview_delete trusts a possibly-truncated cache ('0 owned objects')
+
+`P2` · **open** · protected: no
+
+`preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
+
+**Acceptance criteria:** `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0
+
+### S34 — Concurrent dependency syncs for the same (cluster, org)
+
+`P2` · **open** · protected: no
+
+Nothing prevents two dependency syncs running concurrently for the same (cluster, org). Observed live: three simultaneous TML crawls on ps-internal-prod (one script + two UI "Sync Lineage" clicks) produced sustained 30s `metadata/tml/export` timeouts and retry backoff, tripling the wall-clock of all three. Not corrupting — each pass is a full delete-and-rebuild scoped to (cluster, org), so last writer wins with a complete set — but the UI gives no signal that a build is already in flight and happily starts another
+
+**Acceptance criteria:** Triggering a `dependencies` sync while one is already RUNNING for the same (cluster, org) either refuses with an actionable message or returns the in-flight job instead of starting a second crawl; a test asserts the second trigger does not produce a second RUNNING job
+
+### S37 — BearerTokenAuth silently discards org_id
+
+`P2` · **open** · protected: yes (`ts_admin/config.py`)
+
+`BearerTokenAuth` silently discards `org_id`, so every sync on a bearer-token cluster stamps one org's data with another org's id. `config.py:74-76` accepts `org_id` and throws it away for `AuthType.BEARER` (`ts_client/auth.py:170-176` has no `org_id` field at all, unlike `BasicAuth:86` and `TrustedAuth:133`) — despite `build_auth_strategy`'s own docstring stating org context is the ONLY way the TS API scopes content. Bearer is a first-class option in the Connections UI. An admin on org 5 syncing metadata gets org 0's objects written with `org_id=5`; the Archiver and Bulk Delete then build their input set from that cache, so a cleanup the admin believes is scoped to org 5 selects org 0's production content — and the dry-run agrees with itself, because preview and execute read the same mis-stamped cache. Related: `_sync_users`/`_sync_groups` pass no `org_id` while `_sync_metadata` and every lineage build do, so the handlers disagree about the contract
+
+**Acceptance criteria:** A `BEARER` cluster cannot silently produce org-mismatched cache rows: either `BearerTokenAuth` carries and applies an org context, or `build_auth_strategy(org_id=...)` fails loudly (surfaced as a FAILED sync with an actionable message) when the strategy cannot honour the org, or the Connections UI blocks BEARER on multi-org clusters. A unit test asserts `build_auth_strategy(org_id=5)` on a BEARER cluster does not return an object that silently ignores 5. The org-scoping contract in `config.py:62-64` and the four sync handlers agree on whether `org_id` is passed
+
+### S38 — delete-tag-only is destructive with no dry-run
+
+`P2` · **open** · protected: yes (`tests/integration/test_dryrun_safety.py`)
+
+`POST /api/v1/deleter/delete-tag-only` is a destructive, synchronous, cluster-wide write with no dry-run, in a product whose non-negotiable UX pattern is "dry-run required for all destructive operations". `api/deleter.py:156-176` calls `client.delete_tag` inline — no job, no preview of how many objects lose the label — and it is absent from `DRYRUN_ENDPOINTS`, while being wired into the UI at `frontend/lib/api.ts:485`. Compounding it: the TS-side delete removes the tag cluster-wide but the local strip is scoped to one org (`deleter_service.py:195-197`), so every other org's cached rows keep showing a tag that no longer exists
+
+**Acceptance criteria:** A dry-run (endpoint or preview field) reports the count of objects that would lose the tag before any write; the endpoint is registered in `DRYRUN_ENDPOINTS`; the local tag strip is applied across every org of the cluster (or the tag cache is invalidated). A test asserts a second org's cached rows no longer carry the deleted tag
+
+### S42 — No sync verifies the session org matches the stamped org_id
+
+`P2` · **open** · protected: no
+
+No sync verifies that the session is actually operating in the org whose id it stamps on every cached row. `build_auth_strategy(org_id=...)` is best-effort — `BearerTokenAuth` discards it outright (S37), and `_sync_users`/`_sync_groups` never pass it at all — yet `_sync_metadata` writes `org_id=N` onto every row regardless. When auth and stamp disagree, one org's content is cached under another org's id, and the Archiver and Bulk Deleter then build their input set from that cache: a cleanup the admin believes is scoped to org 5 selects org 0's production content, and the dry-run agrees with itself because preview and execute read the same mis-stamped cache. Verified live that the org a session is really in is observable: `GET /api/rest/2.0/auth/session/user` returns `current_org: {id, name}` for every auth type (`auth/session/token` does NOT carry an org scope, so token introspection is not the route)
+
+**Acceptance criteria:** Before a sync writes any row stamped `org_id=N`, it confirms the live session's `current_org.id == N` and fails the job with an actionable message otherwise — one check per sync, not per page. The guard is auth-type agnostic, so it fails closed on BEARER (S37) and on any future auth mechanism that silently ignores org. It reads `current_org`, NOT the `orgs` membership list, since the docs state a cluster admin's `orgs` contains only Primary unless explicitly added to each Org. Tests: (a) a session whose `current_org.id` is 0 while the sync runs for org 5 fails the job and writes zero `CachedMetadata` rows; (b) a matching org proceeds normally; (c) the check is issued once per sync run
+
+### S44 — A bulk share cannot be verified (bare 204)
+
+`P2` · **open** · protected: no
+
+A bulk share cannot be verified, because `security/metadata/share` returns a bare **204 No Content** — no per-object, no per-principal status — and no alternative bulk-share endpoint reports one. So "the share succeeded" is currently an assumption, and the audit-log row recording it is a guess rather than a record. This is an API limitation, not a coding defect, but it is exactly the gap that let the 404-ing `security/share` path (fixed in `9b60fa5`) go unnoticed. The read-back already exists: `bulk_sharing_service` calls `security/metadata/fetch-permissions` per object to build the PREVIEW diff
+
+**Acceptance criteria:** After `execute_share`, each object is re-read with the same helper the preview uses and the result is compared to what was requested; the job result and the audit row record `verified_ok` / `verified_failed` counts, and a run where nothing changed is not reported as SUCCESS. A test whose stub returns unchanged permissions asserts `verified_failed == n`
+
+### W3 — SQL_VIEW subtype below 10.11 kills the whole metadata sync
+
+`P2` · **open** · protected: no
+
+`search_metadata` queries the `SQL_VIEW` subtype unconditionally, but the `subtypes` enum tags it **Version: 10.11.0.cl or later** — and the seven specs run in a single generator loop, so one spec's 400 raises `TSInvalidParametersError` and kills the WHOLE metadata sync, discarding the specs that already succeeded. A customer below 10.11 therefore may have no metadata cache at all, and the failure names a subtype rather than the version gate. Not visible on ps-internal-prod or se-demo, both 26.8
+
+**Acceptance criteria:** The `SQL_VIEW` spec is skipped when the cluster's `release_version` is below 10.11.0 (`test_connection` already retrieves it). Independently — and this is the load-bearing half — a failure in ONE spec of `search_metadata` is recorded and the remaining specs still run: a test injects a 400 on the `SQL_VIEW` spec and asserts LIVEBOARD/ANSWER/WORKSHEET results are still yielded and the sync completes as PARTIAL rather than FAILED
+
+### W6 — Below 10.11 the metadata sync ends PARTIAL forever
+
+`P2` · **open** · protected: no
+
+Follow-on to W3, which is a strict improvement but leaves a sharp edge. Below 10.11.0 the `SQL_VIEW` subtype value does not exist, so W3 skips that spec — and records a skipped spec exactly like a failed one, which is correct (those objects genuinely go unenumerated) but means the metadata sync on such a cluster ends **PARTIAL forever**. `require_authoritative_metadata` therefore keeps refusing, so the Archiver, Bulk Delete, Bulk Sharing and transfer previews 409 permanently. Better than the old behaviour (one spec's 400 killed the whole crawl and left no cache at all), but a customer below 10.11 still cannot use the destructive features. Note the docs place the 10.11 tag on the `subtypes` FILTER VALUE, not on SQL Views themselves — the objects exist, we just cannot ask for them by that name
+
+**Acceptance criteria:** Below 10.11.0 the metadata crawl falls back to a single unfiltered `LOGICAL_TABLE` pass and derives each object's effective subtype from the response, so the spec set is complete and the sync can certify SUCCESS. A test drives a stubbed `release_version` of 10.10.0, asserts no request carries `subtypes: ["SQL_VIEW"]`, asserts SQL-view objects still land in `CachedMetadata` with the right `object_type`, and asserts the sync completes SUCCESS rather than PARTIAL
+
+### M3 — READ_ENDPOINTS cannot register detail-shaped endpoints
+
+`P3` · **open** · protected: yes (`tests/integration/test_cluster_isolation.py`)
+
+New cluster-scoped **detail** read endpoints can't be registered in `READ_ENDPOINTS` (its extractor assumes `body["items"]`), so `/groups/{guid}` and `/users/{guid}/access` are unguarded
+
+**Acceptance criteria:** `READ_ENDPOINTS` (or a sibling registry) accepts detail-shaped responses and the two endpoints above are registered, OR CLAUDE.md documents the live-passthrough exemption explicitly so the rule isn't stated unconditionally while having a silent carve-out
+
+### M4 — Vacuous 'spares X' guard tests
+
+`P3` · **open** · protected: no
+
+A "spares X" guard test placed on a code path that full-rebuilds X is vacuous — `test_orphan_purge_spares_connects_edges` passed with its entire `relation == "USES"` restriction deleted, because `_persist_column_map` delete-alls and re-inserts CONNECTS after the purge in the same run
+
+**Acceptance criteria:** The org's review checklist (or the `reviewer` agent brief) requires every "spares/preserves X" guard test to be falsified by deleting the predicate it guards, and the test must be placed on a path that does not rebuild X; the lesson is recorded in `docs/dev/TESTING.md`
+
+### M7 — org-memory was append-only; stale facts mislead agents
+
+`P3` · **open** · protected: no
+
+`docs/org-memory/` was effectively append-only, so a fact that a later PR had already fixed kept steering agents wrong: the "KNOWN RED `ruff format --check`" bullet was resolved by W2 in PR #11 but still misled two agents in the S6 cycle (one wrote a "record the pre-existing failure" instruction into its plan)
+
+**Acceptance criteria:** The Records step requires **pruning** — every cycle re-verifies the org-memory facts its work touched and DELETES or amends the ones that no longer hold, not just appends new ones; `docs/org-memory/README.md` states this and the ~120-line cap is described as enforced by pruning stale facts first
+
+### S2 — Add a /health smoke check to CI
+
+`P3` · **open** · protected: yes (`.github/workflows/*`)
+
+Add a `/health` smoke check to CI
+
+**Acceptance criteria:** CI (via TestClient or a booted app) asserts `GET /health` returns 200; check runs in the pipeline and is documented in TESTING.md
+
+### S5 — Nested group membership never persisted
+
+`P3` · **open** · protected: no
+
+Nested group membership is missing: `_sync_groups` parses `sub_groups` but never persists them
+
+**Acceptance criteria:** Users who belong to a group only via a sub-group appear in that group's `member_count` and member list (or the UI states explicitly that counts are direct members only); a unit test covers a group whose sole member arrives through a sub-group
+
+### S8 — principal_permissions fails silently to [] (recorded as SUCCESS)
+
+`P3` · **open** · protected: no
+
+`principal_permissions` / `fetch_permissions` have no wire-shape coverage and fail silently to `[]`, which `execute_transfer_sharing` records as SUCCESS
+
+**Acceptance criteria:** A test feeds each parser a recorded v2 response payload and asserts the extracted rows; `execute_transfer_sharing` does not write a SUCCESS audit-log row when the fetch returns zero rows for a user whose preview reported N
+
+### S9 — _is_admin joins on cluster_id only
+
+`P3` · **open** · protected: no
+
+`_is_admin` joins on `cluster_id` only, so membership synced for one org blocks transfers executed in another
+
+**Acceptance criteria:** `_is_admin` (and the `admin_count` snapshot) scope membership to the org the operation runs in; a unit test seeds an admin membership in org 0 and asserts a transfer in org 5 is not blocked by it
+
+### S19 — Unused cache signals (dead-end models, view_count, over-sharing)
+
+`P3` · **open** · protected: no
+
+Signals still unused in the cache: `view_count` (never-viewed content), `created_at` growth over time, `ContentPermission` (over-shared content), and `CachedDependency` dead-end models — the last being provable staleness rather than the access-date guesswork of S10
+
+**Acceptance criteria:** At least the dependency-based signal ships: models/worksheets with no downstream consumer are counted and surfaced as a safe-to-review cleanup target, sourced from `CachedDependency` and scoped by cluster + org
+
+### S20 — Dashboard is single-cluster despite multi-cluster v1
+
+`P3` · **open** · protected: no
+
+Multi-cluster is a v1 pillar but the dashboard is single-cluster: no roll-up and no signal that another configured cluster has failing syncs
+
+**Acceptance criteria:** The dashboard indicates cross-cluster health (at minimum: other clusters with failed jobs in the last 7 days) without requiring a cluster switch; counts stay cluster-scoped
+
+### S21 — _recent_activity window crowd-out by one bulk session
+
+`P3` · **open** · protected: no
+
+`_recent_activity` scans a fixed 300 raw rows per audit source, so one bulk share of 500 objects fills the window and hides every other activity type
+
+**Acceptance criteria:** The feed's per-source window cannot let a single large session crowd out other kinds of activity (e.g. group in SQL, or scan per-kind); a test seeds one oversized share session plus a deletion and asserts both appear
+
+### S24 — POST /sync/{entity} has no concurrency guard
+
+`P3` · **open** · protected: no
+
+`POST /sync/{entity}` has no concurrency guard, so a metadata sync and a dependencies build interleave on the same event loop while the metadata cache is mid-repopulation (`api/sync.py:85-138` creates jobs unconditionally)
+
+**Acceptance criteria:** Triggering a sync for an entity that already has a running job is rejected (or queued) rather than starting a second concurrent run; a test asserts the second trigger does not start while the first is RUNNING
+
+### S32 — cache_authoritative is produced end-to-end and consumed nowhere
+
+`P3` · **open** · protected: no
+
+`cache_authoritative` is produced end-to-end and consumed nowhere: `api/metadata.py` computes it on both metadata responses and `frontend/lib/types.ts` types it, but no component reads it (grep returns only the type declarations), so after an interrupted sync the Metadata Explorer still presents a truncated list as complete. Same produced-but-never-rendered shape as the `accessible` flag already recorded in org-memory
+
+**Acceptance criteria:** The metadata list/stats UI visibly marks the data as possibly-partial when `cache_authoritative` is false (banner, badge, or equivalent), so the flag's stated contract — "the UI must not present the list as complete" — is actually met; a frontend test or an explicit manual-verification note records it
+
+### S35 — Topbar header layout has no automated guard (jsdom can't)
+
+`P3` · **open** · protected: no
+
+The Topbar header layout has no automated guard, and jsdom cannot provide one — it does not lay out, so a vitest render test can only assert inline style strings, not geometry. S33's review found two CONFIRMED layout regressions (offline badge painting on top of the sync indicator; page title collapsing to width 0) that `tsc`, `next build` and 39 green vitest tests were all blind to; they were caught only by an agent measuring a hand-built CSS replica in headless Chromium. A residual overlap of 3–20px also remains below 720px offline, where the header is over-subscribed even with the title column at zero width
+
+**Acceptance criteria:** A Playwright viewport assertion covers the header's non-overlap invariant at the widths that matter (at minimum 1024 and 900, offline and online): the offline badge's right edge stays left of the sync column's left edge, and the org selector stays within the viewport; the &lt;720px residual is either fixed with a responsive badge (icon-only + `title`) or explicitly accepted in the test as an out-of-support width
+
+### S39 — Audit log: seven writers, zero readers, no org_id
+
+`P3` · **open** · protected: yes (`tests/integration/test_cluster_isolation.py`)
+
+The audit log has seven writers and zero readers, and no `org_id`. `AuditLog` is written by `deletion_service`, `bulk_sharing_service`, `deleter_service`, `user_management_service` (×3) and `archiver_service` (×2); no router, service or frontend file reads it — grep returns only writers and tests. "Audit log" is listed as an MVP v1 feature in CLAUDE.md, yet today an admin can only see it by opening the SQLite file. The model also carries no `org_id`, so even once a reader exists it cannot be org-scoped like `ArchiveRecord`, `ShareRecord` and `UserActionRecord` all are
+
+**Acceptance criteria:** A cluster+org-scoped `GET /api/v1/audit` serves the audit trail and is registered in `READ_ENDPOINTS`; `AuditLog` gains `org_id` and every writer sets it; a test asserts a destructive action in org 5 does not appear in org 0's feed
+
+### S40 — Transfer-ownership type chips collapse to the current selection
+
+`P3` · **open** · protected: no
+
+The transfer-ownership modal's type chips collapse to the current selection, making multi-type selection impossible and hiding what the user actually owns. `user_management_service.py:279-282` computes `by_type` from the ALREADY-FILTERED rows, and `TransferOwnershipModal.tsx:125-135` renders the chip row straight from that response, refetching on every chip click. A user owning 12 liveboards and 8 answers shows both chips; clicking `Liveboard` makes the `Answer 8` chip disappear, so there is no way to select both and the modal now states the user owns nothing but liveboards — if the admin proceeds, 8 answers are silently left on the departing account. Secondary: entering the `confirming` step re-fires `loadPreview`, so every transfer runs the preview query twice
+
+**Acceptance criteria:** The chip set is derived from an UNFILTERED preview (a separate unfiltered `by_type`, or the chips are held from the first response and not overwritten), so every type the user owns stays selectable and multi-type selection works, with each chip's count reflecting the owned total for that type. A test previews a user owning two types, selects one, and asserts both chips are still rendered
+
+### S41 — Grid selection silently lost past ~2,000 rows
+
+`P3` · **open** · protected: no
+
+Grid selection is silently lost past ~2,000 rows on the infinite row model. `pages/sharing.tsx:198-201`, `pages/archiver.tsx:425-431` and `pages/users.tsx:168-170` derive the action set from `api.getSelectedRows()` with `maxBlocksInCache={10}` × `cacheBlockSize={200}`; when AG Grid evicts a block its row nodes go with it, so checkboxes ticked near the top of a 10k-object org stop being returned once the admin scrolls far enough. The "N selected" counter changes without the admin unchecking anything, and the bulk action runs on a subset. Graded PLAUSIBLE — needs confirmation against the pinned AG Grid version before fixing
+
+**Acceptance criteria:** Selection is held in page state keyed by GUID and survives block eviction, or the grid caps/warns when a selection can no longer be guaranteed. A test (or a recorded manual measurement against a >2,000-row org) establishes the behaviour at the pinned version first
+
+### S43 — org_id=None basic-auth lands in a nondeterministic org
+
+`P3` · **open** · protected: yes (`ts_admin/config.py`, `ts_admin/ts_client/auth.py`)
+
+`BasicAuth` omits `org_id` when it is `None`, and the spec states that a token minted with no `org_id` and no secret key logs the user into "the Org context of their **previous login session**" — i.e. whichever org the admin last used in the ThoughtSpot browser UI. So any token-scoped call made through a basic-auth connection with no org selected lands in a non-deterministic org. `_sync_tags` does pass `org_id` so it is protected today, but the next `build_auth_strategy()` call with no org on a token-scoped endpoint is a coin flip that presents as "the sync worked yesterday and returned different data today". `TrustedAuth` is deterministic (the secret key's org)
+
+**Acceptance criteria:** `BasicAuth`/`TrustedAuth` with `org_id=None` either default to `0` explicitly or log a warning naming the resolved org; after login the session's actual org is asserted via `GET /auth/session/user` -> `current_org.id` (see S42) and a mismatch fails loudly rather than silently caching another org's content. A unit test covers the `org_id=None` path
+
+### S45 — COLLECTION objects are never synced
+
+`P3` · **open** · protected: no
+
+`COLLECTION` is a first-class ThoughtSpot object type that this app never syncs — 6 exist on ps-internal-prod. It is in the `type` enum for `metadata/search`, `security/metadata/share` (with dual `share_mode` + `content_share_mode`), `tags/assign` and `principals/fetch-permissions`, so collections are invisible in the Metadata Explorer, unshareable via Bulk Sharing, and un-archivable. `INSIGHT_SPEC` (7 on the same cluster) and the `PRIVATE_WORKSHEET` subtype are likewise unqueried
+
+**Acceptance criteria:** `COLLECTION` is synced into `CachedMetadata` like any other type and appears in the Metadata Explorer with a label in `TYPE_LABELS`; sharing a collection sends `content_share_mode` as well as `share_mode`, since the two control different things and omitting the former silently defaults collection contents to `READ_ONLY`. A decision on `INSIGHT_SPEC`/`PRIVATE_WORKSHEET` is recorded either way
+
+### W1 — Add mypy to CI
+
+`P3` · **open** · protected: yes (`.github/workflows/*`)
+
+Add `mypy ts_admin/` to CI
+
+**Acceptance criteria:** `mypy ts_admin/` runs in the CI `backend` job and is green (baseline existing errors if needed, with a tracking note)
+
+### W4 — permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE)
+
+`P3` · **open** · protected: no
+
+`permission_type` on `security/metadata/fetch-permissions` is tagged **Version: 10.3.0.cl or later**, and below that release the key is silently ignored (v2 drops unknown body keys without erroring). The difference is not cosmetic: measured on ps-internal-prod, `DEFINED` returns 0 principals for a liveboard where the effective set is 138. So a customer below 10.3 sees the EFFECTIVE set in the Metadata Explorer drawer and in the bulk-sharing preview diff while the UI labels it as direct shares — the exact inverse of the bug fixed in `be64fd5`, and with no warning
+
+**Acceptance criteria:** The permissions path is version-aware: when the cluster's `release_version` parses below 10.3.0, the drawer and the sharing preview either label their result as effective access or the direct/effective split is disabled with an explicit message. A unit test drives both branches off a stubbed `release_version`
+
+### W5 — metadata/search paginated outside the documented contract
+
+`P3` · **open** · protected: no
+
+`metadata/search` is paginated with `include_stats` and `include_details`, neither of which is on the documented list of parameters that support pagination — the reference says "if you are using other parameters to search metadata, set `record_size` to `-1` and `record_offset` to `0`". Tested live and it currently holds (3x200 pages = 365 records, 365 unique, identical set to `record_size: -1`, zero duplicates), so this is a documented-contract violation rather than an observed bug — but it is precisely the shape that silently drops objects on a larger cluster or a future release, and "objects mysteriously missing from the cache" is a symptom this project has chased before
+
+**Acceptance criteria:** For each of the seven `search_metadata` specs, a live comparison on the largest available org asserts the paged GUID set equals the `record_size: -1` GUID set with zero duplicates, run against both live clusters. Any spec that diverges switches to `record_size: -1`. The result is recorded in `docs/org-memory/codebase.md` so the next person does not re-derive it
+
+### M1 — Single-source the protected-path list
+
+`P4` · **open** · protected: yes (`.github/workflows/*`, `CLAUDE.md`)
+
+Single-source the protected-path list
+
+**Acceptance criteria:** The protected-path patterns live in ONE place; the `guard` job and CLAUDE.md reference/derive from it (or a check fails on drift), so the two can't silently diverge
+
+## In review
+
+### S27 — Lineage unit suite is mutation-vacuous
+
+`P1` · **in-review** · protected: no
+
+**Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded
+
+**Acceptance criteria:** Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes
+
+### M2 — PR #14 silently reverted the vitest wiring
+
+`P2` · **in-review** · protected: yes (`.github/workflows/*` for the CI half)
+
+The PR #14 merge silently reverted PR #12's vitest wiring, leaving `npm test` red on `main` with no gate to catch it
+
+**Acceptance criteria:** `frontend/vitest.config.mts`, `vitest.setup.ts`, the Legend test, and the testing-library/jsdom devDeps are restored and `npm test` is green; a CI gate (or the S1 CI wiring) runs `npm test` so a future merge cannot silently delete the suite again
+
+### S23 — Interrupted metadata sync reads as fully synced
+
+`P2` · **in-review** · protected: no
+
+`_sync_metadata` is delete-all-then-repage-in-spec-order, so an interrupted metadata sync leaves a **non-empty but truncated** cache (liveboards + answers present, every model and table missing) that reads as fully synced
+
+**Acceptance criteria:** An interrupted metadata sync is distinguishable from a complete one — either the delete+repopulate happens in one transaction, or a completeness marker (e.g. the `sync_log` SUCCESS row) is required before any consumer treats `CachedMetadata` as authoritative; a test simulates a mid-pagination failure and asserts the cache is not reported as synced
+
+### S1 — Wire frontend vitest into the suite
+
+`P3` · **in-review** · protected: no
+
+Wire frontend `vitest` into the suite
+
+**Acceptance criteria:** `cd frontend && npm test` runs at least one real component test and passes; CI `frontend` job runs it; [docs/dev/TESTING.md](docs/dev/TESTING.md) updated to drop "not yet wired"
+
+### S33 — Topbar sync label/color has no test
+
+`P3` · **in-review** · protected: no
+
+The Topbar sync label/color has no test: S23 fixed a fail-open where `IN_PROGRESS` fell through to the "Synced Xm ago" branch and rendered green, and the fix (`"Syncing…"` + accent) is verified by reading only. `tsc` and `next build` cannot catch a wrong string or token, and vitest is not a CI gate, so a future edit could silently restore the fail-open with every gate green
+
+**Acceptance criteria:** `frontend/components/Shell/Topbar.tsx`'s `buildSyncLabel`/`buildSyncColor` are covered for every `SyncStatus` value including `IN_PROGRESS`, so a status with no branch fails a test rather than rendering as healthy
+
+### M6 — No REJECT route when acceptance criteria are themselves the bug
+
+`P2` · **in-review** · protected: no
+
+The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop
+
+**Acceptance criteria:** The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle
+
+### M9 — Criteria-prescribed mechanisms are never soundness-checked before build
+
+`P2` · **in-review** · protected: no
+
+A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier
+
+**Acceptance criteria:** The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built
+
+## Feedback (user-reported)
+
+External user feedback lands here first. Each row was triaged against the code
+on the date noted; **P is a proposed priority** — the human confirms or re-sets
+it. When a feedback row duplicates an existing S/W row, it points at that row
+instead of getting its own work stream. Same bright-line rules as above.
+
+Batch 1 received 2026-08-24 (SE Demo evaluation). Triage 2026-08-24: none fully
+done; F3/F6/F11 partially covered or already filed.
+
+### F1 — Connections list page with per-connection object counts
+
+`P3` · Feature · **open** · protected: yes (`tests/integration/test_cluster_isolation.py`)
+
+**Ask:** **Connections list page** — list data connections (Snowflake, Databricks, …) with details and an object count per connection, so empty connections are findable
+
+**Triage + acceptance criteria:** NOT DONE. Today connections appear only as name-only lineage nodes (built from TML `CONNECTS` edges, `lineage_service.py:1339`), so a connection never referenced by TML is invisible. `ts_client.list_connections()` (`client.py:1187`) exists but returns only `{id, name}` and is used solely for lineage GUID resolution. Criteria: a Connections view lists every connection from `connection/search` (synced into a cluster+org-scoped cache table) with type/details and a per-connection object count; zero-object connections are visible; the list endpoint is registered in `READ_ENDPOINTS`
+
+### F2 — Connection + external db/schema/table on the table list and in lineage
+
+`P3` · Feature · **open** · protected: no
+
+**Ask:** **Table list shows connection + external db/schema/table**, and lineage traces model → table → connection → external object
+
+**Triage + acceptance criteria:** PARTIAL. The lineage trace model → table → connection already works end-to-end (upstream BFS follows `USES` then `CONNECTS`). But connection nodes carry a name only — the TML `db:`/`schema:` fields are never parsed (`_parse_physical_source`, `lineage_service.py:443-461`) — and `CachedMetadata` has no connection/physical-source fields, so the Metadata Explorer table list cannot show them. Criteria: TABLE rows in the metadata grid show connection name and external database/schema/table; connection nodes in lineage expose the same; the TML parse captures `db`/`schema`
+
+### F3 — 'Created by' on the users list; 'Created' date on the groups list
+
+`P4` · Feature · **open** · protected: no
+
+**Ask:** **"Created by" on the users list; "Created" date on the groups list**
+
+**Triage + acceptance criteria:** PARTIAL — each grid has the inverse of what's asked. Groups already show "Created by" (`groups.tsx:121`) and `created_at` is already synced, serialized, sortable, and typed — the Created column is one ColDef copy of the Modified entry. Users show "Created" but have no creator: `TSUser`/`CachedUser` carry no author field, so first verify live whether `users/search` returns one at all; if yes, mirror the group author chain (model field → sync → self-join name resolution in `group_service.py:87`)
+
+### F4 — Lineage zoom controls near-invisible in dark mode
+
+`P2` · Bug · **open** · protected: no
+
+**Ask:** **Lineage zoom controls near-invisible in dark mode**
+
+**Triage + acceptance criteria:** CONFIRMED. `<Controls />` (`LineageFlow.tsx:437`) is unthemed: no `colorMode` prop and no `.react-flow__controls` override anywhere, so dark mode renders light-colored icons on a `#fefefe` pill. Criteria: controls are themed via `colorMode` or `--xy-controls-button-*` tokens under the existing dark-theme selector (token route matches how AG Grid is themed in `theme.css`); both themes checked per DESIGN.md
+
+### F5 — Dashboard: vertically align the per-job status pills
+
+`P4` · Bug · **open** · protected: no
+
+**Ask:** **Dashboard: vertically align the per-job status pills** ("Complete" etc.)
+
+**Triage + acceptance criteria:** CONFIRMED plausible. `RecentJobsCard` puts the status pill after a variable-width label in a flex row (`dashboard.tsx:657-666`), so pills start at different x per row. The codebase already solves this with a fixed gutter (`.dash-attn-row`, `theme.css:461`). Criteria: status pills share a left edge (fixed label column or minWidth), matching the attention-row pattern
+
+### F6 — Repeated Sync clicks start duplicate syncs of the same type
+
+`—` · Bug · **see S24/S34** · protected: no
+
+**Ask:** **Repeatedly pressing Sync starts duplicate syncs of the same type**
+
+**Triage + acceptance criteria:** ALREADY FILED — this is **S24** (no backend concurrency guard on `POST /sync/{entity}`) and **S34** (same for dependencies, observed live). Triage adds a frontend detail for whoever works S24: the dashboard's disable lasts only for the POST round-trip (`dashboard.tsx:161-175`), and `CacheFreshnessCard`/`RecentJobsCard` get the raw local set rather than the derived in-flight predicate the tiles use (`dashboard.tsx:241,249`) — fix both when S24 lands
+
+### F7 — Direct table-to-answer arrow drawn even when the answer sits on a model
+
+`P3` · Bug · **open** · protected: no
+
+**Ask:** **Lineage draws a direct table → answer arrow even when the answer sits on a model** (e.g. "Average Sales by Weekly Date" on SE Demo)
+
+**Triage + acceptance criteria:** CONFIRMED. ThoughtSpot's `dependent_objects` sweep for a physical table returns transitive dependents, and `_edges_from_dependents` (`lineage_service.py:307-368`) writes every pair, so both ANSWER→MODEL and ANSWER→DB_TABLE edges land in the cache and both render. Criteria: a transitive ANSWER/LIVEBOARD→table edge is suppressed when a path through a model exists in the same build (post-pass transitive reduction in `build_object_graph`, not a render-only hide — `_downstream_closure_count` and the consumer drawer count through the cache); a genuinely table-backed answer keeps its direct edge; unit test covers both
+
+### F8 — CSV export for Users and Groups
+
+`P4` · Feature · **open** · protected: no
+
+**Ask:** **CSV export for Users and Groups**
+
+**Triage + acceptance criteria:** NOT DONE, trivial. The existing pattern is frontend-only `gridApi.exportDataAsCsv()` (metadata.tsx:127, archiver, sharing, deleter history); users/groups pages already hold the `gridRef`. Criteria: both pages get the same Export CSV button. Known shared limitation (all four existing sites): infinite row model exports only cached blocks, not the full server-side set — matching existing behavior is in scope, a full-export endpoint is not
+
+### F9 — Export tagged content to TML without deleting
+
+`P3` · Feature · **open** · protected: no
+
+**Ask:** **Export tagged content to TML without deleting** (cs_tools parity — export first, delete later once trusted)
+
+**Triage + acceptance criteria:** NOT DONE. TML export exists only inside the delete pipeline (`deletion_service._execute_delete` → `_export_tml_resilient`); the archiver's `action` literal is tag/untag/delete only, and `download_tml` requires an already-deleted `ArchiveRecord`. Criteria: an export-only action reuses `_export_tml_resilient` without deleting, downloadable as a bundle; export-only `ArchiveRecord`s are distinguishable so restore does not offer to re-import objects that were never deleted; non-destructive, but registered wherever the safety tests require
+
+### F10 — Transfer ownership of selected objects from the Metadata screen
+
+`P3` · Feature · **open** · protected: yes (`tests/integration/test_dryrun_safety.py`)
+
+**Ask:** **Transfer ownership of selected objects from the Metadata screen** (today transfer is all-objects-of-one-user, from the Users screen)
+
+**Triage + acceptance criteria:** NOT DONE, but the client call is object-scoped already: `assign_metadata_owner` (`client.py:943`) takes `object_ids`, and `execute_transfer` chunks it — only the preview/record path is user-shaped. Criteria: metadata grid gains multi-select + a Transfer action (reusing `UserPicker`/the transfer modal); new `POST /metadata/transfer-owner` follows the full write pattern — verify live, dry-run first, audit log after — and is registered in `DRYRUN_ENDPOINTS`
+
+### F11 — Select-all on the Archiver results grid
+
+`P3` · Feature · **open** · protected: no
+
+**Ask:** **Select-all on the Archiver results grid**
+
+**Triage + acceptance criteria:** NOT DONE — deliberately: `headerCheckboxSelection` is unsupported on the infinite row model (documented in `Deleter/columns.ts:61-73`), and grid-held selection already silently drops past ~2,000 rows (**S41**). Criteria: a "Select all N matching" affordance backed by filter-criteria selection (execute accepts the same filter params as `/archiver/results`, or selection moves to page state keyed by GUID) — must resolve, not worsen, S41; the dry-run count reflects the true N
 
 ## Cycle notes
 

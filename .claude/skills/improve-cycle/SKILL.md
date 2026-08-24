@@ -125,6 +125,10 @@ Confirm the full bar is green, in order: `ruff check` + `ruff format --check` �
 
 ### 6. RECORDS (before shipping, on the same branch)
 - Update the `BACKLOG.md` row Status and commit it.
+- **If the item is now `done` (completed/resolved): MOVE its index line and its
+  detail entry — verbatim, nothing rewritten — from `BACKLOG.md` to
+  `BACKLOG_COMPLETED.md` (index table + Completed items section).** BACKLOG.md
+  holds only open / in-progress / in-review work.
 - Fold every agent's **Memory-worthy** facts into `docs/org-memory/codebase.md`.
 - **Prune, don't only append (M7):** re-verify every org-memory fact this cycle's
   work touched and DELETE or amend the ones that no longer hold — a stale
@@ -137,6 +141,8 @@ Confirm the full bar is green, in order: `ruff check` + `ruff format --check` �
 
 **Bright line:** a cycle may ONLY change a row's Status, append notes, and append
 new rows — never edit Priority/criteria or delete rows. Those are the human's lever.
+Moving a `done` item's entry verbatim to `BACKLOG_COMPLETED.md` is the one
+sanctioned removal from `BACKLOG.md`; it is a move, never a deletion.
 
 ### 7. SHIP
 Commit + push the branch + open a PR whose body has an **evidence section** (gate
