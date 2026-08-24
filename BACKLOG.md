@@ -38,15 +38,13 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (45)
+### Open (43)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
 | S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
 | M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
-| M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
 | M8 | P2 | Gate serialization violated by file writes into the shared checkout | yes (`CLAUDE.md`) |
-| M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
 | M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
 | M11 | P2 | A silently-degraded best-effort pass reports success at every level | — |
 | M12 | P2 | Frontend vitest executes on zero automated entry points | yes (`.github/workflows/*`, `CLAUDE.md`) |
@@ -88,7 +86,7 @@ an item reaches `done`, move its index line and detail entry to
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (5)
+### In review (7)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -97,6 +95,8 @@ an item reaches `done`, move its index line and detail entry to
 | S23 | P2 | Interrupted metadata sync reads as fully synced | — |
 | S1 | P3 | Wire frontend vitest into the suite | — |
 | S33 | P3 | Topbar sync label/color has no test | — |
+| M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
+| M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
 
 ### Done
 
@@ -141,14 +141,6 @@ The verification bar proves *conformance to the criteria*, not that the change i
 
 **Acceptance criteria:** CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins
 
-### M6 — No REJECT route when acceptance criteria are themselves the bug
-
-`P2` · **open** · protected: no
-
-The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop
-
-**Acceptance criteria:** The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle
-
 ### M8 — Gate serialization violated by file writes into the shared checkout
 
 `P2` · **open** · protected: yes (`CLAUDE.md`)
@@ -156,14 +148,6 @@ The org model has no defined route for "the backlog row's **acceptance criteria*
 Gate serialization is violated in practice by **file writes**, not just ports: during the S7 review, reviewer/QA agents wrote five scratch repro files into `tests/unit/` of the **shared** checkout, flipping `pytest tests/unit/` from green to red mid-verification and making QA's gate result untrustworthy. CLAUDE.md serializes port-bound gates but says nothing about agents writing into the working tree they share
 
 **Acceptance criteria:** The agent briefs (and CLAUDE.md's gate-serialization note) require review/QA repro artifacts to live in a `git worktree` or the scratchpad, never in `tests/` of the shared checkout; QA reports the working tree state it observed so a polluted run is visible rather than silent
-
-### M9 — Criteria-prescribed mechanisms are never soundness-checked before build
-
-`P2` · **open** · protected: no
-
-A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier
-
-**Acceptance criteria:** The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built
 
 ### M10 — Fail-closed guard inside a background task is fail-silent
 
@@ -526,6 +510,22 @@ Wire frontend `vitest` into the suite
 The Topbar sync label/color has no test: S23 fixed a fail-open where `IN_PROGRESS` fell through to the "Synced Xm ago" branch and rendered green, and the fix (`"Syncing…"` + accent) is verified by reading only. `tsc` and `next build` cannot catch a wrong string or token, and vitest is not a CI gate, so a future edit could silently restore the fail-open with every gate green
 
 **Acceptance criteria:** `frontend/components/Shell/Topbar.tsx`'s `buildSyncLabel`/`buildSyncColor` are covered for every `SyncStatus` value including `IN_PROGRESS`, so a status with no branch fails a test rather than rendering as healthy
+
+### M6 — No REJECT route when acceptance criteria are themselves the bug
+
+`P2` · **in-review** · protected: no
+
+The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop
+
+**Acceptance criteria:** The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle
+
+### M9 — Criteria-prescribed mechanisms are never soundness-checked before build
+
+`P2` · **in-review** · protected: no
+
+A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier
+
+**Acceptance criteria:** The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built
 
 ## Feedback (user-reported)
 
@@ -919,3 +919,22 @@ done; F3/F6/F11 partially covered or already filed.
   handle: a cluster admin's `orgs` list contains only Primary unless they were
   explicitly added to each Org, so the guard must read `current_org`, not
   membership. Filed as S42 below.
+- 2026-08-18 (M6/M9 + M8/M7 halves, skill hardening): Folded the process rows
+  whose acceptance criteria live in non-protected files into the `improve-cycle`
+  skill and the agent briefs, at the human's direction. **M6** — the REJECT
+  outcome is now a defined section in the skill (stop before PR, push for
+  inspection, leave the row open, file re-scope rows against `main`, ship what
+  outlives the reject). **M9** — the research phase and the `researcher` brief
+  now carry the mandatory "what would the prescribed mechanism REMOVE, and what
+  load-bearing behaviour has no test?" gate, routing failures to REJECT. Both →
+  `in-review`. **M8 (non-protected half)** — detached-worktree isolation is now
+  the DEFAULT in the skill, `reviewer`, and `qa-verifier` briefs (QA also reports
+  the tree state it observed); the CLAUDE.md half stays open for a human. **M7
+  (skill half)** — Records now requires pruning stale facts; the README/cap
+  wording remains. Also added a "ThoughtSpot ground truth (SpotterCode MCP)"
+  section: docs tools are always open (curl JSON-RPC fallback for department
+  agents), `execute-thoughtspot-code` is probed per cycle (auth flip-flops —
+  verified unauthenticated then authenticated on the same day), reads only,
+  never `confirm_write_operations` in a cycle. S33's lessons landed as defaults
+  too: CEO writes no product code; visual changes need a measured visual
+  artifact; new-row criteria are written against `main`.

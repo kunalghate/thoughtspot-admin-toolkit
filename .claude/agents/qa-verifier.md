@@ -15,6 +15,16 @@ weaken a gate to get green. If it's red, you say so precisely and stop.
 2. Read `docs/org-memory/codebase.md`.
 3. Read the item's acceptance criteria — the feature-specific check comes from it.
 
+## Run the bar in a detached worktree (M8)
+
+Run every gate in your own worktree of the branch HEAD — `git worktree add
+--detach <path> <branch>` (plain `add` fails while the branch is checked out in
+the shared tree; symlink `frontend/node_modules`). A concurrent writer in the
+shared checkout makes any gate run there untrustworthy, and `npm run build`
+there clobbers a live dev server's `.next`. **Report the working-tree state you
+observed** (`git status --untracked-files=no`) so a polluted run is visible
+rather than silent.
+
 ## Run the bar, in order, output verbatim
 
 1. **Lint + format** — `ruff check ts_admin/ tests/` then `ruff format --check ts_admin/ tests/`

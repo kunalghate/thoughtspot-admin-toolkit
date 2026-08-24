@@ -604,17 +604,19 @@ same tool rather than assuming these still hold.
   per-principal status, and no bulk-share endpoint provides one. A share can
   only be verified by reading permissions back (S44).
 
-- **2026-08-18 (process): the SpotterCode MCP main endpoint began requiring
-  authentication mid-session.** `https://spottercode.thoughtspot.app/mcp` returns
-  `{"error":"invalid_token", "error_description":"Authentication is now required
-  … this endpoint was previously open"}`, so `execute-thoughtspot-code` —
-  live-cluster verification — is unavailable to an unauthenticated agent. The
-  read-only docs tools remain open at `/mcp/docs` and can be driven over plain
-  `curl` with the MCP JSON-RPC handshake (`initialize` → capture
-  `mcp-session-id` → `notifications/initialized` → `tools/call`). Any brief that
-  assumes an agent can verify against a live cluster via MCP needs re-scoping
-  until the client is re-authenticated; verify from the repo's own
-  `ThoughtSpotClient` against a configured cluster instead.
+- **2026-08-18 (process, amended same day): SpotterCode MCP auth state
+  flip-flops — probe it, never assume it.** The main endpoint
+  (`https://spottercode.thoughtspot.app/mcp`, `execute-thoughtspot-code`)
+  rejected with `invalid_token` mid-session, then was authenticated again later
+  the same day (verified: `auth/session/user` returned
+  `bibek.shrestha@thoughtspot.com`, `current_org {id: 0, Primary}`). Open every
+  cycle with that one cheap read and record the state + `current_org`. The
+  read-only docs tools stay open at `/mcp/docs` regardless and can be driven
+  over plain `curl` with the MCP JSON-RPC handshake (`initialize` → capture
+  `mcp-session-id` → `notifications/initialized` → `tools/call`). When execute
+  is unauthenticated, verify from the repo's own `ThoughtSpotClient` against a
+  configured cluster (via `patched_config`) instead. Reads only in cycles —
+  never `confirm_write_operations`.
 - **2026-08-18: `release_version` is documented NULLABLE and the reference's own
   example value is the literal string `"test"`.** Any version gate must fail
   OPEN — treat unparseable or absent as current — or a real SW/dev cluster
