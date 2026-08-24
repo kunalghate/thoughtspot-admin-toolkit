@@ -12,6 +12,20 @@ removal: when an item becomes **done** (completed/resolved), its index line and
 detail entry are MOVED verbatim to
 [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md) — a move, never a deletion.
 
+## Flow ledger (updated at every Records step)
+
+One line per cycle: what it closed, what it filed, and the depth it left behind.
+A queue that only grows is a queue nobody is reading — this table is what makes
+that visible. **Filing is capped by the burn rate** (see the skill's Balance
+rules): a discovery run may file at most as many rows as have been closed since
+the previous discovery run; surplus CONFIRMED findings go to
+[docs/org-memory/findings.md](docs/org-memory/findings.md) and enter this file
+only when a human promotes them.
+
+| Cycle | Closed | Filed | Open after |
+|---|---|---|---|
+| 2026-08-24 · reconcile (human-directed) | 6 | 0 | 42 open · 0 in-review · 7 feedback |
+
 ## ID taxonomy (mirrors the three standing goals)
 
 | Prefix | Meaning |
@@ -38,12 +52,13 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (40)
+### Open (42)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
 | M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
 | M8 | P2 | Gate serialization violated by file writes into the shared checkout | yes (`CLAUDE.md`) |
+| M2 | P2 | PR #14 silently reverted the vitest wiring | yes (`.github/workflows/*` for the CI half) |
 | M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
 | M11 | P2 | A silently-degraded best-effort pass reports success at every level | — |
 | M12 | P2 | Frontend vitest executes on zero automated entry points | yes (`.github/workflows/*`, `CLAUDE.md`) |
@@ -64,6 +79,7 @@ an item reaches `done`, move its index line and detail entry to
 | M3 | P3 | READ_ENDPOINTS cannot register detail-shaped endpoints | yes (`tests/integration/test_cluster_isolation.py`) |
 | M4 | P3 | Vacuous 'spares X' guard tests | — |
 | M7 | P3 | org-memory was append-only; stale facts mislead agents | — |
+| S1 | P3 | Wire frontend vitest into the suite | — |
 | S2 | P3 | Add a /health smoke check to CI | yes (`.github/workflows/*`) |
 | S5 | P3 | Nested group membership never persisted | — |
 | S8 | P3 | principal_permissions fails silently to [] (recorded as SUCCESS) | — |
@@ -83,23 +99,16 @@ an item reaches `done`, move its index line and detail entry to
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (7)
+### In review (0)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
-| S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
-| M2 | P2 | PR #14 silently reverted the vitest wiring | yes (`.github/workflows/*` for the CI half) |
-| S23 | P2 | Interrupted metadata sync reads as fully synced | — |
-| S1 | P3 | Wire frontend vitest into the suite | — |
-| S33 | P3 | Topbar sync label/color has no test | — |
-| M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
-| M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
 
 ### Done
 
 Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 
-### Feedback (7)
+### Feedback (7 open)
 
 | ID | P | Type | Item | Status | Protected |
 |----|---|------|------|--------|-----------|
@@ -110,7 +119,6 @@ Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 | F9 | P3 | Feature | Export tagged content to TML without deleting | open | — |
 | F10 | P3 | Feature | Transfer ownership of selected objects from the Metadata screen | open | yes (`tests/integration/test_dryrun_safety.py`) |
 | F11 | P3 | Feature | Select-all on the Archiver results grid | open | — |
-| F12 | P2 | Bug | Browser serves stale UI after a pip upgrade until hard refresh | in-review | yes (`ts_admin/main.py`) |
 
 > Seeded 2026-07-15 at bootstrap (BOOT) from Step 0 discovery. Run
 > `/improve-cycle discover` to add more rows from a bug-hunt sweep.
@@ -439,75 +447,31 @@ Single-source the protected-path list
 
 **Acceptance criteria:** The protected-path patterns live in ONE place; the `guard` job and CLAUDE.md reference/derive from it (or a check fails on drift), so the two can't silently diverge
 
-## In review
-
-### S36 — Startup crash-recovery purges cache rows for never-deleted objects
-
-`P1` · **in-review** · protected: yes (`ts_admin/main.py`)
-
-Startup crash-recovery deletes `CachedMetadata` rows for objects that were never deleted, is not cluster/org-scoped, and ignores Bulk Deleter jobs. `main.py:70` matches `job_type == "archive"` only (the Deleter creates `bulk_delete`, so it gets no recovery at all), and `:73-88` infers "deleted" from `tml_export_status == "SUCCESS"` — but `_execute_delete` exports EVERY object in Phase A before Phase B deletes any, so the most likely crash window is exactly where that inference is maximally wrong: the recovery purges the cache for N objects of which zero were deleted. The admin then sees them vanish from Metadata Explorer and the Archiver while they are still live in ThoughtSpot, and their `ArchiveRecord`s report `is_restorable=True`, so "restoring" them creates duplicates. `:82`'s `sql_delete` also has no `cluster_id`/`org_id` predicate, though the stuck `Job` row carries `cluster_id`
-
-**Acceptance criteria:** Crash recovery does not infer deletion from TML-export status: either `_execute_delete` records per-GUID delete confirmation (an `ArchiveRecord` field set only after `delete_metadata` returns) and recovery purges only confirmed rows, or recovery purges nothing and instead marks the metadata `sync_log` non-authoritative so the next read re-syncs. The delete is scoped to the stuck job's `cluster_id` and org. Recovery behaves identically for `job_type="bulk_delete"`. Tests: (a) a RUNNING archive delete job with all records `tml_export_status="SUCCESS"` and no confirmed deletes removes zero `CachedMetadata` rows; (b) the same `ts_guid` in two clusters, recovery for a stuck job in cluster A leaves cluster B's row intact
-
-**Cycle note (2026-08-24):** Fixed by making delete confirmation explicit rather
-than inferred. `ArchiveRecord` gains `deleted_confirmed_at`, written in the same
-transaction as the cache purge and only after `delete_metadata` returns for that
-chunk; crash-recovery now purges only confirmed rows, scoped to the stuck job's
-`cluster_id` and each record's `org_id`, and `_is_delete_job` covers
-`bulk_delete` as well as `archive`+`action=delete`. The restore path and
-`is_restorable` read the same field, which closes the duplicate-object half of
-the bug. Existing installs get an additive `ALTER TABLE` with a one-shot
-backfill stamping historical SUCCESS rows, so upgrading does not retroactively
-make old archives unrestorable. 10/10 mutations killed — table in
-[docs/dev/TESTING.md](docs/dev/TESTING.md).
-
 ### M2 — PR #14 silently reverted the vitest wiring
 
-`P2` · **in-review** · protected: yes (`.github/workflows/*` for the CI half)
+`P2` · **open** · protected: yes (`.github/workflows/*` for the CI half)
 
 The PR #14 merge silently reverted PR #12's vitest wiring, leaving `npm test` red on `main` with no gate to catch it
 
 **Acceptance criteria:** `frontend/vitest.config.mts`, `vitest.setup.ts`, the Legend test, and the testing-library/jsdom devDeps are restored and `npm test` is green; a CI gate (or the S1 CI wiring) runs `npm test` so a future merge cannot silently delete the suite again
 
-### S23 — Interrupted metadata sync reads as fully synced
-
-`P2` · **in-review** · protected: no
-
-`_sync_metadata` is delete-all-then-repage-in-spec-order, so an interrupted metadata sync leaves a **non-empty but truncated** cache (liveboards + answers present, every model and table missing) that reads as fully synced
-
-**Acceptance criteria:** An interrupted metadata sync is distinguishable from a complete one — either the delete+repopulate happens in one transaction, or a completeness marker (e.g. the `sync_log` SUCCESS row) is required before any consumer treats `CachedMetadata` as authoritative; a test simulates a mid-pagination failure and asserts the cache is not reported as synced
+**Reopened 2026-08-24 (reconcile).** The frontend half shipped (vitest config, setup, and real component tests are on `main`), but the criterion that CI runs `npm test` is unmet — `.github/workflows/ci.yml` has no such step and [docs/dev/TESTING.md](docs/dev/TESTING.md) still reads "when wired". Same gap as **M12**; whichever ships first should close the other. Status returned to `open` rather than left in a `in-review` state with no open PR.
 
 ### S1 — Wire frontend vitest into the suite
 
-`P3` · **in-review** · protected: no
+`P3` · **open** · protected: no
 
 Wire frontend `vitest` into the suite
 
 **Acceptance criteria:** `cd frontend && npm test` runs at least one real component test and passes; CI `frontend` job runs it; [docs/dev/TESTING.md](docs/dev/TESTING.md) updated to drop "not yet wired"
 
-### S33 — Topbar sync label/color has no test
+**Reopened 2026-08-24 (reconcile).** The frontend half shipped (vitest config, setup, and real component tests are on `main`), but the criterion that CI runs `npm test` is unmet — `.github/workflows/ci.yml` has no such step and [docs/dev/TESTING.md](docs/dev/TESTING.md) still reads "when wired". Same gap as **M12**; whichever ships first should close the other. Status returned to `open` rather than left in a `in-review` state with no open PR.
 
-`P3` · **in-review** · protected: no
+## In review
 
-The Topbar sync label/color has no test: S23 fixed a fail-open where `IN_PROGRESS` fell through to the "Synced Xm ago" branch and rendered green, and the fix (`"Syncing…"` + accent) is verified by reading only. `tsc` and `next build` cannot catch a wrong string or token, and vitest is not a CI gate, so a future edit could silently restore the fail-open with every gate green
-
-**Acceptance criteria:** `frontend/components/Shell/Topbar.tsx`'s `buildSyncLabel`/`buildSyncColor` are covered for every `SyncStatus` value including `IN_PROGRESS`, so a status with no branch fails a test rather than rendering as healthy
-
-### M6 — No REJECT route when acceptance criteria are themselves the bug
-
-`P2` · **in-review** · protected: no
-
-The org model has no defined route for "the backlog row's **acceptance criteria** are themselves the bug". S6's criteria mandated deleting an edge whose source liveboard is unchanged — by definition a row the run cannot rebuild — so no safe implementation existed, but a cycle may not edit criteria and the only available move was to improvise a records-only PR and stop
-
-**Acceptance criteria:** The improve-cycle skill defines an explicit **REJECT** outcome: when research or review shows a row's acceptance criteria cannot be satisfied safely, the cycle stops before shipping, leaves the row `open`, files the evidence + a proposed re-scope as a new row, and reports to the human — with the rejected implementation pushed (not PR'd) for inspection. The path is documented so it doesn't have to be reinvented per cycle
-
-### M9 — Criteria-prescribed mechanisms are never soundness-checked before build
-
-`P2` · **in-review** · protected: no
-
-A cycle may not edit acceptance criteria, but nothing requires it to check whether the criteria's **prescribed mechanism** is sound before building. S7's criteria name a specific implementation ("keyed off a persisted 'liveboard tier last built' marker"), the CEO designed to it, and three review lenses then proved that mechanism removes a recovery path the criteria never mentioned. The rejected S6 diff failed the same way one cycle earlier
-
-**Acceptance criteria:** The improve-cycle skill requires the research step to explicitly answer "what does the current code do that the criteria's prescribed mechanism would remove?" and to report any load-bearing behaviour that no test names, BEFORE design; a criteria-mandated mechanism that fails that check is escalated under the M6 REJECT path instead of built
+_None. Rows sit here only while their PR is open; the
+next cycle's reconcile step moves merged rows to
+[BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md)._
 
 ## Feedback (user-reported)
 
@@ -574,22 +538,6 @@ done; F3/F6/F11 partially covered or already filed.
 **Ask:** **Select-all on the Archiver results grid**
 
 **Triage + acceptance criteria:** NOT DONE — deliberately: `headerCheckboxSelection` is unsupported on the infinite row model (documented in `Deleter/columns.ts:61-73`), and grid-held selection already silently drops past ~2,000 rows (**S41**). Criteria: a "Select all N matching" affordance backed by filter-criteria selection (execute accepts the same filter params as `/archiver/results`, or selection moves to page state keyed by GUID) — must resolve, not worsen, S41; the dry-run count reflects the true N
-
-### F12 — Browser serves stale UI after a pip upgrade until hard refresh
-
-`P2` · Bug · **in-review** (PR #35) · protected: yes (`ts_admin/main.py`)
-
-**Ask:** Reported 2026-08-24: after upgrading 0.3 → 0.4 the app kept running the
-old cached UI; a hard refresh was required to see the new version.
-
-**Triage + acceptance criteria:** CONFIRMED. `main.py` mounts the built frontend
-with plain Starlette `StaticFiles`, which sends `ETag`/`Last-Modified` but no
-`Cache-Control`, so browsers heuristically reuse cached copies (including
-`index.html`) without revalidating — every upgrade shows the old UI. Criteria:
-HTML and all non-hashed files are served `Cache-Control: no-cache` (revalidate
-every load; conditional requests still 304 and the 304 carries the header);
-content-hashed `/_next/static/*` assets are `public, max-age=31536000,
-immutable`; an integration test pins both policies and the 304 case.
 
 - 2026-07-15 (S1): Delivered the non-protected core of S1 in PR (branch
   `improve/S1-wire-vitest`, commit `65d612d`): `frontend/vitest.config.mts` +

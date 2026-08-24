@@ -62,11 +62,56 @@ dated, marked "measured live" vs "from the reference".
 
 ---
 
+## Balance rules (filing vs fixing)
+
+The queue diverged for ~20 cycles because filing is unbounded fan-out (5 hunter
+lenses, every CONFIRMED finding filed) while fixing is one row per cycle. These
+four rules are the brake. They bind; they are not advisory.
+
+**B1 - Reconcile before you pick.** Every cycle starts by walking the
+`In review` section: for each row, check whether its PR merged
+(`gh pr view <n>` / `git log --grep=<ID> main`). If merged, **re-verify the
+acceptance criteria against current `main`** and then either move the row to
+`BACKLOG_COMPLETED.md` (all criteria met) or return it to `open` with a note
+naming the unmet criterion. A row may not sit in `in-review` with no open PR.
+The merge happens outside the cycle, so nothing else ever closes that loop -
+the first reconcile found 6 finished rows and 2 rows whose CI half never
+shipped, all reading as "in flight".
+
+**B2 - Discovery is gated on queue depth.** `discover` **refuses to run** while
+open P1+P2 rows exceed **15**. Report the count and the top unqueued grounds,
+then stop. Hunting for new bugs while the known-bug queue is deeper than the
+burn rate is not discovery, it is avoidance. A human can override by naming the
+hunting ground explicitly.
+
+**B3 - One-in, one-out on filing.** A `discover` run may file at most **as many
+new `BACKLOG.md` rows as have been moved to `done` since the previous discovery
+run** (read the Flow ledger at the top of `BACKLOG.md`; floor of 3 if there is
+no previous entry). Rank the survivors by blast radius and file the top N.
+Every remaining CONFIRMED finding is appended to
+`docs/org-memory/findings.md` - full evidence and drafted criteria, so
+promotion is a copy - and **only a human** promotes an entry from there into
+the queue. Nothing is lost; the queue just stops absorbing everything.
+A non-discovery cycle that trips over an unrelated bug files **one** row for it
+(the blocker, if any) and puts the rest in the findings ledger.
+
+**B4 - Batch the small rows.** A single cycle MAY close 2-4 `P3`/`P4` rows in one
+PR when they touch **disjoint files**, need no shared design decision, and are
+covered by one test slice. Research and review still run per row; only the
+branch, the gates, and the PR are shared, and the PR body carries a separate
+evidence section per row. Do NOT batch anything `P1`/`P2`, anything touching a
+protected path, or two rows that edit the same file - a mixed diff makes a
+CONFIRMED finding in one row block the others.
+
+---
+
 ## Phase pipeline (single-item modes)
 
 ### 1. PICK
-Read [BACKLOG.md](../../../BACKLOG.md). Reclaim any dead `in-progress` row (branch
-gone / stale). Pick the target (top open row, or the given `<ID>`). **Re-verify the
+Read [BACKLOG.md](../../../BACKLOG.md). **Run the B1 reconcile first** - walk every
+`in review` row, close the ones whose PR merged and whose criteria re-verify, return
+the rest to `open` with the unmet criterion named. Then reclaim any dead
+`in-progress` row (branch gone / stale). Pick the target (top open row, or the given `<ID>`). **Re-verify the
 item still applies against current code** — findings go stale. If it's already
 satisfied, skip to a records-only PR marking it `done`.
 
@@ -138,6 +183,10 @@ Confirm the full bar is green, in order: `ruff check` + `ruff format --check` �
   assumptions (S27's own criteria named a mutation that exists only on the
   rejected S7 branch). If that's unavoidable, mark them provisional.
 - Append a one-line micro-retro to `docs/org-memory/retros.md`.
+- **Append a row to the Flow ledger** at the top of `BACKLOG.md`: cycle,
+  closed, filed, open-after (`N open / N in-review / N feedback`). B3's cap is
+  read from this table, so a cycle that skips it breaks the next discovery run's
+  budget.
 
 **Bright line:** a cycle may ONLY change a row's Status, append notes, and append
 new rows — never edit Priority/criteria or delete rows. Those are the human's lever.
@@ -180,16 +229,24 @@ implementations passed the entire verification bar and were still wrong.
 
 ## Discovery mode (`/improve-cycle discover [fix]`)
 
+0. **Check the B2 gate.** Count open P1+P2 rows in `BACKLOG.md`. Over 15 -> report
+   the count and STOP; the org fixes before it hunts. Then read the Flow ledger to
+   compute the B3 filing budget (rows closed since the previous discovery run,
+   floor 3).
 1. Pick a **hunting ground** the backlog doesn't already cover — skip grounds marked
    recently-audited-clean in `docs/org-memory/`.
 2. Fan out `bug-hunter` agents in parallel, ONE per lens
    (correctness / security / regression / data-integrity / performance) in a single
    message.
 3. Dedupe findings, re-verify survivors against current code.
-4. File each **CONFIRMED** finding as a new `BACKLOG.md` row (with drafted
-   acceptance criteria, S/R/W/M prefix, priority) via a **records-only PR** —
-   finding and fixing never share a diff. Record "audited X, found clean" facts to
-   `docs/org-memory/codebase.md`.
+4. Dedupe survivors against BOTH `BACKLOG.md` and
+   `docs/org-memory/findings.md`, then rank by blast radius. File the **top N**
+   (N = the B3 budget) as new `BACKLOG.md` rows with drafted acceptance criteria,
+   S/R/W/M prefix, and priority; append **every** remaining CONFIRMED finding to
+   `docs/org-memory/findings.md` in that file's entry format. Both go in one
+   **records-only PR** — finding and fixing never share a diff. Record
+   "audited X, found clean" facts to `docs/org-memory/codebase.md`, and say
+   explicitly in the PR body how many findings were ledgered rather than filed.
 5. Plain `discover` **stops here** (filing only). `discover fix` waits for that PR
    to merge, pulls `main`, then runs phases 2–8 per finding.
 
@@ -198,6 +255,8 @@ implementations passed the entire verification bar and were still wrong.
 ## Invariants (never break)
 
 - Nothing auto-merges — every cycle ends at an open PR for human review.
+- Never file more rows than the B3 budget allows, and never skip the B1 reconcile
+  or the Flow-ledger line — the queue's honesty depends on both.
 - Never touch a protected path without the human adding `human-approved`; agents
   never add that label. A red `guard` job means "hand to human."
 - Never weaken a gate or a guard test to pass.
