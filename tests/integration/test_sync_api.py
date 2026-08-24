@@ -97,3 +97,92 @@ def test_sync_status_never_renders_an_entity_nothing_can_sync(client, seeded):
     assert "permissions" not in rendered
     users = next(row for row in r.json() if row["entity_type"] == "users")
     assert (users["status"], users["record_count"]) == ("SUCCESS", 7)
+
+
+# ── Concurrency guard (S24/S34) ────────────────────────────────────────────────
+#
+# POST /sync/{entity} used to create a job unconditionally, so repeated Sync
+# clicks started duplicate concurrent syncs of the same type — observed live as
+# three simultaneous TML crawls tripling each other's wall-clock. A sync for an
+# entity that already has a QUEUED/RUNNING job must be refused with a 409 that
+# names the in-flight job, and "sync all" must attach to in-flight work instead
+# of duplicating it.
+
+
+def _seed_job(engine, *, job_id: str, entity: str, status: str, org_id: int = 0) -> None:
+    from ts_admin.models.job import Job
+
+    with Session(engine) as session:
+        job = Job(id=job_id, cluster_id="c1", job_type=f"sync:{entity}", status=status)
+        job.set_parameters({"entity_type": entity, "org_id": org_id, "cluster_id": "c1"})
+        session.add(job)
+        session.commit()
+
+
+@pytest.fixture
+def no_real_sync(monkeypatch):
+    """Triggers that ARE allowed must not hit the network from a test."""
+    import ts_admin.services.sync_service as sync_service
+
+    def _noop(**kwargs):
+        return None
+
+    monkeypatch.setattr(sync_service, "run_sync", _noop)
+
+
+# "dependencies" is S34's observed case (concurrent TML crawls); "metadata" is
+# the S24 shape (a plain entity sync).
+@pytest.mark.parametrize("entity", ["metadata", "dependencies"])
+@pytest.mark.parametrize("status", ["QUEUED", "RUNNING"])
+def test_a_second_sync_of_an_in_flight_entity_is_refused(client, seeded, entity, status):
+    _seed_job(seeded, job_id="j-inflight", entity=entity, status=status)
+
+    r = client.post(f"/api/v1/sync/{entity}?cluster_id=c1&org_id=0")
+
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert entity in detail and "j-inflight" in detail  # actionable: names the job
+
+    from sqlmodel import select
+
+    from ts_admin.models.job import Job
+
+    with Session(seeded) as session:
+        jobs = session.exec(select(Job).where(Job.job_type == f"sync:{entity}")).all()
+    assert [j.id for j in jobs] == ["j-inflight"]  # no second job was created
+
+
+def test_the_same_entity_may_sync_concurrently_in_another_org(client, seeded, no_real_sync):
+    _seed_job(seeded, job_id="j-org0", entity="metadata", status="RUNNING", org_id=0)
+
+    r = client.post("/api/v1/sync/metadata?cluster_id=c1&org_id=5")
+
+    assert r.status_code == 200
+    assert r.json()["job_id"] != "j-org0"
+
+
+def test_a_finished_job_does_not_block_a_new_sync(client, seeded, no_real_sync):
+    _seed_job(seeded, job_id="j-done", entity="metadata", status="COMPLETE")
+
+    r = client.post("/api/v1/sync/metadata?cluster_id=c1&org_id=0")
+
+    assert r.status_code == 200
+    assert r.json()["job_id"] != "j-done"
+
+
+def test_sync_all_attaches_to_in_flight_work_instead_of_duplicating_it(client, seeded, no_real_sync):
+    _seed_job(seeded, job_id="j-users", entity="users", status="RUNNING")
+
+    r = client.post("/api/v1/sync/all?cluster_id=c1&org_id=0")
+
+    assert r.status_code == 200
+    by_entity = {row["entity_type"]: row["job_id"] for row in r.json()}
+    assert by_entity["users"] == "j-users"  # reused, not duplicated
+
+    from sqlmodel import select
+
+    from ts_admin.models.job import Job
+
+    with Session(seeded) as session:
+        user_jobs = session.exec(select(Job).where(Job.job_type == "sync:users")).all()
+    assert [j.id for j in user_jobs] == ["j-users"]

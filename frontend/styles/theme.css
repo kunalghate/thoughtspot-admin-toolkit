@@ -151,6 +151,18 @@ button { font-family: inherit; }
 @keyframes syncSlide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @keyframes status-pulse { 50% { opacity: .3; } }
 
+/* React Flow zoom controls (Relationship Visualizer) — the library ships a
+ * light-only default (#fefefe pill), so dark mode rendered near-invisible
+ * icons (F4). Re-point its variables at our tokens; they flip with the theme. */
+.react-flow__controls {
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--surface-2);
+  --xy-controls-button-color: var(--text-secondary);
+  --xy-controls-button-color-hover: var(--accent);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow: var(--shadow-sm);
+}
+
 /* Hide number-input spinner arrows in popovers (cleaner look) */
 .stale-num::-webkit-outer-spin-button,
 .stale-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }

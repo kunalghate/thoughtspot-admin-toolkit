@@ -65,6 +65,39 @@ def _resolve_cluster_id(cluster_id: str | None) -> str:
     return load_config().active_cluster.id
 
 
+def _in_flight_sync_job(cluster_id: str, org_id: int, entity_type: str):
+    """The QUEUED/RUNNING sync job for (cluster, org, entity), or None.
+
+    Repeated Sync clicks used to start duplicate concurrent syncs of the same
+    type (S24/S34): each is a full delete-and-rebuild so the data survives, but
+    concurrent TML crawls have been observed live tripling each other's
+    wall-clock via API timeouts. Job rows cannot outlive their runner and wedge
+    this guard — startup marks any leftover RUNNING/QUEUED jobs FAILED
+    (``main.py::lifespan``).
+
+    ``org_id`` lives inside the job's parameters JSON, not a column, so rows
+    are filtered in Python — the QUEUED/RUNNING set is at most a handful.
+    """
+    from sqlmodel import col, select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        rows = session.exec(
+            select(Job).where(
+                Job.cluster_id == cluster_id,
+                Job.job_type == f"sync:{entity_type}",
+                col(Job.status).in_(["QUEUED", "RUNNING"]),
+            )
+        ).all()
+
+    for job in rows:
+        if job.get_parameters().get("org_id", 0) == org_id:
+            return job
+    return None
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 
@@ -113,6 +146,44 @@ async def get_sync_status(org_id: int = 0, cluster_id: str | None = None) -> lis
     return result
 
 
+# NOTE: registered BEFORE /{entity_type} — FastAPI matches routes in
+# registration order, so declaring the dynamic route first shadowed "/all"
+# into a 400 ("Unknown entity type 'all'") and left this endpoint unreachable.
+@router.post("/all", response_model=list[SyncTriggeredResponse])
+async def trigger_sync_all(
+    background_tasks: BackgroundTasks,
+    org_id: int = 0,
+    cluster_id: str | None = None,
+) -> list[SyncTriggeredResponse]:
+    """Trigger sync for all standard entities (excludes dependencies — too heavy)."""
+    from ts_admin.services.job_service import create_job
+    from ts_admin.services.sync_service import run_sync
+
+    cluster_id = _resolve_cluster_id(cluster_id)
+    results = []
+
+    for entity in sorted(STANDARD_ENTITIES):
+        # "Sync all" attaches to work already in flight rather than duplicating
+        # it — the caller's intent is "everything fresh", and an in-flight job
+        # is already delivering that for its entity.
+        in_flight = _in_flight_sync_job(cluster_id, org_id, entity)
+        if in_flight:
+            results.append(SyncTriggeredResponse(entity_type=entity, job_id=in_flight.id))
+            continue
+        job_id = create_job(
+            job_type=f"sync:{entity}",
+            parameters={
+                "entity_type": entity,
+                "org_id": org_id,
+                "cluster_id": cluster_id,
+            },
+        )
+        background_tasks.add_task(run_sync, entity_type=entity, org_id=org_id, job_id=job_id, cluster_id=cluster_id)
+        results.append(SyncTriggeredResponse(entity_type=entity, job_id=job_id))
+
+    return results
+
+
 @router.post("/{entity_type}", response_model=SyncTriggeredResponse)
 async def trigger_sync(
     entity_type: str,
@@ -135,6 +206,17 @@ async def trigger_sync(
 
     cluster_id = _resolve_cluster_id(cluster_id)
 
+    in_flight = _in_flight_sync_job(cluster_id, org_id, entity_type)
+    if in_flight:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A {entity_type} sync is already {in_flight.status.lower()} for this "
+                f"cluster and org (job {in_flight.id}). Wait for it to finish before "
+                "starting another."
+            ),
+        )
+
     job_id = create_job(
         job_type=f"sync:{entity_type}",
         parameters={
@@ -147,31 +229,3 @@ async def trigger_sync(
     background_tasks.add_task(run_sync, entity_type=entity_type, org_id=org_id, job_id=job_id, cluster_id=cluster_id)
 
     return SyncTriggeredResponse(entity_type=entity_type, job_id=job_id)
-
-
-@router.post("/all", response_model=list[SyncTriggeredResponse])
-async def trigger_sync_all(
-    background_tasks: BackgroundTasks,
-    org_id: int = 0,
-    cluster_id: str | None = None,
-) -> list[SyncTriggeredResponse]:
-    """Trigger sync for all standard entities (excludes dependencies — too heavy)."""
-    from ts_admin.services.job_service import create_job
-    from ts_admin.services.sync_service import run_sync
-
-    cluster_id = _resolve_cluster_id(cluster_id)
-    results = []
-
-    for entity in sorted(STANDARD_ENTITIES):
-        job_id = create_job(
-            job_type=f"sync:{entity}",
-            parameters={
-                "entity_type": entity,
-                "org_id": org_id,
-                "cluster_id": cluster_id,
-            },
-        )
-        background_tasks.add_task(run_sync, entity_type=entity, org_id=org_id, job_id=job_id, cluster_id=cluster_id)
-        results.append(SyncTriggeredResponse(entity_type=entity, job_id=job_id))
-
-    return results

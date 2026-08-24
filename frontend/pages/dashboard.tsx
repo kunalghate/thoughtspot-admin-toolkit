@@ -196,8 +196,16 @@ function DashboardContent() {
       .map((j) => (j.job_type.startsWith("sync:") ? j.job_type.slice(5) : null))
       .filter((e): e is string => e !== null),
   );
-  const isSyncing = (entity: "users" | "groups" | "metadata") =>
-    syncing.has(entity) || inFlight[entity] === true || runningEntities.has(entity);
+  // One derived in-flight set for every card. The local `syncing` state only
+  // covers the POST round-trip, so a card given the raw set re-enables its
+  // Sync button seconds into a multi-minute sync — and a second click starts
+  // a duplicate run (F6/S24).
+  const syncingEntities = new Set<string>([
+    ...syncing,
+    ...Object.entries(inFlight).filter(([, v]) => v === true).map(([e]) => e),
+    ...runningEntities,
+  ]);
+  const isSyncing = (entity: string) => syncingEntities.has(entity);
 
   return (
     <div style={{ padding: 28, display: "flex", flexDirection: "column", gap: 20, maxWidth: 1320 }}>
@@ -238,7 +246,7 @@ function DashboardContent() {
                   hint="Liveboards + answers — the only types the Archiver can act on" />
       </div>
 
-      <CacheFreshnessCard syncedAt={synced_at} onSync={triggerSync} syncing={syncing} />
+      <CacheFreshnessCard syncedAt={synced_at} onSync={triggerSync} syncing={syncingEntities} />
 
       {/* Left = what's on the cluster, right = what the cluster has been doing.
           Both cards are row lists of similar length, so the two columns end on
@@ -246,7 +254,7 @@ function DashboardContent() {
           have room. */}
       <div className="dash-split">
         <ContentByTypeCard byType={counts.objects_by_type} total={counts.objects_total} />
-        <RecentJobsCard jobs={data.recent_jobs} onRetry={triggerSync} syncing={syncing} />
+        <RecentJobsCard jobs={data.recent_jobs} onRetry={triggerSync} syncing={syncingEntities} />
       </div>
 
       <RecentActivityCard activity={data.recent_activity} />
@@ -653,7 +661,9 @@ function RecentJobsCard({ jobs, onRetry, syncing }: {
                 borderTop: i > 0 ? `1px solid ${theme.color.border}` : "none",
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 12.5, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
+                  {/* Fixed label gutter so the status pills share a left edge
+                      across rows (F5) — same idea as .dash-attn-row's gutter. */}
+                  <span style={{ fontSize: 12.5, color: theme.color.textPrimary, fontFamily: theme.font.sans, minWidth: 132, flexShrink: 0 }}>
                     {JOB_LABELS[j.job_type] ?? j.job_type}
                   </span>
                   <span style={{
