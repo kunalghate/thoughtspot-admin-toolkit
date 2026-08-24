@@ -30,6 +30,25 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+class CacheControlStaticFiles(StaticFiles):
+    """
+    StaticFiles with an explicit cache policy.
+
+    Next.js content-hashes everything under /_next/static/, so those files are
+    safe to cache forever. Everything else — index.html above all — must
+    revalidate on every load (cheap 304 via ETag), or browsers heuristically
+    serve a stale UI after a pip upgrade until the user hard-refreshes.
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        if scope["path"].startswith("/_next/static/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown logic."""
@@ -194,7 +213,7 @@ def create_app(port: int = 8080) -> FastAPI:
     # In --dev mode, Next.js runs on its own port — static files not used
     _static_files = [f for f in STATIC_DIR.iterdir() if f.name != ".gitkeep"] if STATIC_DIR.exists() else []
     if _static_files:
-        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+        app.mount("/", CacheControlStaticFiles(directory=STATIC_DIR, html=True), name="static")
         logger.info("Serving frontend from %s", STATIC_DIR)
     else:
         logger.warning(
