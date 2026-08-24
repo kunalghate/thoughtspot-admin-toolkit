@@ -738,8 +738,9 @@ async def restore(
          restore-time timestamps (the object really was created just now). The
          next metadata sync replaces it with the cluster's own values.
 
-    Records with missing TML, tml_export_status != "SUCCESS", or an existing
-    restored_at are skipped.
+    Records with missing TML, tml_export_status != "SUCCESS", no
+    deleted_confirmed_at (never actually deleted — restoring would duplicate a
+    live object), or an existing restored_at are skipped.
     """
     from ts_admin.models.archive_record import ArchiveRecord
     from ts_admin.models.audit_log import AuditLog
@@ -774,7 +775,17 @@ async def restore(
         tml_by_record: dict[str, str] = {}
         for rid in archive_record_ids:
             rec = rec_map.get(rid)
-            if rec is None or rec.tml_export_status != "SUCCESS" or rec.restored_at is not None or not rec.tml_path:
+            # `deleted_confirmed_at` is required, not `tml_export_status`: an
+            # object whose TML exported but whose delete never happened (a crash
+            # between Phase A and Phase B) is still live in ThoughtSpot, and
+            # "restoring" it would import a second copy.
+            if (
+                rec is None
+                or rec.tml_export_status != "SUCCESS"
+                or rec.deleted_confirmed_at is None
+                or rec.restored_at is not None
+                or not rec.tml_path
+            ):
                 skipped.append(rid)
                 continue
             path = Path(rec.tml_path)
@@ -1020,7 +1031,7 @@ def history(
         for job_id, archived_at in page_rows:
             records = session.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()
             total = len(records)
-            succeeded = sum(1 for r in records if r.tml_export_status == "SUCCESS" and r.restored_at is None)
+            succeeded = sum(1 for r in records if r.deleted_confirmed_at is not None and r.restored_at is None)
             failed_tml = sum(1 for r in records if r.tml_export_status == "FAILED")
             failed_delete = 0  # hard to determine post-hoc; use 0 for now
             sessions.append(
@@ -1118,7 +1129,10 @@ def history_session(
     """
     Return paginated ArchiveRecord rows for one archive session.
 
-    is_restorable = TML export succeeded AND not yet restored.
+    is_restorable = TML export succeeded AND the delete was confirmed AND not
+    yet restored. An object that was exported but never actually deleted (a
+    crash between export and delete) is still live in ThoughtSpot, so offering
+    Restore for it would create a duplicate.
     """
     from ts_admin.models.archive_record import ArchiveRecord
 
@@ -1154,7 +1168,9 @@ def history_session(
             "archived_at": r.archived_at.isoformat(),
             "restored_at": r.restored_at.isoformat() if r.restored_at else None,
             "restored_as_guid": r.restored_as_guid,
-            "is_restorable": r.tml_export_status == "SUCCESS" and r.restored_at is None,
+            "is_restorable": (
+                r.tml_export_status == "SUCCESS" and r.deleted_confirmed_at is not None and r.restored_at is None
+            ),
         }
         for r in rows
     ]

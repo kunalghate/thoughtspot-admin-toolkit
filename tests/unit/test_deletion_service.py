@@ -903,3 +903,109 @@ class TestNothingDeletedIsFailedNeverPartial:
         assert job.error_type == "TypeError"
         # It never reached the bucketing, so no audit row claims a partial delete.
         assert audits == []
+
+
+class TestDeleteConfirmationIsRecorded:
+    """
+    `ArchiveRecord.deleted_confirmed_at` is the ONLY evidence that an object
+    really left ThoughtSpot. Startup crash-recovery and the restore path both
+    read it, so a delete that stops recording it silently re-opens both the
+    cache-purge and the duplicate-restore bugs.
+    """
+
+    def test_confirmed_delete_stamps_the_record(self, in_memory_db, patched_env, seeded):
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1"}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]})
+
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+        assert recs["lb-1"].deleted_confirmed_at is not None
+        assert recs["ans-1"].deleted_confirmed_at is not None
+
+    def test_export_success_alone_never_stamps_a_confirmation(self, in_memory_db, patched_env, seeded):
+        """
+        The exact S36 crash window: TML export succeeds for everything, the
+        delete call never lands. Nothing may be marked deleted.
+        """
+        from ts_admin.services.deletion_service import _execute_delete
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1"}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+        _FakeClient.delete_should_raise = TSInvalidParametersError("deleteMetadata rejected the request")
+        job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]})
+
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=["lb-1", "ans-1"],
+                action_type="bulk_delete",
+            )
+        )
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+        # Non-vacuity: the exports really did succeed, so this is the
+        # export-succeeded-delete-failed state and not an all-failed run.
+        assert recs["lb-1"].tml_export_status == "SUCCESS"
+        assert recs["ans-1"].tml_export_status == "SUCCESS"
+        assert recs["lb-1"].deleted_confirmed_at is None
+        assert recs["ans-1"].deleted_confirmed_at is None
+
+    def test_a_failed_delete_chunk_leaves_its_siblings_confirmation_alone(self, in_memory_db, patched_env, seeded):
+        """
+        lb-1 and ans-1 are different object types, so they delete in separate
+        calls. A stamp scoped too widely (e.g. to the whole job) would confirm
+        the failed one too.
+        """
+        from ts_admin.services.deletion_service import _execute_delete
+        from ts_admin.ts_client.models import MetadataType
+
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1"}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+
+        async def _selective_delete(*, object_ids, object_type):
+            _FakeClient.delete_calls.append((str(object_type), list(object_ids)))
+            if object_type == MetadataType.ANSWER:
+                raise TSInvalidParametersError("answers rejected")
+
+        monkey = _FakeClient.delete_metadata
+        _FakeClient.delete_metadata = staticmethod(_selective_delete)
+        try:
+            job_id = _create_job("bulk_delete", {"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]})
+            asyncio.run(
+                _execute_delete(
+                    job_id=job_id,
+                    cluster_id="c1",
+                    org_id=0,
+                    object_ids=["lb-1", "ans-1"],
+                    action_type="bulk_delete",
+                )
+            )
+        finally:
+            _FakeClient.delete_metadata = monkey
+
+        with Session(in_memory_db) as s:
+            recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
+        assert recs["lb-1"].deleted_confirmed_at is not None
+        assert recs["ans-1"].deleted_confirmed_at is None
