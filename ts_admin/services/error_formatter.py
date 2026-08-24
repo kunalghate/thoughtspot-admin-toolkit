@@ -16,6 +16,7 @@ from ts_admin.ts_client.exceptions import (
     ConfigNotFoundError,
     JobInterruptedError,
     KeyringError,
+    LineagePrerequisiteError,
     StaleCacheError,
     TMLConflictError,
     TMLDependencyError,
@@ -115,6 +116,12 @@ _MAPPINGS: tuple[tuple[type[BaseException], str, str], ...] = (
         ConfigInvalidError,
         "Instance configuration is invalid",
         "Re-enter the instance details from Settings → Connections.",
+    ),
+    (
+        LineagePrerequisiteError,
+        "Lineage needs a completed metadata sync",
+        "The metadata sync this lineage build depended on did not complete. "
+        "Open the Metadata sync job for the reason, fix it, then retry Sync Lineage.",
     ),
     (
         StaleCacheError,

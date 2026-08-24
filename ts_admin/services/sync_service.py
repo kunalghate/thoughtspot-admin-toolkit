@@ -665,6 +665,63 @@ async def _sync_orgs(*, org_id: int, job_id: str, target_cluster_id: str | None 
     mark_complete(job_id, {"entity_type": "orgs", "record_count": count})
 
 
+# How long a dependencies build waits for an in-flight metadata sync before
+# failing, and how often it re-checks. Module-level so tests can shrink them.
+_METADATA_WAIT_POLL_S = 3.0
+_METADATA_WAIT_TIMEOUT_S = 30 * 60
+
+
+async def _ensure_metadata_cache(*, cluster_id: str, org_id: int) -> None:
+    """Ensure a completed metadata sync exists before a lineage build.
+
+    Lineage is derived from the metadata cache, so "sync everything at once"
+    used to fail the lineage job outright with StaleCacheError — and because it
+    failed instantly, the in-flight guard never engaged and repeated clicks
+    piled up FAILED jobs. Graceful order instead:
+
+    - a metadata sync is QUEUED/RUNNING → wait for it (bounded);
+    - the cache is already certified complete → proceed;
+    - no metadata sync has ever completed → run one now, as its own visible
+      job, then re-check.
+
+    Raises LineagePrerequisiteError when the cache still isn't certified. The
+    lineage job sits QUEUED while waiting, which keeps the POST /sync
+    concurrency guard and the dashboard's in-flight indicators engaged.
+    """
+    import asyncio
+    import time
+
+    from ts_admin.services import sync_status
+    from ts_admin.services.job_service import create_job, find_in_flight_sync
+    from ts_admin.ts_client.exceptions import LineagePrerequisiteError
+
+    deadline = time.monotonic() + _METADATA_WAIT_TIMEOUT_S
+    waited = False
+    while find_in_flight_sync(cluster_id=cluster_id, org_id=org_id, entity_type="metadata"):
+        if time.monotonic() >= deadline:
+            raise LineagePrerequisiteError(
+                f"timed out after {_METADATA_WAIT_TIMEOUT_S // 60} minutes waiting for the in-flight metadata sync"
+            )
+        waited = True
+        await asyncio.sleep(_METADATA_WAIT_POLL_S)
+
+    if sync_status.metadata_is_authoritative(cluster_id=cluster_id, org_id=org_id):
+        return
+    if waited:
+        raise LineagePrerequisiteError("the metadata sync this build waited on did not complete")
+
+    # Never synced — chain a metadata sync as its own visible job, so the user
+    # sees both "Metadata sync" and "Lineage sync" in Recent jobs.
+    meta_job_id = create_job(
+        job_type="sync:metadata",
+        parameters={"entity_type": "metadata", "org_id": org_id, "cluster_id": cluster_id},
+    )
+    logger.info("Lineage build for cluster=%s org=%s chaining metadata sync %s first", cluster_id, org_id, meta_job_id)
+    await run_sync(entity_type="metadata", org_id=org_id, job_id=meta_job_id, cluster_id=cluster_id)
+    if not sync_status.metadata_is_authoritative(cluster_id=cluster_id, org_id=org_id):
+        raise LineagePrerequisiteError(f"the metadata sync run for this build did not complete (job {meta_job_id})")
+
+
 async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
     """
     Build the Relationship Visualizer's lineage graph. Delegates to
@@ -678,6 +735,7 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
     from ts_admin.services.job_service import mark_complete
 
     cluster_id = _resolve_cluster(target_cluster_id).id
+    await _ensure_metadata_cache(cluster_id=cluster_id, org_id=org_id)
     has_column_pass = hasattr(lineage_service, "build_column_map")
 
     # Phase 1: object tier — commits edges + writes the "dependencies" SyncLog so

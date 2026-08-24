@@ -71,31 +71,11 @@ def _in_flight_sync_job(cluster_id: str, org_id: int, entity_type: str):
     Repeated Sync clicks used to start duplicate concurrent syncs of the same
     type (S24/S34): each is a full delete-and-rebuild so the data survives, but
     concurrent TML crawls have been observed live tripling each other's
-    wall-clock via API timeouts. Job rows cannot outlive their runner and wedge
-    this guard — startup marks any leftover RUNNING/QUEUED jobs FAILED
-    (``main.py::lifespan``).
-
-    ``org_id`` lives inside the job's parameters JSON, not a column, so rows
-    are filtered in Python — the QUEUED/RUNNING set is at most a handful.
+    wall-clock via API timeouts.
     """
-    from sqlmodel import col, select
+    from ts_admin.services.job_service import find_in_flight_sync
 
-    from ts_admin.database import get_session
-    from ts_admin.models.job import Job
-
-    with get_session() as session:
-        rows = session.exec(
-            select(Job).where(
-                Job.cluster_id == cluster_id,
-                Job.job_type == f"sync:{entity_type}",
-                col(Job.status).in_(["QUEUED", "RUNNING"]),
-            )
-        ).all()
-
-    for job in rows:
-        if job.get_parameters().get("org_id", 0) == org_id:
-            return job
-    return None
+    return find_in_flight_sync(cluster_id=cluster_id, org_id=org_id, entity_type=entity_type)
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────

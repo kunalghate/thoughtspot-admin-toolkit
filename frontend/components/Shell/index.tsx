@@ -249,18 +249,11 @@ export default function AppShell({ pageTitle, entityType, onSyncComplete, childr
       ? undefined
       : syncLogs.find((l) => l.entity_type === entityType) ?? null;
 
-  // Lineage is DERIVED from the metadata cache, so the backend fails it closed
-  // until a metadata sync is certified complete. Say so on the button rather
-  // than letting the click queue a job that can only fail.
-  // Only assert "blocked" from a KNOWN status. A swallowed read used to disable
-  // Sync Lineage permanently, with a tooltip blaming a metadata cache that was
-  // in fact perfectly synced.
-  const blockedReason =
-    entityType === "dependencies" &&
-    syncLogs !== null &&
-    syncLogs.find((l) => l.entity_type === "metadata")?.status !== "SUCCESS"
-      ? "Sync Metadata first — lineage is built from the metadata cache."
-      : null;
+  // Lineage is DERIVED from the metadata cache, but the button no longer needs
+  // to block on that: the dependencies sync waits for an in-flight metadata
+  // sync and runs one itself when none has ever completed
+  // (sync_service._ensure_metadata_cache), so one click does the right thing.
+  const blockedReason = null;
 
   const handleSync = useCallback(async () => {
     if (!activeCluster || !activeOrg || !entityType) return;
