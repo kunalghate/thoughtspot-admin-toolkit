@@ -702,3 +702,149 @@ async def test_cancelled_column_pass_does_not_complete_the_job(monkeypatch, in_m
     assert result["cancelled"] is True
     # The object tier IS committed and reported — only the enrichment was dropped.
     assert result["record_count"] == 2
+
+
+# ── Transitive shortcut reduction (answer→table when answer→model→table) ────────
+#
+# ThoughtSpot's include_dependent_objects flattens a table's dependency closure,
+# so the Phase 1 sweep records `answer USES table` even when the answer only
+# references a model on that table. The read path drops an edge only when the
+# neighborhood itself contains the subsuming 2-hop path; TML-certified direct
+# sources (answer index / column lineage) exempt genuine multi-source edges.
+
+
+def _seed_edge(session, source_guid, source_type, target_guid, target_type, relation="USES"):
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+
+    session.add(
+        CachedDependency(
+            cluster_id=CLUSTER_ID,
+            org_id=0,
+            source_guid=source_guid,
+            source_type=source_type,
+            source_name=source_guid,
+            target_guid=target_guid,
+            target_type=target_type,
+            target_name=target_guid,
+            relation=relation,
+        )
+    )
+
+
+def _seed_shortcut_triangle(engine):
+    """model-1→table-1, answer-1→model-1, and the sweep's answer-1→table-1 shortcut."""
+    with Session(engine) as session:
+        _seed_edge(session, "model-1", "MODEL", "table-1", "DB_TABLE")
+        _seed_edge(session, "answer-1", "ANSWER", "model-1", "MODEL")
+        _seed_edge(session, "answer-1", "ANSWER", "table-1", "DB_TABLE")
+        session.commit()
+
+
+def _edge_pairs(graph):
+    return {(e["source"], e["target"]) for e in graph["edges"]}
+
+
+def test_lineage_graph_drops_transitive_answer_table_shortcut(in_memory_db, patched_config):
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    _seed_shortcut_triangle(in_memory_db)
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1", root_kind="answer")
+    pairs = _edge_pairs(graph)
+    assert ("answer-1", "model-1") in pairs
+    assert ("model-1", "table-1") in pairs
+    assert ("answer-1", "table-1") not in pairs  # the flattened-closure shortcut
+    # The table node itself survives — still reachable through the model.
+    assert "table-1" in {n["guid"] for n in graph["nodes"]}
+
+    # Reduction is read-time only: the table's consumer list keeps the answer
+    # (impact analysis wants the full closure), and the impact count still
+    # reaches it transitively.
+    items, total = lineage_service.get_consumers(cluster_id=CLUSTER_ID, org_id=0, guid="table-1")
+    assert {i["guid"] for i in items} == {"model-1", "answer-1"}
+    assert total == 2
+
+
+def test_lineage_graph_keeps_answer_built_directly_on_table(in_memory_db, patched_config):
+    """An answer with no model in between has no 2-hop path — its edge is real."""
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    with Session(in_memory_db) as session:
+        _seed_edge(session, "answer-1", "ANSWER", "table-1", "DB_TABLE")
+        session.commit()
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1", root_kind="answer")
+    assert ("answer-1", "table-1") in _edge_pairs(graph)
+
+
+def test_lineage_graph_never_reduces_liveboard_edges(in_memory_db, patched_config):
+    """Liveboard edges come from TML (authored references), so even alongside a
+    2-hop path a liveboard→table edge is a genuine direct link and must stay."""
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    with Session(in_memory_db) as session:
+        _seed_edge(session, "model-1", "MODEL", "table-1", "DB_TABLE")
+        _seed_edge(session, "lb-1", "LIVEBOARD", "model-1", "MODEL")
+        _seed_edge(session, "lb-1", "LIVEBOARD", "table-1", "DB_TABLE")
+        session.commit()
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="lb-1", root_kind="liveboard")
+    pairs = _edge_pairs(graph)
+    assert ("lb-1", "table-1") in pairs
+    assert ("lb-1", "model-1") in pairs
+
+
+def test_lineage_graph_tml_verified_multi_source_answer_keeps_direct_edge(in_memory_db, patched_config):
+    """A TML-indexed answer whose tables[].fqn names BOTH the model and the table
+    genuinely uses both — the certified set overrides structural reduction."""
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    _seed_shortcut_triangle(in_memory_db)
+    with Session(in_memory_db) as session:
+        for source in ("model-1", "table-1"):
+            session.add(
+                CachedColumnUsage(
+                    cluster_id=CLUSTER_ID,
+                    org_id=0,
+                    model_guid=source,
+                    model_column_name="Sales",
+                    consumer_guid="answer-1",
+                    consumer_type="ANSWER",
+                    consumer_name="Sales Answer",
+                )
+            )
+        session.commit()
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1", root_kind="answer")
+    assert ("answer-1", "table-1") in _edge_pairs(graph)
+
+
+def test_lineage_graph_tml_indexed_answer_without_table_still_reduces(in_memory_db, patched_config):
+    """The inverse of the multi-source case: TML data exists and does NOT name
+    the table, which confirms the shortcut is spurious."""
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    _seed_shortcut_triangle(in_memory_db)
+    with Session(in_memory_db) as session:
+        session.add(
+            CachedColumnUsage(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                model_guid="model-1",
+                model_column_name="Sales",
+                consumer_guid="answer-1",
+                consumer_type="ANSWER",
+                consumer_name="Sales Answer",
+            )
+        )
+        session.commit()
+
+    graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1", root_kind="answer")
+    assert ("answer-1", "table-1") not in _edge_pairs(graph)

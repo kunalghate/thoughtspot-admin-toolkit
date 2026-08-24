@@ -191,20 +191,20 @@ function DashboardContent() {
   // run, right below a RunningJobsBar saying the opposite, inviting a second
   // concurrent sync. `running_jobs` carries `sync:{entity}` for every entity,
   // so read that too.
-  const runningEntities = new Set(
-    data.running_jobs
-      .map((j) => (j.job_type.startsWith("sync:") ? j.job_type.slice(5) : null))
-      .filter((e): e is string => e !== null),
-  );
-  // One derived in-flight set for every card. The local `syncing` state only
+  // One derived in-flight map for every card. The local `syncing` state only
   // covers the POST round-trip, so a card given the raw set re-enables its
   // Sync button seconds into a multi-minute sync — and a second click starts
-  // a duplicate run (F6/S24).
-  const syncingEntities = new Set<string>([
-    ...syncing,
-    ...Object.entries(inFlight).filter(([, v]) => v === true).map(([e]) => e),
-    ...runningEntities,
-  ]);
+  // a duplicate run (F6/S24). The map also carries the phase, so a lineage
+  // sync sitting QUEUED behind a metadata sync says "Queued", not "Syncing".
+  const entityPhase = new Map<string, "queued" | "running">();
+  for (const j of data.running_jobs) {
+    if (j.job_type.startsWith("sync:")) {
+      entityPhase.set(j.job_type.slice(5), j.status === "QUEUED" ? "queued" : "running");
+    }
+  }
+  for (const [e, v] of Object.entries(inFlight)) if (v === true && !entityPhase.has(e)) entityPhase.set(e, "running");
+  for (const e of syncing) if (!entityPhase.has(e)) entityPhase.set(e, "queued");
+  const syncingEntities = new Set(entityPhase.keys());
   const isSyncing = (entity: string) => syncingEntities.has(entity);
 
   return (
@@ -246,7 +246,7 @@ function DashboardContent() {
                   hint="Liveboards + answers — the only types the Archiver can act on" />
       </div>
 
-      <CacheFreshnessCard syncedAt={synced_at} onSync={triggerSync} syncing={syncingEntities} />
+      <CacheFreshnessCard syncedAt={synced_at} onSync={triggerSync} phase={entityPhase} />
 
       {/* Left = what's on the cluster, right = what the cluster has been doing.
           Both cards are row lists of similar length, so the two columns end on
@@ -392,9 +392,9 @@ function RunningJobsBar({ jobs }: { jobs: DashboardSummary["running_jobs"] }) {
         const pct = j.total > 0 ? Math.round((j.progress / j.total) * 100) : null;
         return (
           <div key={j.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Loader2 size={13} style={{ color: theme.color.accent2, flexShrink: 0 }} />
+            <Loader2 size={13} style={{ color: j.status === "QUEUED" ? theme.color.textMuted : theme.color.accent2, flexShrink: 0 }} />
             <span style={{ fontSize: 12.5, color: theme.color.textPrimary, fontFamily: theme.font.sans }}>
-              {JOB_LABELS[j.job_type] ?? j.job_type} running
+              {JOB_LABELS[j.job_type] ?? j.job_type} {j.status === "QUEUED" ? "queued" : "running"}
             </span>
             {pct !== null && (
               <div style={{ flex: 1, maxWidth: 220, height: 6, borderRadius: 3, background: theme.color.surface3, overflow: "hidden" }}>
@@ -581,10 +581,10 @@ function ContentByTypeCard({ byType, total }: { byType: Record<string, number>; 
  * The dot is the fast read (fresh / stale / never); the exact timestamp is in
  * the tooltip for when "3d ago" isn't precise enough.
  */
-function CacheFreshnessCard({ syncedAt, onSync, syncing }: {
+function CacheFreshnessCard({ syncedAt, onSync, phase }: {
   syncedAt: DashboardSummary["synced_at"];
   onSync: (entity: EntityType) => void;
-  syncing: Set<string>;
+  phase: Map<string, "queued" | "running">;
 }) {
   return (
     <Card title="Cache freshness" meta="each entity syncs on its own — nothing forces a full sync">
@@ -592,6 +592,7 @@ function CacheFreshnessCard({ syncedAt, onSync, syncing }: {
         {FRESHNESS_ENTITIES.map(({ entity, label }) => {
           const iso = syncedAt[entity] ?? null;
           const age = ageMinutes(iso);
+          const inFlight = phase.get(entity);
           const tone =
             age === null ? { dot: theme.color.textMuted, fg: theme.color.textMuted } :
             age > STALE_AFTER_MIN ? { dot: theme.color.warn, fg: theme.color.warn } :
@@ -608,30 +609,33 @@ function CacheFreshnessCard({ syncedAt, onSync, syncing }: {
               <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: tone.dot, flexShrink: 0 }} />
                 <span
-                  title={iso ? absoluteTime(iso) : "never synced"}
+                  title={iso ? `Last completed sync: ${absoluteTime(iso)}` : "No sync has ever completed for this entity"}
                   style={{
                     fontSize: 12.5, color: tone.fg, fontFamily: theme.font.sans,
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}
                 >
-                  {timeAgo(iso)}
+                  {/* "2m ago" alone doesn't say 2m since WHAT — name the event. */}
+                  {iso ? `Last completed sync ${timeAgo(iso)}` : "Never synced"}
                 </span>
               </div>
               <button
                 className="sync"
                 onClick={() => onSync(entity)}
-                disabled={syncing.has(entity)}
+                disabled={!!inFlight}
                 style={{
                   alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 4,
                   padding: 0, border: "none", background: "none",
-                  cursor: syncing.has(entity) ? "default" : "pointer",
+                  cursor: inFlight ? "default" : "pointer",
                   fontSize: 11, fontFamily: theme.font.sans, fontWeight: 500, color: theme.color.accent2,
                   // Hover-only by default, but a never-synced or in-flight
                   // entity keeps its action on screen — that one is a nudge.
-                  ...(age === null || syncing.has(entity) ? { opacity: 1 } : null),
+                  ...(age === null || inFlight ? { opacity: 1 } : null),
                 }}
               >
-                <RefreshCw size={10} /> {syncing.has(entity) ? "Syncing…" : "Sync now"}
+                {/* A lineage sync parked behind a metadata sync is queued, not
+                    syncing — saying "Syncing…" there misreports what's happening. */}
+                <RefreshCw size={10} /> {inFlight === "queued" ? "Queued…" : inFlight === "running" ? "Syncing…" : "Sync now"}
               </button>
             </div>
           );

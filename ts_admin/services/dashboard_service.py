@@ -128,7 +128,9 @@ class DashboardService:
                         Job.cluster_id == cluster_id,
                         col(Job.status).in_(_IN_FLIGHT_STATUSES),
                     )
-                    .order_by(col(Job.created_at).desc())
+                    # Oldest first: the sync the user started first sits on top
+                    # of the running-jobs bar, matching the order they acted in.
+                    .order_by(col(Job.created_at).asc())
                     .limit(RECENT_JOBS_LIMIT)
                 ).all()
             ]
