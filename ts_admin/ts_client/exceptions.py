@@ -138,6 +138,18 @@ class TMLDependencyError(TSAdminError):
 # ── Local cache errors ─────────────────────────────────────────────────────────
 
 
+class LineagePrerequisiteError(TSAdminError):
+    """A lineage build's metadata prerequisite could not be satisfied.
+
+    The dependencies sync waits for an in-flight metadata sync (or runs one
+    itself when none has ever completed) before building — see
+    ``sync_service._ensure_metadata_cache``. Raised when that metadata sync
+    fails or times out: the build refuses rather than reading a truncated
+    cache. Distinct from :class:`StaleCacheError`, whose remedy ("run a
+    metadata sync") is exactly what just happened and failed.
+    """
+
+
 class StaleCacheError(TSAdminError):
     """
     The local cache for `entity_type` is not certified complete.

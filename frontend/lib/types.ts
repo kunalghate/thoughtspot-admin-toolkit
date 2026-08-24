@@ -43,6 +43,8 @@ export type JobStatus = "QUEUED" | "PENDING" | "RUNNING" | "COMPLETE" | "PARTIAL
 export interface Job {
   id: string;
   job_type: string;
+  /** From the job's parameters — null for jobs recorded before it was exposed. */
+  org_id: number | null;
   status: JobStatus;
   progress: number;
   total: number;

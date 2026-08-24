@@ -18,6 +18,9 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 class JobResponse(BaseModel):
     id: str
     job_type: str
+    # From the parameters JSON (jobs have no org column): lets the UI match a
+    # job to the org it is viewing, e.g. the Topbar adopting an in-flight sync.
+    org_id: int | None = None
     status: str
     progress: int
     total: int
@@ -158,6 +161,7 @@ def _job_to_response(job) -> JobResponse:
     return JobResponse(
         id=job.id,
         job_type=job.job_type,
+        org_id=job.get_parameters().get("org_id"),
         status=job.status,
         progress=job.progress,
         total=job.total,

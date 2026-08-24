@@ -402,6 +402,10 @@ async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_d
 
     from ts_admin.services.sync_service import run_sync
 
+    # The build now requires a certified metadata cache (_ensure_metadata_cache);
+    # this test is about dispatch, so satisfy the prerequisite up front.
+    _write_metadata_success()
+
     job_id = _make_job("dependencies")
     await run_sync(entity_type="dependencies", org_id=0, job_id=job_id)
 
@@ -1651,3 +1655,179 @@ async def test_an_unknown_release_version_does_not_disable_the_spec(
     assert recorded["release_version_passed"] is None, reason
     assert _job_status(job_id)[0] == "COMPLETE"
     assert _metadata_marker_status() == "SUCCESS"
+
+
+# ── _ensure_metadata_cache: graceful metadata-before-lineage ordering ─────────
+#
+# "Sync everything at once" used to fail the lineage build outright with
+# StaleCacheError — and because it failed instantly, the POST /sync concurrency
+# guard never engaged and repeated clicks piled up FAILED jobs. The dependencies
+# sync now waits for an in-flight metadata sync, runs one itself when none has
+# ever completed, and fails with an actionable LineagePrerequisiteError only
+# when that metadata sync itself fails or times out.
+
+
+def _seed_sync_job(*, entity: str, status: str, org_id: int = 0, job_id: str = "j-meta") -> str:
+    from sqlmodel import Session
+
+    import ts_admin.database as db_module
+    from ts_admin.models.job import Job
+
+    job = Job(id=job_id, cluster_id=CLUSTER_ID, job_type=f"sync:{entity}", status=status)
+    job.set_parameters({"entity_type": entity, "org_id": org_id, "cluster_id": CLUSTER_ID})
+    with Session(db_module.get_engine()) as session:
+        session.add(job)
+        session.commit()
+    return job_id
+
+
+def _finish_sync_job(job_id: str, *, sync_log_status: str | None) -> None:
+    """Flip a seeded job to a terminal state, optionally writing the SyncLog."""
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session
+
+    import ts_admin.database as db_module
+    from ts_admin.models.job import Job
+    from ts_admin.models.sync_log import SyncLog
+
+    with Session(db_module.get_engine()) as session:
+        job = session.get(Job, job_id)
+        job.status = "COMPLETE" if sync_log_status == "SUCCESS" else "FAILED"
+        session.add(job)
+        if sync_log_status:
+            session.add(
+                SyncLog(
+                    cluster_id=CLUSTER_ID,
+                    org_id=0,
+                    entity_type="metadata",
+                    status=sync_log_status,
+                    record_count=1,
+                    synced_at=datetime.now(timezone.utc),
+                )
+            )
+        session.commit()
+
+
+def _write_metadata_success() -> None:
+    from datetime import datetime, timezone
+
+    from sqlmodel import Session
+
+    import ts_admin.database as db_module
+    from ts_admin.models.sync_log import SyncLog
+
+    with Session(db_module.get_engine()) as session:
+        session.add(
+            SyncLog(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                entity_type="metadata",
+                status="SUCCESS",
+                record_count=1,
+                synced_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+
+async def test_lineage_proceeds_immediately_when_metadata_is_authoritative(in_memory_db):
+    from sqlmodel import Session, select
+
+    from ts_admin.models.job import Job
+    from ts_admin.services.sync_service import _ensure_metadata_cache
+
+    _write_metadata_success()
+
+    await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)
+
+    with Session(in_memory_db) as session:
+        assert session.exec(select(Job)).all() == []  # no chained metadata job
+
+
+async def test_lineage_waits_for_an_in_flight_metadata_sync(monkeypatch, in_memory_db):
+    import asyncio
+
+    from ts_admin.services import sync_service
+    from ts_admin.services.sync_service import _ensure_metadata_cache
+
+    monkeypatch.setattr(sync_service, "_METADATA_WAIT_POLL_S", 0.01)
+    job_id = _seed_sync_job(entity="metadata", status="RUNNING")
+
+    async def finish_soon():
+        await asyncio.sleep(0.05)
+        _finish_sync_job(job_id, sync_log_status="SUCCESS")
+
+    task = asyncio.create_task(finish_soon())
+    await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)  # returns instead of raising
+    await task
+
+
+async def test_lineage_fails_actionably_when_the_awaited_metadata_sync_fails(monkeypatch, in_memory_db):
+    import asyncio
+
+    from ts_admin.services import sync_service
+    from ts_admin.services.sync_service import _ensure_metadata_cache
+    from ts_admin.ts_client.exceptions import LineagePrerequisiteError
+
+    monkeypatch.setattr(sync_service, "_METADATA_WAIT_POLL_S", 0.01)
+    job_id = _seed_sync_job(entity="metadata", status="RUNNING")
+
+    async def fail_soon():
+        await asyncio.sleep(0.05)
+        _finish_sync_job(job_id, sync_log_status="FAILED")
+
+    task = asyncio.create_task(fail_soon())
+    with pytest.raises(LineagePrerequisiteError, match="did not complete"):
+        await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)
+    await task
+
+
+async def test_lineage_times_out_rather_than_waiting_forever(monkeypatch, in_memory_db):
+    from ts_admin.services import sync_service
+    from ts_admin.services.sync_service import _ensure_metadata_cache
+    from ts_admin.ts_client.exceptions import LineagePrerequisiteError
+
+    monkeypatch.setattr(sync_service, "_METADATA_WAIT_POLL_S", 0.01)
+    monkeypatch.setattr(sync_service, "_METADATA_WAIT_TIMEOUT_S", 0.03)
+    _seed_sync_job(entity="metadata", status="RUNNING")  # never finishes
+
+    with pytest.raises(LineagePrerequisiteError, match="timed out"):
+        await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)
+
+
+async def test_lineage_chains_a_metadata_sync_when_none_has_ever_completed(monkeypatch, in_memory_db):
+    from sqlmodel import Session, select
+
+    from ts_admin.models.job import Job
+    from ts_admin.services import sync_service
+    from ts_admin.services.sync_service import _ensure_metadata_cache
+
+    ran = {}
+
+    async def fake_run_sync(*, entity_type, org_id, job_id, cluster_id=None):
+        ran.update(entity_type=entity_type, org_id=org_id, cluster_id=cluster_id)
+        _write_metadata_success()
+
+    monkeypatch.setattr(sync_service, "run_sync", fake_run_sync)
+
+    await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)
+
+    assert ran == {"entity_type": "metadata", "org_id": 0, "cluster_id": CLUSTER_ID}
+    with Session(in_memory_db) as session:
+        jobs = session.exec(select(Job)).all()
+    assert [j.job_type for j in jobs] == ["sync:metadata"]  # visible chained job
+
+
+async def test_lineage_fails_actionably_when_the_chained_metadata_sync_fails(monkeypatch, in_memory_db):
+    from ts_admin.services import sync_service
+    from ts_admin.services.sync_service import _ensure_metadata_cache
+    from ts_admin.ts_client.exceptions import LineagePrerequisiteError
+
+    async def failing_run_sync(*, entity_type, org_id, job_id, cluster_id=None):
+        return None  # sync "ran" but never certified the cache
+
+    monkeypatch.setattr(sync_service, "run_sync", failing_run_sync)
+
+    with pytest.raises(LineagePrerequisiteError, match="did not complete"):
+        await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)

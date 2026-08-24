@@ -44,6 +44,34 @@ def create_job(*, job_type: str, parameters: dict, cluster_id: str | None = None
     return job_id
 
 
+def find_in_flight_sync(*, cluster_id: str, org_id: int, entity_type: str) -> Job | None:
+    """The QUEUED/RUNNING sync job for (cluster, org, entity), or None.
+
+    The concurrency guard behind POST /sync/{entity} (S24/S34) and the
+    dependencies sync's wait-for-metadata step. Job rows cannot outlive their
+    runner and wedge callers — startup marks any leftover RUNNING/QUEUED jobs
+    FAILED (``main.py::lifespan``).
+
+    ``org_id`` lives inside the job's parameters JSON, not a column, so rows
+    are filtered in Python — the QUEUED/RUNNING set is at most a handful.
+    """
+    from sqlmodel import col, select
+
+    with get_session() as session:
+        rows = session.exec(
+            select(Job).where(
+                Job.cluster_id == cluster_id,
+                Job.job_type == f"sync:{entity_type}",
+                col(Job.status).in_(["QUEUED", "RUNNING"]),
+            )
+        ).all()
+
+    for job in rows:
+        if job.get_parameters().get("org_id", 0) == org_id:
+            return job
+    return None
+
+
 def mark_running(job_id: str, total: int) -> None:
     with get_session() as session:
         job = session.get(Job, job_id)

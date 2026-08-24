@@ -1382,6 +1382,7 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
     """
     Assemble a neighborhood graph rooted at `guid`: the full upstream chain
     (Model → Tables → Connection) plus its direct downstream consumers, capped.
+    Transitive shortcut edges are reduced away — see `_reduce_transitive_edges`.
 
     Pure SQLite, indexed lookups only — 0 API calls. Returns None if the object
     isn't in the metadata cache (→ 404). `columns` is [] until Phase 2.
@@ -1466,6 +1467,12 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
                     nodes[e.source_guid] = _node_from_edge_endpoint(e.source_guid, e.source_name, e.source_type)
                 _add_edge(e)
 
+        # Drop transitive shortcut edges (answer→table when answer→model→table
+        # is also present) so the graph shows the authored path, not the
+        # dependency API's flattened closure. Cache rows are untouched — the
+        # consumers drawer and impact BFS still see the full closure.
+        edges = _reduce_transitive_edges(session, cluster_id, org_id, nodes, edges)
+
         # Fill owner_name and flag endpoints that no longer exist in the cache.
         _enrich_from_metadata(session, cluster_id, org_id, nodes)
 
@@ -1486,6 +1493,100 @@ def get_lineage_graph(*, cluster_id: str, org_id: int, guid: str, root_kind: str
         "impact": {"downstream_count": downstream_count},
         "columns": columns,
     }
+
+
+# Edge sources whose Phase 1 USES edges come from the dependency sweep and can
+# therefore carry transitive shortcuts. LIVEBOARD is deliberately absent: its
+# edges are built exclusively from TML (the authored references), so every one
+# is a genuine direct link — including liveboard→table.
+_REDUCIBLE_SOURCE_TYPES = frozenset({"ANSWER", "MODEL", "LOGICAL_TABLE"})
+
+
+def _reduce_transitive_edges(
+    session, cluster_id: str, org_id: int, nodes: dict[str, dict], edges: list[dict]
+) -> list[dict]:
+    """
+    Remove USES edges the neighborhood itself proves are transitive shortcuts.
+
+    ThoughtSpot's `include_dependent_objects` flattens the dependency closure of
+    a logical table, so the Phase 1 sweep records `answer USES table` even when
+    the answer only references a model on that table. An edge S→T is dropped
+    only when the same graph contains S→X and X→T (the 2-hop path that subsumes
+    it) — an answer built *directly* on a table has no such path and keeps its
+    edge.
+
+    Where TML has certified an object's direct sources (the lazy/deep answer
+    index, or a model's Phase 2 column lineage), that set is authoritative and
+    exempts a genuinely-direct edge even when a 2-hop path also exists (the
+    multi-source case). Only the returned graph is reduced; cached edges stay,
+    so `get_consumers` and the impact BFS keep the full closure.
+    """
+    uses_targets: dict[str, set[str]] = {}
+    for e in edges:
+        if e["relation"] == "USES":
+            uses_targets.setdefault(e["source"], set()).add(e["target"])
+
+    def _has_two_hop(src: str, tgt: str) -> bool:
+        return any(tgt in uses_targets.get(mid, ()) for mid in uses_targets.get(src, ()) if mid != tgt)
+
+    verified: dict[str, set[str] | None] = {}
+
+    def _direct_sources(guid: str, node_type: str) -> set[str] | None:
+        if guid not in verified:
+            verified[guid] = _tml_direct_sources(session, cluster_id, org_id, guid=guid, node_type=node_type)
+        return verified[guid]
+
+    kept: list[dict] = []
+    for e in edges:
+        if e["relation"] != "USES":
+            kept.append(e)
+            continue
+        src_type = nodes.get(e["source"], {}).get("node_type", "")
+        if src_type not in _REDUCIBLE_SOURCE_TYPES or not _has_two_hop(e["source"], e["target"]):
+            kept.append(e)
+            continue
+        direct = _direct_sources(e["source"], src_type)
+        if direct is not None and e["target"] in direct:
+            kept.append(e)
+    return kept
+
+
+def _tml_direct_sources(session, cluster_id: str, org_id: int, *, guid: str, node_type: str) -> set[str] | None:
+    """
+    The TML-certified direct-source GUID set for one object, or None if no TML
+    data has been collected for it (never crawled / nothing resolved) — in which
+    case the caller falls back to pure structural reduction.
+
+    ANSWER: `ts_column_usage.model_guid` holds the answer TML's `tables[].fqn` —
+    the exact authored sources (a table's GUID when built directly on a table).
+    MODEL / LOGICAL_TABLE: `ts_column_lineage.table_guid` from the Phase 2 pass.
+    """
+    from ts_admin.models.cache.ts_column_lineage import CachedColumnLineage
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+
+    if node_type == "ANSWER":
+        rows = session.exec(
+            select(CachedColumnUsage.model_guid)
+            .where(
+                CachedColumnUsage.cluster_id == cluster_id,
+                CachedColumnUsage.org_id == org_id,
+                CachedColumnUsage.consumer_guid == guid,
+                CachedColumnUsage.consumer_type == "ANSWER",
+            )
+            .distinct()
+        ).all()
+    else:
+        rows = session.exec(
+            select(CachedColumnLineage.table_guid)
+            .where(
+                CachedColumnLineage.cluster_id == cluster_id,
+                CachedColumnLineage.org_id == org_id,
+                CachedColumnLineage.model_guid == guid,
+            )
+            .distinct()
+        ).all()
+    sources = {r for r in rows if r}
+    return sources or None
 
 
 def _enrich_from_metadata(session, cluster_id: str, org_id: int, nodes: dict[str, dict]) -> None:
