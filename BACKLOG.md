@@ -111,6 +111,7 @@ Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 | F9 | P3 | Feature | Export tagged content to TML without deleting | open | — |
 | F10 | P3 | Feature | Transfer ownership of selected objects from the Metadata screen | open | yes (`tests/integration/test_dryrun_safety.py`) |
 | F11 | P3 | Feature | Select-all on the Archiver results grid | open | — |
+| F12 | P2 | Bug | Browser serves stale UI after a pip upgrade until hard refresh | in-review | yes (`ts_admin/main.py`) |
 
 > Seeded 2026-07-15 at bootstrap (BOOT) from Step 0 discovery. Run
 > `/improve-cycle discover` to add more rows from a bug-hunt sweep.
@@ -571,7 +572,21 @@ done; F3/F6/F11 partially covered or already filed.
 
 **Triage + acceptance criteria:** NOT DONE — deliberately: `headerCheckboxSelection` is unsupported on the infinite row model (documented in `Deleter/columns.ts:61-73`), and grid-held selection already silently drops past ~2,000 rows (**S41**). Criteria: a "Select all N matching" affordance backed by filter-criteria selection (execute accepts the same filter params as `/archiver/results`, or selection moves to page state keyed by GUID) — must resolve, not worsen, S41; the dry-run count reflects the true N
 
-## Cycle notes
+### F12 — Browser serves stale UI after a pip upgrade until hard refresh
+
+`P2` · Bug · **in-review** (PR #35) · protected: yes (`ts_admin/main.py`)
+
+**Ask:** Reported 2026-08-24: after upgrading 0.3 → 0.4 the app kept running the
+old cached UI; a hard refresh was required to see the new version.
+
+**Triage + acceptance criteria:** CONFIRMED. `main.py` mounts the built frontend
+with plain Starlette `StaticFiles`, which sends `ETag`/`Last-Modified` but no
+`Cache-Control`, so browsers heuristically reuse cached copies (including
+`index.html`) without revalidating — every upgrade shows the old UI. Criteria:
+HTML and all non-hashed files are served `Cache-Control: no-cache` (revalidate
+every load; conditional requests still 304 and the 304 carries the header);
+content-hashed `/_next/static/*` assets are `public, max-age=31536000,
+immutable`; an integration test pins both policies and the 304 case.
 
 - 2026-07-15 (S1): Delivered the non-protected core of S1 in PR (branch
   `improve/S1-wire-vitest`, commit `65d612d`): `frontend/vitest.config.mts` +
