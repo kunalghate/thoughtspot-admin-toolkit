@@ -574,7 +574,7 @@ done; F3/F6/F11 partially covered or already filed.
 
 ### F12 — Browser serves stale UI after a pip upgrade until hard refresh
 
-`P2` · Bug · **in-review** · protected: yes (`ts_admin/main.py`)
+`P2` · Bug · **in-review** (PR #35) · protected: yes (`ts_admin/main.py`)
 
 **Ask:** Reported 2026-08-24: after upgrading 0.3 → 0.4 the app kept running the
 old cached UI; a hard refresh was required to see the new version.
