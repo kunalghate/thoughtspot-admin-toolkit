@@ -9,7 +9,7 @@ detail entry here.
 
 ## Index
 
-### Done items (15)
+### Done items (21)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -28,6 +28,12 @@ detail entry here.
 | S22 | P2 | Ghost lineage nodes rendered as normal nodes | — |
 | S25 | P2 | No composite index on (cluster_id, org_id, ts_guid) | — |
 | W2 | P2 | ruff format drift from unbounded pin | — |
+| S24 | P3 | POST /sync/{entity} has no concurrency guard | — |
+| S34 | P2 | Concurrent dependency syncs for the same (cluster, org) | — |
+| F4 | P2 | Lineage zoom controls near-invisible in dark mode | — |
+| F5 | P4 | Dashboard: vertically align the per-job status pills | — |
+| F6 | — | Repeated Sync clicks start duplicate syncs (closed via S24/S34) | — |
+| F7 | P3 | Direct table-to-answer arrow drawn even when the answer sits on a model | — |
 
 ## Completed items
 
@@ -150,3 +156,63 @@ Ghost lineage nodes render as *normal* nodes: the `accessible` flag is plumbed e
 `ruff format` drift breaks the format gate: unbounded `ruff>=0.4.0` pin lets a newer local/CI ruff reformat 5 files inherited from PR #10
 
 **Acceptance criteria:** `ruff format --check ts_admin/ tests/` is green both locally and in CI. Resolve by (a) `ruff format`-ing the 5 drifted files (`ts_admin/services/lineage_service.py`, `tests/unit/test_lineage_columns.py`, `tests/unit/test_lineage_models.py`, `tests/unit/test_lineage_service.py`, `tests/integration/test_relationships_api.py`) AND (b) bounding the ruff version in `pyproject.toml` `[dev]` (e.g. a `~=` pin) so formatter output is reproducible across runs. Confirm whether CI's resolved ruff actually reddens `main` before/after.
+
+### S24 — POST /sync/{entity} has no concurrency guard
+
+`P3` · **done** (PR #34) · protected: no
+
+`POST /sync/{entity}` has no concurrency guard, so a metadata sync and a dependencies build interleave on the same event loop while the metadata cache is mid-repopulation (`api/sync.py:85-138` creates jobs unconditionally)
+
+**Acceptance criteria:** Triggering a sync for an entity that already has a running job is rejected (or queued) rather than starting a second concurrent run; a test asserts the second trigger does not start while the first is RUNNING
+
+**Done:** PR #34 — sync endpoints now return the in-flight job (HTTP 409-free adopt) instead of starting a duplicate; `tests/integration/test_sync_api.py` asserts the second trigger produces no second RUNNING job. The F6 frontend detail (dashboard disable + derived in-flight predicate for `CacheFreshnessCard`/`RecentJobsCard`) shipped in the same PR
+
+### S34 — Concurrent dependency syncs for the same (cluster, org)
+
+`P2` · **done** (PR #34) · protected: no
+
+Nothing prevents two dependency syncs running concurrently for the same (cluster, org). Observed live: three simultaneous TML crawls on ps-internal-prod (one script + two UI "Sync Lineage" clicks) produced sustained 30s `metadata/tml/export` timeouts and retry backoff, tripling the wall-clock of all three. Not corrupting — each pass is a full delete-and-rebuild scoped to (cluster, org), so last writer wins with a complete set — but the UI gives no signal that a build is already in flight and happily starts another
+
+**Acceptance criteria:** Triggering a `dependencies` sync while one is already RUNNING for the same (cluster, org) either refuses with an actionable message or returns the in-flight job instead of starting a second crawl; a test asserts the second trigger does not produce a second RUNNING job
+
+**Done:** PR #34 — a `dependencies` trigger while one is RUNNING for the same (cluster, org) adopts the in-flight job; metadata-before-lineage ordering waits for an in-flight metadata sync and chains one when metadata was never synced (`sync_service.py`, `lineage_service.py`; unit + integration tests added)
+
+### F4 — Lineage zoom controls near-invisible in dark mode
+
+`P2` · Bug · **done** (PR #34) · protected: no
+
+**Ask:** **Lineage zoom controls near-invisible in dark mode**
+
+**Triage + acceptance criteria:** CONFIRMED. `<Controls />` (`LineageFlow.tsx:437`) is unthemed: no `colorMode` prop and no `.react-flow__controls` override anywhere, so dark mode renders light-colored icons on a `#fefefe` pill. Criteria: controls are themed via `colorMode` or `--xy-controls-button-*` tokens under the existing dark-theme selector (token route matches how AG Grid is themed in `theme.css`); both themes checked per DESIGN.md
+
+**Done:** PR #34 — controls themed via `--xy-controls-button-*` tokens in `theme.css` under the existing theme selectors; both themes checked
+
+### F5 — Dashboard: vertically align the per-job status pills
+
+`P4` · Bug · **done** (PR #34) · protected: no
+
+**Ask:** **Dashboard: vertically align the per-job status pills** ("Complete" etc.)
+
+**Triage + acceptance criteria:** CONFIRMED plausible. `RecentJobsCard` puts the status pill after a variable-width label in a flex row (`dashboard.tsx:657-666`), so pills start at different x per row. The codebase already solves this with a fixed gutter (`.dash-attn-row`, `theme.css:461`). Criteria: status pills share a left edge (fixed label column or minWidth), matching the attention-row pattern
+
+**Done:** PR #34 — status pills share a left edge via a fixed label gutter matching the attention-row pattern (`dashboard.tsx`, `theme.css`)
+
+### F6 — Repeated Sync clicks start duplicate syncs of the same type
+
+`—` · Bug · **done** (via S24/S34, PR #34) · protected: no
+
+**Ask:** **Repeatedly pressing Sync starts duplicate syncs of the same type**
+
+**Triage + acceptance criteria:** ALREADY FILED — this is **S24** (no backend concurrency guard on `POST /sync/{entity}`) and **S34** (same for dependencies, observed live). Triage adds a frontend detail for whoever works S24: the dashboard's disable lasts only for the POST round-trip (`dashboard.tsx:161-175`), and `CacheFreshnessCard`/`RecentJobsCard` get the raw local set rather than the derived in-flight predicate the tiles use (`dashboard.tsx:241,249`) — fix both when S24 lands
+
+**Done:** PR #34 — closed alongside S24/S34; the frontend detail (round-trip-only disable, raw local set on the cards) was fixed in the same PR (topbar/dashboard adopt in-flight syncs)
+
+### F7 — Direct table-to-answer arrow drawn even when the answer sits on a model
+
+`P3` · Bug · **done** · protected: no
+
+**Ask:** **Lineage draws a direct table → answer arrow even when the answer sits on a model** (e.g. "Average Sales by Weekly Date" on SE Demo)
+
+**Triage + acceptance criteria:** CONFIRMED. ThoughtSpot's `dependent_objects` sweep for a physical table returns transitive dependents, and `_edges_from_dependents` (`lineage_service.py:307-368`) writes every pair, so both ANSWER→MODEL and ANSWER→DB_TABLE edges land in the cache and both render. Criteria: a transitive ANSWER/LIVEBOARD→table edge is suppressed when a path through a model exists in the same build (post-pass transitive reduction in `build_object_graph`, not a render-only hide — `_downstream_closure_count` and the consumer drawer count through the cache); a genuinely table-backed answer keeps its direct edge; unit test covers both
+
+**Done:** `_reduce_transitive_edges` in `lineage_service.py` drops answer→table shortcut edges when a path through a model exists; unit tests in `test_lineage_service.py` cover both the reduction and the genuinely table-backed answer keeping its direct edge

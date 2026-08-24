@@ -38,7 +38,7 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (43)
+### Open (41)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -56,7 +56,6 @@ an item reaches `done`, move its index line and detail entry to
 | S29 | P2 | _persist_column_map delete-commit crash window | — |
 | S30 | P2 | build_answer_index incremental predicates have zero mutation coverage | — |
 | S31 | P2 | preview_delete trusts a possibly-truncated cache ('0 owned objects') | — |
-| S34 | P2 | Concurrent dependency syncs for the same (cluster, org) | — |
 | S37 | P2 | BearerTokenAuth silently discards org_id | yes (`ts_admin/config.py`) |
 | S38 | P2 | delete-tag-only is destructive with no dry-run | yes (`tests/integration/test_dryrun_safety.py`) |
 | S42 | P2 | No sync verifies the session org matches the stamped org_id | — |
@@ -73,7 +72,6 @@ an item reaches `done`, move its index line and detail entry to
 | S19 | P3 | Unused cache signals (dead-end models, view_count, over-sharing) | — |
 | S20 | P3 | Dashboard is single-cluster despite multi-cluster v1 | — |
 | S21 | P3 | _recent_activity window crowd-out by one bulk session | — |
-| S24 | P3 | POST /sync/{entity} has no concurrency guard | — |
 | S32 | P3 | cache_authoritative is produced end-to-end and consumed nowhere | — |
 | S35 | P3 | Topbar header layout has no automated guard (jsdom can't) | — |
 | S39 | P3 | Audit log: seven writers, zero readers, no org_id | yes (`tests/integration/test_cluster_isolation.py`) |
@@ -102,17 +100,13 @@ an item reaches `done`, move its index line and detail entry to
 
 Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 
-### Feedback (11)
+### Feedback (7)
 
 | ID | P | Type | Item | Status | Protected |
 |----|---|------|------|--------|-----------|
 | F1 | P3 | Feature | Connections list page with per-connection object counts | open | yes (`tests/integration/test_cluster_isolation.py`) |
 | F2 | P3 | Feature | Connection + external db/schema/table on the table list and in lineage | open | — |
 | F3 | P4 | Feature | 'Created by' on the users list; 'Created' date on the groups list | open | — |
-| F4 | P2 | Bug | Lineage zoom controls near-invisible in dark mode | open | — |
-| F5 | P4 | Bug | Dashboard: vertically align the per-job status pills | open | — |
-| F6 | — | Bug | Repeated Sync clicks start duplicate syncs of the same type | see S24/S34 | — |
-| F7 | P3 | Bug | Direct table-to-answer arrow drawn even when the answer sits on a model | open | — |
 | F8 | P4 | Feature | CSV export for Users and Groups | open | — |
 | F9 | P3 | Feature | Export tagged content to TML without deleting | open | — |
 | F10 | P3 | Feature | Transfer ownership of selected objects from the Metadata screen | open | yes (`tests/integration/test_dryrun_safety.py`) |
@@ -236,14 +230,6 @@ The liveboard incremental watermark is a bare timestamp, which cannot express "n
 `preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
 
 **Acceptance criteria:** `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0
-
-### S34 — Concurrent dependency syncs for the same (cluster, org)
-
-`P2` · **open** · protected: no
-
-Nothing prevents two dependency syncs running concurrently for the same (cluster, org). Observed live: three simultaneous TML crawls on ps-internal-prod (one script + two UI "Sync Lineage" clicks) produced sustained 30s `metadata/tml/export` timeouts and retry backoff, tripling the wall-clock of all three. Not corrupting — each pass is a full delete-and-rebuild scoped to (cluster, org), so last writer wins with a complete set — but the UI gives no signal that a build is already in flight and happily starts another
-
-**Acceptance criteria:** Triggering a `dependencies` sync while one is already RUNNING for the same (cluster, org) either refuses with an actionable message or returns the in-flight job instead of starting a second crawl; a test asserts the second trigger does not produce a second RUNNING job
 
 ### S37 — BearerTokenAuth silently discards org_id
 
@@ -372,14 +358,6 @@ Multi-cluster is a v1 pillar but the dashboard is single-cluster: no roll-up and
 `_recent_activity` scans a fixed 300 raw rows per audit source, so one bulk share of 500 objects fills the window and hides every other activity type
 
 **Acceptance criteria:** The feed's per-source window cannot let a single large session crowd out other kinds of activity (e.g. group in SQL, or scan per-kind); a test seeds one oversized share session plus a deletion and asserts both appear
-
-### S24 — POST /sync/{entity} has no concurrency guard
-
-`P3` · **open** · protected: no
-
-`POST /sync/{entity}` has no concurrency guard, so a metadata sync and a dependencies build interleave on the same event loop while the metadata cache is mid-repopulation (`api/sync.py:85-138` creates jobs unconditionally)
-
-**Acceptance criteria:** Triggering a sync for an entity that already has a running job is rejected (or queued) rather than starting a second concurrent run; a test asserts the second trigger does not start while the first is RUNNING
 
 ### S32 — cache_authoritative is produced end-to-end and consumed nowhere
 
@@ -560,38 +538,6 @@ done; F3/F6/F11 partially covered or already filed.
 **Ask:** **"Created by" on the users list; "Created" date on the groups list**
 
 **Triage + acceptance criteria:** PARTIAL — each grid has the inverse of what's asked. Groups already show "Created by" (`groups.tsx:121`) and `created_at` is already synced, serialized, sortable, and typed — the Created column is one ColDef copy of the Modified entry. Users show "Created" but have no creator: `TSUser`/`CachedUser` carry no author field, so first verify live whether `users/search` returns one at all; if yes, mirror the group author chain (model field → sync → self-join name resolution in `group_service.py:87`)
-
-### F4 — Lineage zoom controls near-invisible in dark mode
-
-`P2` · Bug · **open** · protected: no
-
-**Ask:** **Lineage zoom controls near-invisible in dark mode**
-
-**Triage + acceptance criteria:** CONFIRMED. `<Controls />` (`LineageFlow.tsx:437`) is unthemed: no `colorMode` prop and no `.react-flow__controls` override anywhere, so dark mode renders light-colored icons on a `#fefefe` pill. Criteria: controls are themed via `colorMode` or `--xy-controls-button-*` tokens under the existing dark-theme selector (token route matches how AG Grid is themed in `theme.css`); both themes checked per DESIGN.md
-
-### F5 — Dashboard: vertically align the per-job status pills
-
-`P4` · Bug · **open** · protected: no
-
-**Ask:** **Dashboard: vertically align the per-job status pills** ("Complete" etc.)
-
-**Triage + acceptance criteria:** CONFIRMED plausible. `RecentJobsCard` puts the status pill after a variable-width label in a flex row (`dashboard.tsx:657-666`), so pills start at different x per row. The codebase already solves this with a fixed gutter (`.dash-attn-row`, `theme.css:461`). Criteria: status pills share a left edge (fixed label column or minWidth), matching the attention-row pattern
-
-### F6 — Repeated Sync clicks start duplicate syncs of the same type
-
-`—` · Bug · **see S24/S34** · protected: no
-
-**Ask:** **Repeatedly pressing Sync starts duplicate syncs of the same type**
-
-**Triage + acceptance criteria:** ALREADY FILED — this is **S24** (no backend concurrency guard on `POST /sync/{entity}`) and **S34** (same for dependencies, observed live). Triage adds a frontend detail for whoever works S24: the dashboard's disable lasts only for the POST round-trip (`dashboard.tsx:161-175`), and `CacheFreshnessCard`/`RecentJobsCard` get the raw local set rather than the derived in-flight predicate the tiles use (`dashboard.tsx:241,249`) — fix both when S24 lands
-
-### F7 — Direct table-to-answer arrow drawn even when the answer sits on a model
-
-`P3` · Bug · **open** · protected: no
-
-**Ask:** **Lineage draws a direct table → answer arrow even when the answer sits on a model** (e.g. "Average Sales by Weekly Date" on SE Demo)
-
-**Triage + acceptance criteria:** CONFIRMED. ThoughtSpot's `dependent_objects` sweep for a physical table returns transitive dependents, and `_edges_from_dependents` (`lineage_service.py:307-368`) writes every pair, so both ANSWER→MODEL and ANSWER→DB_TABLE edges land in the cache and both render. Criteria: a transitive ANSWER/LIVEBOARD→table edge is suppressed when a path through a model exists in the same build (post-pass transitive reduction in `build_object_graph`, not a render-only hide — `_downstream_closure_count` and the consumer drawer count through the cache); a genuinely table-backed answer keeps its direct edge; unit test covers both
 
 ### F8 — CSV export for Users and Groups
 
