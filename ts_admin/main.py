@@ -61,13 +61,38 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down.")
 
 
+def _is_delete_job(job) -> bool:
+    """True for jobs that permanently delete ThoughtSpot objects.
+
+    Two callers reach `deletion_service._execute_delete`: the Archiver
+    (`job_type="archive"` with `action="delete"` — the same type also covers
+    non-destructive archive actions) and the Bulk Deleter
+    (`job_type="bulk_delete"`, which carries no `action` key at all).
+    """
+    if job.job_type == "bulk_delete":
+        return True
+    if job.job_type != "archive" or not job.parameters:
+        return False
+    return job.get_parameters().get("action") == "delete"
+
+
 def _recover_stuck_jobs() -> None:
     """
-    Mark any RUNNING or QUEUED jobs as FAILED on startup.
+    Mark any RUNNING or QUEUED jobs as FAILED on startup, and reconcile the
+    metadata cache for delete jobs the crash interrupted.
 
-    For archive delete jobs where TML export succeeded before the crash,
-    conservatively remove those CachedMetadata rows (assume the delete went
-    through — they can be restored from ArchiveRecord if not).
+    A delete job is only reconciled against CONFIRMED deletes —
+    `ArchiveRecord.deleted_confirmed_at`, written after `delete_metadata`
+    returns. It is never inferred from `tml_export_status`: `_execute_delete`
+    exports EVERY object in Phase A before Phase B deletes any, so the widest
+    crash window is exactly the one where a SUCCESS export means nothing was
+    deleted. Inferring there purged the cache for objects still live in
+    ThoughtSpot — they vanished from Metadata Explorer and the Archiver while
+    the admin could still see them in TS, and their ArchiveRecords still read
+    `is_restorable`, so "restoring" them created duplicates.
+
+    Records left unconfirmed stay unconfirmed, which is what makes them
+    non-restorable (see `ArchiveRecord.deleted_confirmed_at`).
     """
     from datetime import datetime, timezone
 
@@ -86,26 +111,54 @@ def _recover_stuck_jobs() -> None:
             return
 
         for job in stuck:
-            # For archive delete jobs: remove CachedMetadata rows that were
-            # successfully exported (conservative assumption: they were deleted)
-            if job.job_type == "archive" and job.parameters:
-                params = job.get_parameters()
-                if params.get("action") == "delete":
-                    exported_guids = session.exec(
-                        select(ArchiveRecord.ts_guid).where(
-                            ArchiveRecord.job_id == job.id,
-                            ArchiveRecord.tml_export_status == "SUCCESS",
+            if _is_delete_job(job):
+                # Only GUIDs ThoughtSpot confirmed deleting. Phase B purges the
+                # cache in the same transaction that stamps the confirmation, so
+                # this is normally a no-op; it still matters for jobs stranded by
+                # a build that predates that guarantee.
+                confirmed = session.exec(
+                    select(ArchiveRecord.ts_guid, ArchiveRecord.org_id).where(
+                        ArchiveRecord.job_id == job.id,
+                        ArchiveRecord.cluster_id == job.cluster_id,
+                        col(ArchiveRecord.deleted_confirmed_at).is_not(None),
+                    )
+                ).all()
+
+                # Group by org: a GUID can exist in more than one org on the
+                # same cluster, and the purge must not reach past the org the
+                # object was deleted from.
+                by_org: dict[int, list[str]] = {}
+                for ts_guid, org_id in confirmed:
+                    by_org.setdefault(org_id, []).append(ts_guid)
+
+                purged = 0
+                for org_id, guids in by_org.items():
+                    result = session.exec(
+                        sql_delete(CachedMetadata).where(
+                            CachedMetadata.cluster_id == job.cluster_id,
+                            CachedMetadata.org_id == org_id,
+                            col(CachedMetadata.ts_guid).in_(guids),
                         )
-                    ).all()
-                    if exported_guids:
-                        session.exec(sql_delete(CachedMetadata).where(col(CachedMetadata.ts_guid).in_(exported_guids)))
-                        logger.warning(
-                            "Startup recovery: removed %d CachedMetadata rows "
-                            "for stuck archive job %s (TML export succeeded — "
-                            "assumed deleted)",
-                            len(exported_guids),
-                            job.id,
-                        )
+                    )
+                    purged += result.rowcount or 0
+
+                unconfirmed = session.exec(
+                    select(ArchiveRecord.id).where(
+                        ArchiveRecord.job_id == job.id,
+                        col(ArchiveRecord.deleted_confirmed_at).is_(None),
+                    )
+                ).all()
+                if purged or unconfirmed:
+                    logger.warning(
+                        "Startup recovery: %s job %s was interrupted — purged %d "
+                        "CachedMetadata row(s) for confirmed deletes; %d object(s) "
+                        "were never confirmed deleted and remain in the cache and "
+                        "non-restorable",
+                        job.job_type,
+                        job.id,
+                        purged,
+                        len(unconfirmed),
+                    )
 
             job.status = "FAILED"
             job.error = "Server restarted while job was running"

@@ -16,6 +16,9 @@ class ArchiveRecord(SQLModel, table=True):
         PENDING  → tml_export_status while TML export is queued
         SUCCESS  → TML written to disk, object included in delete batch
         FAILED   → TML export failed; object was NOT deleted
+
+    `tml_export_status == "SUCCESS"` means only that the backup exists. Use
+    `deleted_confirmed_at` to tell whether the object was actually deleted.
     """
 
     __tablename__ = "archive_records"
@@ -39,6 +42,17 @@ class ArchiveRecord(SQLModel, table=True):
     tml_path: str | None = None  # absolute path to .tml file on disk
     tml_export_status: str = "PENDING"  # PENDING | SUCCESS | FAILED
     tml_export_error: str | None = None
+
+    # Delete confirmation. Set ONLY after `delete_metadata` returns for the
+    # chunk containing this GUID — it is the single source of truth for "this
+    # object is really gone from ThoughtSpot".
+    #
+    # A SUCCESSFUL TML export does NOT imply a delete: `_execute_delete` runs
+    # Phase A (export every object) to completion before Phase B deletes any,
+    # so a crash between the phases leaves rows that are SUCCESS-exported and
+    # fully alive in ThoughtSpot. Anything that asks "was this deleted?" must
+    # read this field, never `tml_export_status`.
+    deleted_confirmed_at: datetime | None = None
 
     # Lifecycle
     archived_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

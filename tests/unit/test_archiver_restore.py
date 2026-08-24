@@ -138,8 +138,15 @@ def _archive_record(
     days_unused: int = 400,
     tags: list[str] | None = None,
     object_type: str = "LIVEBOARD",
+    deleted_confirmed: bool = True,
 ) -> ArchiveRecord:
-    """An archived record whose TML file on disk is just the object's name."""
+    """
+    An archived record whose TML file on disk is just the object's name.
+
+    Defaults to a CONFIRMED delete — the object really is gone from
+    ThoughtSpot, which is the only state in which restoring it is correct.
+    Pass deleted_confirmed=False for a record whose delete never completed.
+    """
     tml_path = tmp_path / f"{guid}.tml"
     tml_path.write_text(name, encoding="utf-8")
     stale = datetime.now(tz=timezone.utc) - timedelta(days=days_unused)
@@ -158,6 +165,7 @@ def _archive_record(
         tags=json.dumps(tags if tags is not None else ["Finance"]),
         tml_path=str(tml_path),
         tml_export_status="SUCCESS",
+        deleted_confirmed_at=datetime.now(tz=timezone.utc) if deleted_confirmed else None,
     )
 
 
@@ -275,6 +283,53 @@ class TestRestoreDoesNotReArchive:
         with Session(in_memory_db) as s:
             row = s.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == "lb-new")).one()
         assert row.get_tag_names() == []
+
+
+class TestUnconfirmedDeletesAreNotRestorable:
+    """
+    `_execute_delete` exports EVERY object before deleting any, so a crash
+    between the phases leaves records with a SUCCESS TML export and objects
+    that are still live in ThoughtSpot. Importing their TML would create a
+    SECOND copy of an object the admin can already see.
+    """
+
+    def test_record_whose_delete_never_completed_is_skipped(self, in_memory_db, patched_env, cluster_row, tmp_path):
+        with Session(in_memory_db) as s:
+            s.add(_archive_record(tmp_path, record_id="r1", name="Sales", guid="lb-old", deleted_confirmed=False))
+            s.commit()
+        _FakeClient.guid_by_name = {"Sales": "lb-new"}
+
+        job_id = _run_restore(["r1"])
+
+        # Nothing was sent to ThoughtSpot at all — no duplicate created.
+        assert _FakeClient.import_calls == []
+        with Session(in_memory_db) as s:
+            # Nothing restorable ⇒ the job is FAILED, which stores no result.
+            assert s.get(Job, job_id).status == "FAILED"
+            # The record is untouched, so it can still be restored if the
+            # delete is later completed and confirmed.
+            assert s.get(ArchiveRecord, "r1").restored_at is None
+
+    def test_confirmed_sibling_still_restores(self, in_memory_db, patched_env, cluster_row, tmp_path):
+        """
+        Non-vacuity guard: prove the skip above is caused by the missing
+        confirmation and not by the fixture failing to be restorable at all.
+        """
+        with Session(in_memory_db) as s:
+            s.add(_archive_record(tmp_path, record_id="r1", name="Sales", guid="lb-old", deleted_confirmed=False))
+            s.add(_archive_record(tmp_path, record_id="r2", name="Ops", guid="lb-2"))
+            s.commit()
+        _FakeClient.guid_by_name = {"Sales": "lb-new", "Ops": "lb-2-new"}
+
+        job_id = _run_restore(["r1", "r2"])
+
+        with Session(in_memory_db) as s:
+            result = s.get(Job, job_id).get_result()
+        assert result["succeeded"] == 1
+        assert result["skipped"] == 1
+        with Session(in_memory_db) as s:
+            assert s.get(ArchiveRecord, "r1").restored_at is None
+            assert s.get(ArchiveRecord, "r2").restored_at is not None
 
 
 class TestRestoreResultMatching:

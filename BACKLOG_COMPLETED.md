@@ -9,6 +9,26 @@ detail entry here.
 
 ## Index
 
+### S27 — Lineage unit suite is mutation-vacuous
+
+`P1` · **done** · protected: no
+
+**Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded
+
+**Acceptance criteria:** Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes
+
+**Closed 2026-08-24.** The coverage shipped in PRs #21/#22; the row stayed
+`in-review` only because one of its three enumerated mutations — "reordering the
+post-persist write" — describes the *rejected* S7 branch and has never existed
+on `main` (the M9 failure mode, inside the row filed to prevent it). Re-measured
+against current `main` before closing, and the criteria's general clause holds:
+dropping `_changed`'s `modified_at > last_built` comparison, forcing `_changed`
+to always re-crawl, and dropping either `org_id` or `cluster_id` from the
+`last_built` watermark read each turn at least one test red (4/4 killed). The
+one criterion that cannot be met is dropped as unmeetable rather than faked.
+Answer-index coverage — the same gap in the byte-identical twin — is tracked
+separately as **S30**.
+
 ### Done items (21)
 
 | ID | P | Item | Protected |

@@ -220,3 +220,46 @@ On the Python side, assert timestamps read back from SQLite against naive UTC
 (`datetime.now(tz=timezone.utc).replace(tzinfo=None)`), never against
 `datetime.now()` — the latter passes in the Americas and fails east of
 Greenwich.
+
+## Mutation testing the delete-confirmation guard (S36)
+
+`ArchiveRecord.deleted_confirmed_at` is the single source of truth for "this
+object really left ThoughtSpot". Three separate call sites read it — startup
+crash-recovery, the restore partition, and `is_restorable` — so a regression in
+any one of them silently re-opens a data-loss or duplicate-object bug that the
+admin only discovers in production. The suite was therefore measured, not
+assumed, using the harness described above.
+
+### Kill table (measured 2026-08-24)
+
+Every row was observed red-then-restored-green, with the mutated file's content
+asserted changed before pytest ran and asserted restored afterwards.
+
+| ID | File | Mutation | Result | Killed by |
+|---|---|---|---|---|
+| S1 | `main.py` | recovery reads `tml_export_status == "SUCCESS"` instead of `deleted_confirmed_at` (**the original S36 bug**) | KILLED | `test_exported_but_unconfirmed_objects_keep_their_cache_rows` |
+| S2 | `main.py` | cache purge drops the `cluster_id` predicate | KILLED | `test_purge_does_not_cross_cluster_boundaries` |
+| S3 | `main.py` | cache purge drops the `org_id` predicate | KILLED | `test_purge_does_not_cross_org_boundaries` |
+| S4 | `main.py` | `_is_delete_job` returns False for `bulk_delete` | KILLED | `test_exported_but_unconfirmed_objects_keep_their_cache_rows[bulk_delete]` |
+| S5 | `main.py` | confirmed-record query drops `job_id` scoping | KILLED | `test_purge_is_scoped_to_the_stuck_job` |
+| S6 | `main.py` | `_is_delete_job` returns True for every `archive` job | KILLED | `test_non_delete_archive_job_purges_nothing` |
+| S7 | `deletion_service.py` | delete no longer stamps `deleted_confirmed_at` | KILLED | `test_confirmed_delete_stamps_the_record` |
+| S8 | `deletion_service.py` | the stamp is scoped to the job, not the confirmed chunk | KILLED | `test_a_failed_delete_chunk_leaves_its_siblings_confirmation_alone` |
+| S9 | `archiver_service.py` | restore no longer requires a confirmed delete | KILLED | `test_record_whose_delete_never_completed_is_skipped` |
+| S10 | `database.py` | the one-shot legacy backfill is dropped from the ALTER | KILLED | `test_migration_backfills_legacy_rows_as_confirmed` |
+
+10 of 10 killed; no surviving mutants.
+
+### Two facts worth keeping
+
+- **The stamp must be scoped to the chunk, not the job.** `_execute_delete`
+  groups by object type, so one job issues several `delete_metadata` calls. S8
+  is the mutation that catches a job-wide stamp confirming objects whose own
+  delete call raised — and it is only killable with a fixture whose two objects
+  have *different* object types, because same-type objects share one call.
+- **The legacy backfill must run exactly once, inside the ALTER transaction.**
+  Re-running it on every startup would re-confirm precisely the rows that
+  crash-recovery deliberately left unconfirmed, resurrecting the duplicate-
+  restore bug on the next boot. `test_migration_does_not_reconfirm_on_every_startup`
+  pins that; S10 pins the other direction (dropping the backfill makes every
+  pre-upgrade archive unrestorable).

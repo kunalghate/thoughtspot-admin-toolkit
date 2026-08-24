@@ -38,11 +38,10 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (41)
+### Open (40)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
-| S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
 | M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
 | M8 | P2 | Gate serialization violated by file writes into the shared checkout | yes (`CLAUDE.md`) |
 | M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
@@ -88,7 +87,7 @@ an item reaches `done`, move its index line and detail entry to
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
-| S27 | P1 | Lineage unit suite is mutation-vacuous | — |
+| S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
 | M2 | P2 | PR #14 silently reverted the vitest wiring | yes (`.github/workflows/*` for the CI half) |
 | S23 | P2 | Interrupted metadata sync reads as fully synced | — |
 | S1 | P3 | Wire frontend vitest into the suite | — |
@@ -119,14 +118,6 @@ Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 ## Open items
 
 Ordered by priority, then ID.
-
-### S36 — Startup crash-recovery purges cache rows for never-deleted objects
-
-`P1` · **open** · protected: yes (`ts_admin/main.py`)
-
-Startup crash-recovery deletes `CachedMetadata` rows for objects that were never deleted, is not cluster/org-scoped, and ignores Bulk Deleter jobs. `main.py:70` matches `job_type == "archive"` only (the Deleter creates `bulk_delete`, so it gets no recovery at all), and `:73-88` infers "deleted" from `tml_export_status == "SUCCESS"` — but `_execute_delete` exports EVERY object in Phase A before Phase B deletes any, so the most likely crash window is exactly where that inference is maximally wrong: the recovery purges the cache for N objects of which zero were deleted. The admin then sees them vanish from Metadata Explorer and the Archiver while they are still live in ThoughtSpot, and their `ArchiveRecord`s report `is_restorable=True`, so "restoring" them creates duplicates. `:82`'s `sql_delete` also has no `cluster_id`/`org_id` predicate, though the stuck `Job` row carries `cluster_id`
-
-**Acceptance criteria:** Crash recovery does not infer deletion from TML-export status: either `_execute_delete` records per-GUID delete confirmation (an `ArchiveRecord` field set only after `delete_metadata` returns) and recovery purges only confirmed rows, or recovery purges nothing and instead marks the metadata `sync_log` non-authoritative so the next read re-syncs. The delete is scoped to the stuck job's `cluster_id` and org. Recovery behaves identically for `job_type="bulk_delete"`. Tests: (a) a RUNNING archive delete job with all records `tml_export_status="SUCCESS"` and no confirmed deletes removes zero `CachedMetadata` rows; (b) the same `ts_guid` in two clusters, recovery for a stuck job in cluster A leaves cluster B's row intact
 
 ### M5 — A green verification bar is necessary but not sufficient
 
@@ -450,13 +441,25 @@ Single-source the protected-path list
 
 ## In review
 
-### S27 — Lineage unit suite is mutation-vacuous
+### S36 — Startup crash-recovery purges cache rows for never-deleted objects
 
-`P1` · **in-review** · protected: no
+`P1` · **in-review** · protected: yes (`ts_admin/main.py`)
 
-**Blocks any re-attempt of S7.** The lineage unit suite is mutation-vacuous: on the rejected S7 diff, 6 of 7 mutations to `build_column_map` left all 16 tests in `tests/unit/test_lineage_columns.py` green — including one making the builder never re-crawl any liveboard ever again. No test in the file seeds a **future** `lb_modified`, so "a genuinely changed liveboard is re-exported" has never been asserted; marker/watermark org-scoping and the write-ordering invariant were likewise unguarded
+Startup crash-recovery deletes `CachedMetadata` rows for objects that were never deleted, is not cluster/org-scoped, and ignores Bulk Deleter jobs. `main.py:70` matches `job_type == "archive"` only (the Deleter creates `bulk_delete`, so it gets no recovery at all), and `:73-88` infers "deleted" from `tml_export_status == "SUCCESS"` — but `_execute_delete` exports EVERY object in Phase A before Phase B deletes any, so the most likely crash window is exactly where that inference is maximally wrong: the recovery purges the cache for N objects of which zero were deleted. The admin then sees them vanish from Metadata Explorer and the Archiver while they are still live in ThoughtSpot, and their `ArchiveRecord`s report `is_restorable=True`, so "restoring" them creates duplicates. `:82`'s `sql_delete` also has no `cluster_id`/`org_id` predicate, though the stuck `Job` row carries `cluster_id`
 
-**Acceptance criteria:** Every behavioural predicate in `build_column_map`'s incremental path is killed by at least one test: deleting `_changed`'s `modified_at > last_built` comparison, dropping `org_id` from any watermark read/write, and reordering the post-persist write each turn at least one test red. The mutation list and its results are recorded in [docs/dev/TESTING.md](docs/dev/TESTING.md) so the next lineage change starts from a suite that can detect its own failure modes
+**Acceptance criteria:** Crash recovery does not infer deletion from TML-export status: either `_execute_delete` records per-GUID delete confirmation (an `ArchiveRecord` field set only after `delete_metadata` returns) and recovery purges only confirmed rows, or recovery purges nothing and instead marks the metadata `sync_log` non-authoritative so the next read re-syncs. The delete is scoped to the stuck job's `cluster_id` and org. Recovery behaves identically for `job_type="bulk_delete"`. Tests: (a) a RUNNING archive delete job with all records `tml_export_status="SUCCESS"` and no confirmed deletes removes zero `CachedMetadata` rows; (b) the same `ts_guid` in two clusters, recovery for a stuck job in cluster A leaves cluster B's row intact
+
+**Cycle note (2026-08-24):** Fixed by making delete confirmation explicit rather
+than inferred. `ArchiveRecord` gains `deleted_confirmed_at`, written in the same
+transaction as the cache purge and only after `delete_metadata` returns for that
+chunk; crash-recovery now purges only confirmed rows, scoped to the stuck job's
+`cluster_id` and each record's `org_id`, and `_is_delete_job` covers
+`bulk_delete` as well as `archive`+`action=delete`. The restore path and
+`is_restorable` read the same field, which closes the duplicate-object half of
+the bug. Existing installs get an additive `ALTER TABLE` with a one-shot
+backfill stamping historical SUCCESS rows, so upgrading does not retroactively
+make old archives unrestorable. 10/10 mutations killed — table in
+[docs/dev/TESTING.md](docs/dev/TESTING.md).
 
 ### M2 — PR #14 silently reverted the vitest wiring
 

@@ -223,6 +223,7 @@ async def _execute_delete(
     """
     from sqlmodel import col
     from sqlmodel import delete as sql_delete
+    from sqlmodel import update as sql_update
 
     from ts_admin.models.archive_record import ArchiveRecord
     from ts_admin.models.audit_log import AuditLog
@@ -460,13 +461,29 @@ async def _execute_delete(
                         update_progress(job_id, len(deleted))
                         continue
 
-                    # Remove from CachedMetadata cache. Scoped to
-                    # (cluster_id, org_id) like the sibling read in
-                    # `_fetch_objects_by_guids` — a GUID can exist in more
-                    # than one org and on more than one cluster, and an
-                    # unscoped purge wipes cache rows for objects that were
-                    # never deleted.
+                    # ThoughtSpot has confirmed the delete for this chunk.
+                    # Stamp each record BEFORE the cache purge: this timestamp
+                    # is what startup crash-recovery and the restore path read
+                    # to tell a really-deleted object from one that was only
+                    # exported, so it must be durable the moment the delete is
+                    # real. Same session as the purge, so a crash cannot leave
+                    # the cache purged with no confirmation on record.
+                    confirmed_at = datetime.now(timezone.utc)
                     with Session(_db.get_engine()) as session:
+                        session.exec(
+                            sql_update(ArchiveRecord)
+                            .where(
+                                ArchiveRecord.job_id == job_id,
+                                col(ArchiveRecord.ts_guid).in_(chunk),
+                            )
+                            .values(deleted_confirmed_at=confirmed_at)
+                        )
+                        # Remove from CachedMetadata cache. Scoped to
+                        # (cluster_id, org_id) like the sibling read in
+                        # `_fetch_objects_by_guids` — a GUID can exist in more
+                        # than one org and on more than one cluster, and an
+                        # unscoped purge wipes cache rows for objects that were
+                        # never deleted.
                         session.exec(
                             sql_delete(CachedMetadata).where(
                                 CachedMetadata.cluster_id == cluster_id,

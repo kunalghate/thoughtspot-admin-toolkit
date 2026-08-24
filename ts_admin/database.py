@@ -113,6 +113,57 @@ def _create_missing_indexes() -> None:
             conn.execute(text(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table}" ({cols})'))
 
 
+# Columns added to NON-rebuildable tables after they shipped. `create_all` never
+# alters an existing table, so the column would be missing on every installed DB
+# and every query naming it would fail with "no such column". These tables hold
+# data that cannot be re-synced from ThoughtSpot (archive_records is the restore
+# manifest — dropping it destroys the only record of what was deleted), so they
+# get an additive ALTER instead of the drop-and-rebuild used above.
+#
+# {table: [(column, DDL type, one-shot backfill SQL or None)]}
+#
+# The backfill runs in the SAME transaction as the ALTER and therefore exactly
+# once, when the column first appears. It must never run again: re-running it
+# would overwrite values that later code wrote deliberately.
+_BACKFILL_COLUMNS: dict[str, list[tuple[str, str, str | None]]] = {
+    "archive_records": [
+        (
+            "deleted_confirmed_at",
+            "DATETIME",
+            # Rows written before this column existed carry no delete
+            # confirmation, but the code that created them treated a SUCCESS
+            # export as a delete. Stamping them preserves that reading exactly,
+            # so upgrading does not retroactively make historical archives
+            # unrestorable. Only rows created from now on get a truthful value.
+            "UPDATE archive_records SET deleted_confirmed_at = archived_at WHERE tml_export_status = 'SUCCESS'",
+        ),
+    ],
+}
+
+
+def _add_missing_columns() -> None:
+    """Additively ALTER non-rebuildable tables that predate a model column."""
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table, columns in _BACKFILL_COLUMNS.items():
+        if table not in existing_tables:
+            continue  # create_all will build it with the column already present
+        present = {c["name"] for c in inspector.get_columns(table)}
+        for column, ddl_type, backfill_sql in columns:
+            if column in present:
+                continue
+            with engine.begin() as conn:
+                conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {ddl_type}'))
+                if backfill_sql:
+                    conn.execute(text(backfill_sql))
+            logging.getLogger(__name__).info("Added column %r to existing table %r", column, table)
+
+
 def init_db() -> None:
     """Create all tables (recreating outdated rebuildable caches). Called once at app startup."""
     # Import all models so SQLModel picks them up
@@ -135,6 +186,7 @@ def init_db() -> None:
 
     _drop_outdated_rebuildable_tables()
     SQLModel.metadata.create_all(get_engine())
+    _add_missing_columns()
     _create_missing_indexes()
 
 
