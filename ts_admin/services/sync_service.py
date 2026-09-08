@@ -156,6 +156,7 @@ async def _sync_users(*, org_id: int, job_id: str, target_cluster_id: str | None
                         existing.display_name = user.display_name
                         existing.email = user.email
                         existing.status = user.status.value
+                        existing.author_guid = user.author_id
                         existing.created_at = user.created
                         existing.modified_at = user.modified
                         existing.synced_at = datetime.now(timezone.utc)
@@ -169,6 +170,7 @@ async def _sync_users(*, org_id: int, job_id: str, target_cluster_id: str | None
                                 display_name=user.display_name,
                                 email=user.email,
                                 status=user.status.value,
+                                author_guid=user.author_id,
                                 created_at=user.created,
                                 modified_at=user.modified,
                                 synced_at=datetime.now(timezone.utc),

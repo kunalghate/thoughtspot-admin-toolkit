@@ -31,6 +31,7 @@ from typing import Literal
 
 import httpx
 from sqlalchemy import distinct
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, func, select
 
 import ts_admin.database as _db
@@ -117,13 +118,17 @@ def _nothing_succeeded_reason(*, noun: str, total: int, failures: list[str], can
     return f"0 of {total} {noun}: " + "; ".join(parts) + "."
 
 
-def _user_row_to_dict(u: CachedUser) -> dict:
+def _user_row_to_dict(u: CachedUser, created_by: str | None = None) -> dict:
     return {
         "ts_guid": u.ts_guid,
         "username": u.username,
         "display_name": u.display_name,
         "email": u.email,
         "status": u.status,
+        # Display name of the creating user; falls back to the raw GUID when
+        # that user is no longer in the cache (deleted upstream), and is None
+        # when ThoughtSpot reported no author at all.
+        "created_by": created_by or (u.author_guid or None),
         "created_at": u.created_at.isoformat() if u.created_at else None,
         "modified_at": u.modified_at.isoformat() if u.modified_at else None,
         "synced_at": u.synced_at.isoformat() if u.synced_at else None,
@@ -231,7 +236,19 @@ def list_users(
 ) -> tuple[list[dict], int]:
     """Paginated user grid. If org_id is provided, joins through UserOrgMembership."""
     with Session(_db.get_engine()) as session:
-        base = select(CachedUser).where(CachedUser.cluster_id == cluster_id)
+        # Users are cluster-scoped, not org-scoped, so — as in group_service —
+        # the join is on cluster_id + GUID only. LEFT JOIN on purpose: a user
+        # whose creator has been deleted upstream must still list.
+        creator = aliased(CachedUser)
+
+        base = (
+            select(CachedUser, col(creator.display_name))
+            .outerjoin(
+                creator,
+                (col(creator.cluster_id) == CachedUser.cluster_id) & (col(creator.ts_guid) == CachedUser.author_guid),
+            )
+            .where(CachedUser.cluster_id == cluster_id)
+        )
         if org_id is not None:
             base = base.join(
                 UserOrgMembership,
@@ -254,18 +271,19 @@ def list_users(
 
         # Order
         sort_col = {
-            "username": CachedUser.username,
-            "display_name": CachedUser.display_name,
-            "email": CachedUser.email,
-            "status": CachedUser.status,
-            "created_at": CachedUser.created_at,
-            "modified_at": CachedUser.modified_at,
-        }.get(sort_field, CachedUser.username)
+            "username": col(CachedUser.username),
+            "display_name": col(CachedUser.display_name),
+            "email": col(CachedUser.email),
+            "status": col(CachedUser.status),
+            "created_by": col(creator.display_name),
+            "created_at": col(CachedUser.created_at),
+            "modified_at": col(CachedUser.modified_at),
+        }.get(sort_field, col(CachedUser.username))
         base = base.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
         base = base.offset(record_offset).limit(page_size)
 
         rows = session.exec(base).all()
-        return [_user_row_to_dict(u) for u in rows], total
+        return [_user_row_to_dict(u, created_by) for u, created_by in rows], total
 
 
 def get_user_detail(*, cluster_id: str, ts_guid: str) -> dict | None:

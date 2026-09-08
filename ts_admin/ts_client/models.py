@@ -109,6 +109,10 @@ class TSUser(TSBaseModel):
     display_name: str = Field(alias="display_name", default="")
     email: str = Field(default="")
     status: UserStatus = UserStatus.ACTIVE
+    # GUID of the user who created this user. users/search returns it as
+    # `author_id`, the same field groups/search uses — see TSGroup.author_id.
+    # The ThoughtSpot UI does not surface it anywhere.
+    author_id: str = Field(default="")
     created: datetime | None = None
     modified: datetime | None = None
     group_identifiers: list[str] = Field(default_factory=list)
