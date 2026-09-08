@@ -167,3 +167,24 @@ One line per cycle on process friction. Format:
   prompted it: every one of these rules had already been paid for in a cycle but
   lived only in retros, so each cycle re-improvised them. Lesson: when a retro
   lesson recurs twice, it belongs in the skill/brief, not the retro.
+- **2026-09-08 (S31):** The Review Board earned its cost — the bar went fully
+  green on a first implementation carrying 7 CONFIRMED defects, including a
+  vacuous acceptance test (S27's lesson recurring one level up: the non-vacuity
+  anchor and the assertion ran on *different users*) and a flag whose name
+  claimed more than it covered. Friction worth fixing: **two lenses disagreed on
+  the severity of the same race** (correctness called the marker-ordering window
+  "microseconds"; security called it a fail-open) and only the *performance*
+  lens's unrelated 3.4 s measurement settled it — the window is seconds. Lesson:
+  when lenses disagree on a race, the tiebreaker is a measurement of the enclosing
+  operation, not more reading; the CEO should ask for it explicitly rather than
+  adjudicating from the reports. Second friction: my own approved plan shipped the
+  ordering rationale as a comment asserting "can only ever be conservative", which
+  was false — **a design's stated invariant needs the same kill evidence as a
+  guard test**, or it becomes a load-bearing comment the next agent trusts. That
+  lesson then repeated inside the same cycle: my prescribed remedy ("read the
+  marker before AND after, and AND them") was *itself* insufficient — presence of
+  a marker at both instants is satisfied by two different markers — and only a
+  second review pass with a scratch repro caught it. Three rounds of review found
+  a real defect each time. The takeaway is not "review more" but: **a fix
+  prescribed by the CEO gets no more trust than one written by an implementer**,
+  and a re-review of the delta is mandatory, not optional, after any fix batch.

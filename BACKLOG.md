@@ -25,6 +25,7 @@ only when a human promotes them.
 | Cycle | Closed | Filed | Open after |
 |---|---|---|---|
 | 2026-08-24 · reconcile (human-directed) | 6 | 0 | 42 open · 0 in-review · 7 feedback |
+| 2026-09-08 · S31 (fix cycle) | 0 | 1 | 42 open · 1 in-review · 7 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -69,8 +70,8 @@ an item reaches `done`, move its index line and detail entry to
 | S28 | P2 | Bare-timestamp watermark cannot express 'not yet crawled' | — |
 | S29 | P2 | _persist_column_map delete-commit crash window | — |
 | S30 | P2 | build_answer_index incremental predicates have zero mutation coverage | — |
-| S31 | P2 | preview_delete trusts a possibly-truncated cache ('0 owned objects') | — |
 | S37 | P2 | BearerTokenAuth silently discards org_id | yes (`ts_admin/config.py`) |
+| S46 | P2 | Delete modal implies admin-status is certified when only metadata synced | — |
 | S38 | P2 | delete-tag-only is destructive with no dry-run | yes (`tests/integration/test_dryrun_safety.py`) |
 | S42 | P2 | No sync verifies the session org matches the stamped org_id | — |
 | S44 | P2 | A bulk share cannot be verified (bare 204) | — |
@@ -99,10 +100,11 @@ an item reaches `done`, move its index line and detail entry to
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (0)
+### In review (1)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
+| S31 | P2 | preview_delete trusts a possibly-truncated cache ('0 owned objects') | — |
 
 ### Done
 
@@ -222,14 +224,6 @@ The liveboard incremental watermark is a bare timestamp, which cannot express "n
 `build_answer_index`'s `_changed` twin (`lineage_service.py:897`) is byte-identical to `build_column_map`'s but has **zero** mutation coverage: dropping its `last_built is None` disjunct leaves the entire 37-test lineage suite green, while the same mutation at `:559` is now killed by S27. Answer-index incrementality is unpinned, and `build_answer_index` carries the same watermark shape S7 was rejected over (`max(CachedColumnUsage.synced_at)` over *surviving* rows, so partial deletion is permanent)
 
 **Acceptance criteria:** The ANSWER tier's incremental predicates are each killed by at least one test — at minimum, dropping `last_built is None` or the `modified_at > last_built` comparison at `lineage_service.py:897` turns a test red; the mutations and results are appended to the table in [docs/dev/TESTING.md](docs/dev/TESTING.md)
-
-### S31 — preview_delete trusts a possibly-truncated cache ('0 owned objects')
-
-`P2` · **in-progress** · protected: no
-
-`preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
-
-**Acceptance criteria:** `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0
 
 ### S37 — BearerTokenAuth silently discards org_id
 
@@ -407,6 +401,36 @@ Grid selection is silently lost past ~2,000 rows on the infinite row model. `pag
 
 **Acceptance criteria:** `BasicAuth`/`TrustedAuth` with `org_id=None` either default to `0` explicitly or log a warning naming the resolved org; after login the session's actual org is asserted via `GET /auth/session/user` -> `current_org.id` (see S42) and a mismatch fails loudly rather than silently caching another org's content. A unit test covers the `org_id=None` path
 
+### S46 — Delete modal implies admin-status is certified when only metadata synced
+
+`P2` · **open** · protected: no
+
+The delete-user modal renders two cache-derived facts, but S31's completeness
+flag covers only one of them. `metadata_cache_authoritative` is computed from
+`entity_type="metadata"`, while `is_admin` / `admin_count` come from
+`UserGroupMembership` — written **only** by the *groups* sync. On the documented
+per-entity lazy-sync posture (metadata synced, groups never synced),
+`metadata_cache_authoritative` is `True`, so the delete modal shows no warning,
+no ADMIN badge and no admin acknowledgement, and `confirm_admin_delete` goes out
+`undefined`. Server-side `_delete_refusal` (`user_management_service.py:196-214`)
+builds its `admins` set from the same empty table and returns `None`, so a
+**cluster admin is deleted with no confirmation at all** — on a modal that S31
+has just taught to present itself as certified. The delete itself is
+pre-existing; what S31 changed is the *meaning* of a silent modal, from "we did
+not check" to "we checked and it is clean". Found by the correctness lens during
+the S31 review; deliberately not fixed in that diff to keep a destructive-path
+change reviewable.
+
+**Acceptance criteria:** The delete modal does not present admin status as
+verified when the groups cache is uncertified — a `groups_cache_authoritative`
+signal (`last_successful_sync(..., entity_type="groups")`, the same helper) is
+surfaced alongside the metadata one and participates in the warning and the
+acknowledgement gate; a test seeds a cluster with a SUCCESS **metadata** marker
+and NO groups marker, with a user who IS an admin upstream but has no
+`UserGroupMembership` row, and asserts the modal/preview does not report that
+user as non-admin without a caveat; the non-vacuity twin (both markers certified)
+asserts the admin IS flagged, so the fixture is proven capable of detecting one.
+
 ### S45 — COLLECTION objects are never synced
 
 `P3` · **open** · protected: no
@@ -469,9 +493,29 @@ Wire frontend `vitest` into the suite
 
 ## In review
 
-_None. Rows sit here only while their PR is open; the
+_Rows sit here only while their PR is open; the
 next cycle's reconcile step moves merged rows to
 [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md)._
+
+### S31 — preview_delete trusts a possibly-truncated cache ('0 owned objects')
+
+`P2` · **in-review** · protected: no
+
+`preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
+
+**Acceptance criteria:** `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0
+
+**2026-09-08 (cycle).** Implemented as a **flag**, not a refusal — the criteria
+permitted either. Refusing at `dryrun_delete` would have destroyed `missing_live`
+(live `search_users`), `admin_count` (`UserGroupMembership`) and `unrecognized`
+(`CachedUser`) — three safety signals with no metadata-cache dependency — and
+permanently blocked offboarding on clusters whose metadata sync is PARTIAL
+forever (W3/W6) and on fresh installs. `preview_delete` now returns
+`metadata_cache_authoritative`, read before AND after the count loop in one
+session; the delete modal warns and gates Confirm behind an acknowledgement when
+it is false. Review Board raised 7 CONFIRMED findings on the first
+implementation, all fixed. PR pending human review.
+
 
 ## Feedback (user-reported)
 
