@@ -1,12 +1,14 @@
 """
 Integration tests for the Group Management API (read-only v1).
 
-Covers the list grid (envelope, search, sort, member counts) and the
-detail endpoint (members list, 404).
+Covers the list grid (envelope, search, sort, member counts), the
+detail endpoint (members list, 404), and the CSV export.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime, timezone
 
@@ -141,3 +143,87 @@ class TestGroupDetail:
     def test_404_for_unknown_guid(self, client, seeded):
         r = client.get("/api/v1/groups/g-ghost?cluster_id=c1")
         assert r.status_code == 404
+
+
+class TestExportCsv:
+    """
+    The export must cover every matching row, not just the page the grid has
+    loaded — that is the whole reason it is served from the backend instead of
+    AG Grid's own exportDataAsCsv().
+    """
+
+    def test_streams_every_row_with_headers(self, client, seeded):
+        r = client.get("/api/v1/groups/export.csv?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        assert "attachment" in r.headers["content-disposition"]
+        assert ".csv" in r.headers["content-disposition"]
+
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows[0] == [
+            "Name",
+            "Display name",
+            "Description",
+            "Privileges",
+            "Members",
+            "Created by",
+            "Created",
+            "Modified",
+            "GUID",
+            "Org ID",
+        ]
+        assert len(rows) == 3  # header + two groups
+        by_name = {row[0]: row for row in rows[1:]}
+        assert set(by_name) == {"Administrator", "analysts"}
+        assert by_name["Administrator"][4] == "1"  # member_count
+        assert by_name["Administrator"][8] == "g-admins"
+
+    def test_list_privileges_render_as_one_cell(self, client, seeded):
+        r = client.get("/api/v1/groups/export.csv?cluster_id=c1&search=Administrator")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert len(rows) == 2
+        assert rows[1][3] == "ADMINISTRATION"
+
+    def test_honours_the_search_filter(self, client, seeded):
+        r = client.get("/api/v1/groups/export.csv?cluster_id=c1&search=analyst")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert [row[0] for row in rows[1:]] == ["analysts"]
+
+    def test_pages_past_the_first_batch(self, client, in_memory_db, seeded, monkeypatch):
+        """A cluster larger than one page must still export in full."""
+        from ts_admin.api import csv_export
+
+        monkeypatch.setattr(csv_export, "EXPORT_PAGE_SIZE", 1)
+        r = client.get("/api/v1/groups/export.csv?cluster_id=c1")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert len(rows) == 3, "paging must not truncate the export"
+
+    def test_never_leaks_another_cluster(self, client, in_memory_db, seeded):
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as session:
+            session.add(
+                Cluster(
+                    id="c2",
+                    name="Dev",
+                    url="https://dev.thoughtspot.cloud",
+                    username="admin",
+                    auth_type="basic",
+                )
+            )
+            session.add(
+                CachedGroup(
+                    cluster_id="c2",
+                    org_id=0,
+                    ts_guid="g-other",
+                    name="other-cluster-group",
+                    display_name="Other",
+                    description="",
+                    privileges=json.dumps([]),
+                    synced_at=now,
+                )
+            )
+            session.commit()
+
+        body = client.get("/api/v1/groups/export.csv?cluster_id=c1").text
+        assert "other-cluster-group" not in body
+        assert "g-other" not in body

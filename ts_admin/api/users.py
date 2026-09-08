@@ -3,6 +3,7 @@ User Management API.
 
 Read endpoints:
   GET  /api/v1/users                       — paginated user grid (cluster + org scoped)
+  GET  /api/v1/users/export.csv            — every matching user as a CSV download
   GET  /api/v1/users/{ts_guid}             — single user detail
   GET  /api/v1/users/history               — past user-management actions
 
@@ -26,8 +27,10 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ts_admin.api.csv_export import csv_response, paged_rows
 from ts_admin.services import user_management_service as svc
 from ts_admin.ts_client.exceptions import (
     TSAuthenticationError,
@@ -253,6 +256,51 @@ def list_users(
         record_offset=record_offset,
         page_size=page_size,
     )
+
+
+# Column order mirrors the Users grid, plus the GUID an admin needs to act on a
+# row outside the UI.
+_CSV_COLUMNS = [
+    ("username", "Username"),
+    ("display_name", "Display name"),
+    ("email", "Email"),
+    ("status", "Status"),
+    ("created_at", "Created"),
+    ("modified_at", "Modified"),
+    ("ts_guid", "GUID"),
+]
+
+
+@router.get("/export.csv")
+def export_users_csv(
+    cluster_id: str | None = Query(default=None),
+    org_id: int | None = Query(default=None),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    sort_field: str = Query(default="username"),
+    sort_order: Literal["asc", "desc"] = Query(default="asc"),
+) -> StreamingResponse:
+    """
+    Every user matching the current filters, as a CSV download.
+
+    Deliberately not paginated: the grid's own CSV button would only ever export
+    the rows AG Grid had cached. Takes the same filter/sort params as the list
+    endpoint so the file matches what is on screen.
+    """
+    resolved = _resolve_cluster_id(cluster_id)
+    rows = paged_rows(
+        lambda offset, size: svc.list_users(
+            cluster_id=resolved,
+            org_id=org_id,
+            status=status,
+            search=search,
+            sort_field=sort_field,
+            sort_order=sort_order,
+            record_offset=offset,
+            page_size=size,
+        )
+    )
+    return csv_response(filename_stem="users", columns=_CSV_COLUMNS, rows=rows)
 
 
 @router.get("/history", response_model=UserHistoryResponse)
