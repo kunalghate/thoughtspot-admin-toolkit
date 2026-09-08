@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlmodel import Session, create_engine, select
@@ -1009,3 +1010,132 @@ class TestDeleteConfirmationIsRecorded:
             recs = {r.ts_guid: r for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()}
         assert recs["lb-1"].deleted_confirmed_at is not None
         assert recs["ans-1"].deleted_confirmed_at is None
+
+
+class TestExportOnly:
+    """
+    `export_only=True` is the "back it up, don't delete it" half-step — cs_tools
+    offers the same thing, and an admin who doesn't yet trust the export/delete
+    round trip wants the TML in hand first.
+
+    The invariant that matters is negative: nothing may be deleted. It shares
+    _execute_delete's Phase A rather than copying it precisely because that
+    export is the safety net guarding a permanent delete, and two copies could
+    drift.
+    """
+
+    def _run_export(self, guids: list[str]) -> str:
+        from ts_admin.services.deletion_service import _execute_delete
+
+        job_id = _create_job("archive", {"cluster_id": "c1", "org_id": 0, "action": "export"})
+        asyncio.run(
+            _execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                object_ids=guids,
+                action_type="tml_export",
+                export_only=True,
+            )
+        )
+        return job_id
+
+    def test_writes_backups_and_deletes_nothing(self, in_memory_db, patched_env, seeded):
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1"}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+
+        job_id = self._run_export(["lb-1", "ans-1"])
+
+        assert _FakeClient.delete_calls == [], "export-only must never call delete_metadata"
+
+        with Session(in_memory_db) as s:
+            records = list(s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)))
+            assert len(records) == 2
+            assert all(r.tml_export_status == "SUCCESS" for r in records)
+            # The whole point: backed up, still live.
+            assert all(r.deleted_confirmed_at is None for r in records)
+            for r in records:
+                assert r.tml_path
+                assert Path(r.tml_path).read_text(encoding="utf-8")
+
+    def test_leaves_the_metadata_cache_untouched(self, in_memory_db, patched_env, seeded):
+        """A cache purge here would report live objects as gone."""
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1"}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+
+        self._run_export(["lb-1", "ans-1"])
+
+        with Session(in_memory_db) as s:
+            still_cached = {r.ts_guid for r in s.exec(select(CachedMetadata).where(CachedMetadata.cluster_id == "c1"))}
+        assert still_cached == {"lb-1", "ans-1"}
+
+    def test_audit_row_says_tml_export_not_delete(self, in_memory_db, patched_env, seeded):
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            {"info": {"id": "ans-1"}, "edoc": "answer:\n  name: Revenue\n"},
+        ]
+
+        self._run_export(["lb-1", "ans-1"])
+
+        with Session(in_memory_db) as s:
+            rows = list(s.exec(select(AuditLog)))
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.action_type == "tml_export"
+        assert row.entity_type == "metadata"
+        assert row.items_affected == 2
+        assert row.status == "COMPLETE"
+        assert row.get_parameters()["object_ids"] == ["lb-1", "ans-1"]
+
+    def test_job_completes(self, in_memory_db, patched_env, seeded):
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+        ]
+
+        job_id = self._run_export(["lb-1"])
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+        assert job.status == "COMPLETE"
+        assert job.get_result()["succeeded"] == 1
+
+    def test_partial_when_some_exports_fail(self, in_memory_db, patched_env, seeded):
+        """One un-exportable object must not sink the other's backup."""
+        _FakeClient.tml_results = [
+            {"info": {"id": "lb-1"}, "edoc": "liveboard:\n  name: Sales\n"},
+            # ans-1 comes back flagged, so it has no trustworthy backup.
+            {"info": {"id": "ans-1", "status": {"status_code": "ERROR", "error_message": "nope"}}, "edoc": ""},
+        ]
+
+        job_id = self._run_export(["lb-1", "ans-1"])
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            rows = list(s.exec(select(AuditLog)))
+            records = {
+                r.ts_guid: r.tml_export_status
+                for r in s.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id))
+            }
+        assert job.status == "PARTIAL"
+        assert records == {"lb-1": "SUCCESS", "ans-1": "FAILED"}
+        assert rows[0].status == "PARTIAL"
+        assert rows[0].items_affected == 1
+        assert _FakeClient.delete_calls == []
+
+    def test_failed_when_nothing_exports(self, in_memory_db, patched_env, seeded):
+        """Exporting nothing is FAILED, not PARTIAL — it achieved nothing."""
+        _FakeClient.tml_results = []
+
+        job_id = self._run_export(["lb-1", "ans-1"])
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            rows = list(s.exec(select(AuditLog)))
+        assert job.status == "FAILED"
+        assert rows[0].status == "FAILED"
+        assert rows[0].items_affected == 0
+        assert _FakeClient.delete_calls == []

@@ -400,7 +400,7 @@ export const archiverApi = {
     cluster_id: string;
     org_id: number;
     object_ids: string[];
-    action: "tag" | "untag" | "delete";
+    action: "tag" | "untag" | "delete" | "export";
     tag_name?: string;
     create_tag_if_missing?: boolean;
   }) =>

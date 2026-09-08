@@ -267,9 +267,13 @@ export interface ArchiveSessionSummary {
   job_id: string;
   archived_at: string;
   total: number;
+  /** Objects with a TML backup on disk — not the same as deleted. */
+  exported: number;
   succeeded: number;
   failed_tml_export: number;
   failed_delete: number;
+  /** Nothing in this session was deleted: it was an export-only run. */
+  export_only: boolean;
 }
 
 // ── Bulk Deleter ──────────────────────────────────────────────────────────────
