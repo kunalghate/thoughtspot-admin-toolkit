@@ -286,6 +286,77 @@ def archiver_results(
     )
 
 
+class ResolveRequest(BaseModel):
+    """The /results filter set, as a body — "everything matching what I see"."""
+
+    cluster_id: str | None = None
+    org_id: int = 0
+    stale_activity_days: int = 90
+    stale_modified_days: int = 90
+    types: list[str] | None = None
+    exclude_tags: list[str] | None = None
+    filter_tags: list[str] | None = None
+    search: str | None = None
+    stale_operator: Literal["AND", "OR"] = "AND"
+    owner_guid: str | None = None
+    exclude_owner_guids: list[str] | None = None
+    owner_name_search: str | None = None
+    tag_search: str | None = None
+    days_unused_min: int | None = None
+    days_unused_max: int | None = None
+    views_min: int | None = None
+    views_max: int | None = None
+    last_accessed_before: str | None = None
+    last_accessed_after: str | None = None
+    modified_before: str | None = None
+    modified_after: str | None = None
+    created_before: str | None = None
+    created_after: str | None = None
+    # "Select all, then untick a few."
+    excluded_guids: list[str] = []
+
+
+class ResolveResponse(BaseModel):
+    guids: list[str]
+    total: int
+
+
+@router.post("/resolve", response_model=ResolveResponse)
+def archiver_resolve(body: ResolveRequest) -> ResolveResponse:
+    """
+    Expand the current filters into the full list of matching GUIDs.
+
+    Read-only: no job, no audit row, nothing mutated. It exists because AG
+    Grid's infinite row model has no working header checkbox — the grid only
+    holds a few cached blocks, so "select all 2,000 stale objects" cannot be
+    answered client-side.
+
+    The result feeds the UNCHANGED dryrun/execute endpoints as an explicit GUID
+    list, so the dry-run guard, the confirmation modal and the audit trail all
+    keep working on a concrete set of objects rather than on a stored filter
+    that might resolve differently later.
+
+    413 above ArchiverService.RESOLVE_MAX rather than a truncated list, which
+    the caller would silently act on.
+    """
+    from ts_admin.config import load_config
+
+    cluster_id = body.cluster_id or load_config().active_cluster.id
+    filters = body.model_dump(exclude={"cluster_id", "org_id", "excluded_guids"})
+
+    try:
+        guids, total = ArchiverService.resolve_guids(
+            cluster_id=cluster_id,
+            org_id=body.org_id,
+            excluded_guids=body.excluded_guids,
+            **filters,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    return ResolveResponse(guids=guids, total=total)
+
+
 @router.get("/tags", response_model=list[ArchiverTagItem])
 def archiver_tags(
     cluster_id: str | None = Query(default=None),

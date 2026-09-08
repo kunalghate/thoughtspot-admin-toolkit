@@ -409,6 +409,15 @@ export const archiverApi = {
       body: JSON.stringify(body),
     }),
 
+  // Expand the current filters into every matching GUID — what backs
+  // "select all N matching". Read-only; the returned list is then fed to the
+  // ordinary dryrun/execute endpoints.
+  resolve: (body: Record<string, unknown>) =>
+    request<{ guids: string[]; total: number }>("/archiver/resolve", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   history: (params: {
     cluster_id: string;
     org_id: number;

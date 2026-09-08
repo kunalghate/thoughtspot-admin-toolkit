@@ -296,6 +296,20 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   const [sortField, setSortField] = useState("days_unused");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [selectedGuids, setSelectedGuids] = useState<Set<string>>(new Set());
+  // "Select all N matching" mode. The checked rows are no longer the selection;
+  // the FILTER is, minus whatever the admin has since unticked. Resolved to a
+  // real GUID list at action time so the dry-run and audit trail still see an
+  // explicit set of objects.
+  const [selectAllMode, setSelectAllMode] = useState(false);
+  const [excludedGuids, setExcludedGuids] = useState<Set<string>>(new Set());
+  const [resolving, setResolving] = useState(false);
+  // handleSelectionChanged is a stable useCallback wired into the grid, so it
+  // reads the mode through a ref rather than closing over stale state.
+  const selectAllModeRef = useRef(false);
+  const excludedGuidsRef = useRef<Set<string>>(new Set());
+  // Set while we tick boxes programmatically, so the resulting
+  // selectionChanged events aren't read back as the admin excluding rows.
+  const syncingBoxesRef = useRef(false);
   // Union of tags across currently-selected rows — drives the click-to-remove
   // chip cluster in the bulk-action toolbar.
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -355,44 +369,56 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
     }).then((p) => setPreviewTotal(p.total)).catch(() => {});
   }, [debouncedCriteria, activeCluster?.id, activeOrg?.org_id]);
 
+  // The filter set behind the grid, as one object.
+  //
+  // Extracted out of the getRows closure because three callers need to agree on
+  // it: the grid itself, "select all matching" (/resolve), and the header count
+  // (/preview). They previously each built their own — which is why the header
+  // count and the grid total could disagree, /preview sending only six of these
+  // fields. One builder, one meaning of "what I'm looking at".
+  const buildFilters = useCallback(() => {
+    const snap = debouncedCriteria;
+    const f = serializeFilterModel(colFiltersRef.current);
+    return {
+      stale_activity_days: snap.staleActivityDays,
+      stale_modified_days: snap.staleModifiedDays,
+      types:              intersectTypes(f.types, snap.types),
+      exclude_tags:       snap.excludeTags.length ? snap.excludeTags : undefined,
+      filter_tags:        snap.filterTags.length  ? snap.filterTags  : undefined,
+      search:             f.search ?? snap.search ?? undefined,
+      stale_operator:     snap.staleOperator,
+      owner_guid:         f.owner_name_search ? undefined : (snap.ownerGuid || undefined),
+      exclude_owner_guids: snap.excludeOwnerGuids.length ? snap.excludeOwnerGuids : undefined,
+      owner_name_search:  f.owner_name_search,
+      tag_search:         f.tag_search,
+      days_unused_min:    f.days_unused_min,
+      days_unused_max:    f.days_unused_max,
+      views_min:          f.views_min,
+      views_max:          f.views_max,
+      last_accessed_before: f.last_accessed_before,
+      last_accessed_after:  f.last_accessed_after,
+      modified_before:      f.modified_before,
+      modified_after:       f.modified_after,
+      created_before:       f.created_before,
+      created_after:        f.created_after,
+    };
+  }, [debouncedCriteria]);
+
   // Reload grid when debounced criteria, sort, cluster, org, or sync changes
   const reloadGrid = useCallback(() => {
     if (!activeCluster?.id || activeOrg?.org_id == null) return;
     const clusterId = activeCluster.id;
     const orgId = activeOrg.org_id;
-    const snap = debouncedCriteria;
     const sf = sortField;
     const so = sortOrder;
 
     const datasource: IDatasource = {
       getRows: async (params: IGetRowsParams) => {
         try {
-          const f = serializeFilterModel(colFiltersRef.current);
-
           const res = await archiverApi.results({
             cluster_id: clusterId,
             org_id: orgId,
-            stale_activity_days: snap.staleActivityDays,
-            stale_modified_days: snap.staleModifiedDays,
-            types:              intersectTypes(f.types, snap.types),
-            exclude_tags:       snap.excludeTags.length ? snap.excludeTags : undefined,
-            filter_tags:        snap.filterTags.length  ? snap.filterTags  : undefined,
-            search:             f.search ?? snap.search ?? undefined,
-            stale_operator:     snap.staleOperator,
-            owner_guid:         f.owner_name_search ? undefined : (snap.ownerGuid || undefined),
-            exclude_owner_guids: snap.excludeOwnerGuids.length ? snap.excludeOwnerGuids : undefined,
-            owner_name_search:  f.owner_name_search,
-            tag_search:         f.tag_search,
-            days_unused_min:    f.days_unused_min,
-            days_unused_max:    f.days_unused_max,
-            views_min:          f.views_min,
-            views_max:          f.views_max,
-            last_accessed_before: f.last_accessed_before,
-            last_accessed_after:  f.last_accessed_after,
-            modified_before:      f.modified_before,
-            modified_after:       f.modified_after,
-            created_before:       f.created_before,
-            created_after:        f.created_after,
+            ...buildFilters(),
             sort_field: sf,
             sort_order: so,
             record_offset: params.startRow,
@@ -406,7 +432,41 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
       },
     };
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, debouncedCriteria, sortField, sortOrder]);
+  }, [activeCluster?.id, activeOrg?.org_id, buildFilters, sortField, sortOrder]);
+
+  useEffect(() => { selectAllModeRef.current = selectAllMode; }, [selectAllMode]);
+  useEffect(() => { excludedGuidsRef.current = excludedGuids; }, [excludedGuids]);
+
+  /**
+   * Make the checkboxes agree with select-all mode.
+   *
+   * In that mode every matching object is selected, but AG Grid's infinite row
+   * model only knows about the blocks it has loaded — so each newly fetched
+   * block arrives unchecked and would read as "not selected" to the admin.
+   * Re-tick whatever is loaded and not explicitly excluded, every time the
+   * model changes.
+   */
+  const syncSelectAllCheckboxes = useCallback(() => {
+    if (!selectAllModeRef.current) return;
+    syncingBoxesRef.current = true;
+    try {
+      gridRef.current?.api.forEachNode((node) => {
+        if (!node.data) return;
+        node.setSelected(!excludedGuidsRef.current.has(node.data.ts_guid), false, "api");
+      });
+    } finally {
+      syncingBoxesRef.current = false;
+    }
+  }, []);
+
+  // Any change to the criteria, column filters or sort redefines "all
+  // matching", so a standing select-all no longer means what the admin agreed
+  // to. Drop it rather than silently re-pointing it at a different set.
+  useEffect(() => {
+    selectAllModeRef.current = false;
+    setSelectAllMode(false);
+    setExcludedGuids(new Set());
+  }, [buildFilters]);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
 
@@ -428,6 +488,24 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
 
   const handleSelectionChanged = useCallback(() => {
     const rows = gridRef.current?.api.getSelectedRows() ?? [];
+    // In select-all mode the grid's checkboxes are an exclusion UI: every
+    // LOADED row starts checked, so a row that is loaded-but-unchecked is one
+    // the admin has taken out of the filter's result set.
+    if (syncingBoxesRef.current) return;
+    if (selectAllModeRef.current) {
+      const loaded: string[] = [];
+      gridRef.current?.api.forEachNode((n) => { if (n.data) loaded.push(n.data.ts_guid); });
+      const checked = new Set(rows.map((r) => r.ts_guid));
+      setExcludedGuids((prev) => {
+        const next = new Set(prev);
+        for (const guid of loaded) {
+          if (checked.has(guid)) next.delete(guid);
+          else next.add(guid);
+        }
+        return next;
+      });
+      return;
+    }
     setSelectedGuids(new Set(rows.map((r) => r.ts_guid)));
     const tagSet = new Set<string>();
     for (const r of rows) for (const t of r.tags ?? []) tagSet.add(t);
@@ -436,6 +514,13 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
 
   // Resolved tag name: custom input wins over dropdown selection
   const resolvedTagName = showCustomInput ? (customTagName.trim() || "INACTIVE") : (tagName || "INACTIVE");
+
+  // What the action bar claims it will act on. In select-all mode that is the
+  // filter's total minus exclusions, not the handful of rows AG Grid has
+  // actually loaded.
+  const actionCount = selectAllMode
+    ? Math.max((total ?? 0) - excludedGuids.size, 0)
+    : selectedGuids.size;
 
   const showToast = (msg: string, ok: boolean) => {
     setToast({ msg, ok });
@@ -523,9 +608,39 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
     pollersRef.current.clear();
   }, []);
 
-  const handleDeleteSelected = () => {
-    if (!selectedGuids.size) return;
-    setPendingDeleteGuids([...selectedGuids]);
+  /**
+   * The GUIDs an action should operate on.
+   *
+   * Normal mode: the checked rows. Select-all mode: ask the server to expand
+   * the current filters, minus anything unticked. Resolving here — rather than
+   * letting execute/dryrun take a filter — keeps the dry-run modal, the
+   * confirmation and the audit row working on an explicit list of objects.
+   */
+  const resolveActionGuids = useCallback(async (): Promise<string[] | null> => {
+    if (!selectAllMode) return [...selectedGuids];
+    if (!activeCluster?.id || activeOrg?.org_id == null) return null;
+    setResolving(true);
+    try {
+      const res = await archiverApi.resolve({
+        cluster_id: activeCluster.id,
+        org_id: activeOrg.org_id,
+        ...buildFilters(),
+        excluded_guids: [...excludedGuids],
+      });
+      return res.guids;
+    } catch (e: any) {
+      showToast(e?.message ?? "Could not expand the selection.", false);
+      return null;
+    } finally {
+      setResolving(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectAllMode, selectedGuids, activeCluster?.id, activeOrg?.org_id, buildFilters, excludedGuids]);
+
+  const handleDeleteSelected = async () => {
+    const guids = await resolveActionGuids();
+    if (!guids?.length) return;
+    setPendingDeleteGuids(guids);
     setDryRunOpen(true);
   };
 
@@ -792,15 +907,55 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
       )}
 
       {/* ── Selection bar (shown when rows are checked) ──────────────────── */}
-      {selectedGuids.size > 0 && (
+      {(selectedGuids.size > 0 || selectAllMode) && (
         <div style={{
           display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
           background: theme.color.accentSoft, border: `1px solid ${theme.color.violetBorder}`, borderRadius: 6, flexShrink: 0,
           flexWrap: "wrap",
         }}>
           <span style={{ fontSize: 13, color: theme.color.accent2, fontWeight: 500, fontFamily: theme.font.sans, whiteSpace: "nowrap" }}>
-            {selectedGuids.size} selected
+            {actionCount.toLocaleString()} selected
           </span>
+
+          {/* Offer the whole result set once the admin has checked something
+              but the filter matches more than the grid has handed them. */}
+          {!selectAllMode && total != null && total > selectedGuids.size && (
+            <button
+              data-testid="select-all-matching"
+              onClick={() => {
+                setExcludedGuids(new Set());
+                excludedGuidsRef.current = new Set();
+                // Set the ref before ticking boxes: syncSelectAllCheckboxes and
+                // handleSelectionChanged both read it, and the state update
+                // behind it does not land until after this render.
+                selectAllModeRef.current = true;
+                setSelectAllMode(true);
+                syncSelectAllCheckboxes();
+              }}
+              style={{
+                padding: 0, border: "none", background: "none", cursor: "pointer",
+                fontSize: 12, fontWeight: 600, color: theme.color.accent2,
+                fontFamily: theme.font.sans, textDecoration: "underline", whiteSpace: "nowrap",
+              }}
+            >
+              Select all {total.toLocaleString()} matching
+            </button>
+          )}
+
+          {selectAllMode && (
+            <span
+              data-testid="select-all-badge"
+              title="Everything matching the current filters — resolved when you act on it"
+              style={{
+                padding: "1px 8px", borderRadius: 10, fontSize: 10.5, fontWeight: 600,
+                background: theme.color.violetSoft, color: theme.color.accent2,
+                border: `1px solid ${theme.color.violetBorder}`,
+                fontFamily: theme.font.sans, whiteSpace: "nowrap",
+              }}
+            >
+              ALL MATCHING{excludedGuids.size > 0 ? ` · ${excludedGuids.size} excluded` : ""}
+            </span>
+          )}
 
           {/* Tag name selector */}
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -840,7 +995,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             )}
           </div>
 
-          <ActionButton onClick={() => setPendingTag({ action: "tag", guids: [...selectedGuids], tag: resolvedTagName })}>
+          <ActionButton onClick={async () => {
+            const guids = await resolveActionGuids();
+            if (guids?.length) setPendingTag({ action: "tag", guids, tag: resolvedTagName });
+          }}>
             Apply Tag…
           </ActionButton>
 
@@ -852,7 +1010,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
               {selectedTags.map((t) => (
                 <button
                   key={t}
-                  onClick={() => setPendingTag({ action: "untag", guids: [...selectedGuids], tag: t })}
+                  onClick={async () => {
+                    const guids = await resolveActionGuids();
+                    if (guids?.length) setPendingTag({ action: "untag", guids, tag: t });
+                  }}
                   title={`Remove "${t}" from selected`}
                   style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
@@ -883,15 +1044,21 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           <ActionButton
             data-testid="open-dryrun-modal"
             onClick={handleDeleteSelected}
+            disabled={resolving}
             style={{ color: theme.color.danger, borderColor: theme.color.dangerBorder, background: theme.color.dangerSoft }}
           >
-            Delete selected
+            {resolving ? "Resolving…" : "Delete selected"}
           </ActionButton>
 
           <div style={{ flex: 1 }} />
 
           <button
-            onClick={() => gridRef.current?.api.deselectAll()}
+            onClick={() => {
+              selectAllModeRef.current = false;
+              setSelectAllMode(false);
+              setExcludedGuids(new Set());
+              gridRef.current?.api.deselectAll();
+            }}
             style={{
               display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
               borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
@@ -912,7 +1079,9 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         }}>
           <span style={{ fontSize: 13, color: theme.color.textMuted }}>☑</span>
           <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
-            Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them, or{" "}
+            Check rows to select objects — or check one and then{" "}
+            <strong style={{ color: theme.color.accent2 }}>Select all N matching</strong> to take the whole filtered set. Then{" "}
+            <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them, or{" "}
             <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
           </span>
         </div>
@@ -942,6 +1111,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
             gridRef.current?.api?.purgeInfiniteCache();
           }}
           onSelectionChanged={handleSelectionChanged}
+          onModelUpdated={syncSelectAllCheckboxes}
           overlayNoRowsTemplate="No stale content found. Adjust the criteria or sync metadata first."
         />
       </div>
