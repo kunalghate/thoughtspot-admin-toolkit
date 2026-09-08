@@ -42,6 +42,7 @@ from ts_admin.models.cache.ts_user import (
     UserOrgMembership,
 )
 from ts_admin.models.user_action_record import UserActionRecord
+from ts_admin.services.sync_status import metadata_is_authoritative
 from ts_admin.ts_client.exceptions import StaleCacheError, TSAdminError
 
 logger = logging.getLogger(__name__)
@@ -934,6 +935,24 @@ def preview_delete(*, cluster_id: str, user_guids: list[str], org_id: int | None
     falls back to distinct GUIDs across the cluster — still not double-counted,
     just cluster-wide. The count is DISTINCT either way; scoping is what makes
     it the number for *this* operation.
+
+    Completeness (``cache_authoritative``)
+    --------------------------------------
+    The count is read from ``CachedMetadata``, which an interrupted metadata
+    sync leaves non-empty but truncated — so a **zero is not evidence of zero**.
+    The returned ``cache_authoritative`` flag carries the same signal
+    ``metadata_service.stats`` publishes: True only when the metadata sync for
+    this scope last completed. It is deliberately a flag, not a refusal — the
+    dry-run still runs and still reports ``missing_live`` / ``admin_count``.
+
+    Two limits are worth stating plainly:
+
+    * ``cache_authoritative=True`` means "the last metadata sync completed", NOT
+      "this is everything the user owns". Only the synced object types are in
+      ``CachedMetadata`` (7 specs); CONNECTIONs, for instance, never are.
+    * When ``org_id`` is None (the cache-only preview endpoint, whose request
+      carries no org) the count is cluster-wide, and one org's sync marker
+      cannot certify a cluster-wide count — so the flag is hardcoded False.
     """
     with Session(_db.get_engine()) as session:
         users = session.exec(
@@ -965,7 +984,17 @@ def preview_delete(*, cluster_id: str, user_guids: list[str], org_id: int | None
                     "is_admin": _is_admin(session, cluster_id, u.ts_guid),
                 }
             )
-        return {"items": items, "total": len(items), "unrecognized": unrecognized}
+    # Read the marker AFTER the counts: `_sync_metadata` writes IN_PROGRESS
+    # *before* its DELETE-all, so a sync starting mid-call flips this to False
+    # rather than pairing a stale SUCCESS marker with an already-truncated
+    # count. Reading it after can only ever be conservative.
+    authoritative = metadata_is_authoritative(cluster_id=cluster_id, org_id=org_id) if org_id is not None else False
+    return {
+        "items": items,
+        "total": len(items),
+        "unrecognized": unrecognized,
+        "cache_authoritative": authoritative,
+    }
 
 
 async def dryrun_delete(
@@ -1025,14 +1054,16 @@ async def dryrun_delete(
             "missing_live": missing_live,
             "admin_count": sum(1 for i in snapshot["items"] if i["is_admin"]),
             "owned_total": sum(i["owned_object_count"] for i in snapshot["items"]),
+            "cache_authoritative": snapshot["cache_authoritative"],
         }
         mark_complete(job_id, result)
         logger.info(
-            "dryrun_delete job=%s cluster=%s total=%d missing_live=%d",
+            "dryrun_delete job=%s cluster=%s total=%d missing_live=%d authoritative=%s",
             job_id,
             cluster_id,
             result["total"],
             len(missing_live),
+            result["cache_authoritative"],
         )
     # Last-resort handler for a background task — see the note on the matching
     # handler in `execute_transfer`. Permitted to swallow ANY exception because

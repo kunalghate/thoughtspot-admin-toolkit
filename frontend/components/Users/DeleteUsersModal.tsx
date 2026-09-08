@@ -3,6 +3,13 @@
  *
  * Preview surfaces each user's owned-object count + admin flag so the operator
  * can see what they're about to wipe.
+ *
+ * Owned-object counts come from the local metadata cache, which an interrupted
+ * sync leaves truncated — so a `0` can mean "owns nothing" OR "we never looked".
+ * The dry-run result carries `cache_authoritative`; when it is false this modal
+ * marks every count as cache-derived, shows the warning banner unconditionally
+ * (even at zero), and gates Confirm behind a second acknowledgement. The
+ * acknowledgement is UI-side only — it is never sent to the execute endpoint.
  */
 import { useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
@@ -34,6 +41,9 @@ export function DeleteUsersModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  // Fail-safe default: a job result predating this field is treated as
+  // uncertified rather than silently certified.
+  const [cacheAuthoritative, setCacheAuthoritative] = useState(false);
 
   // Run a LIVE dry-run (verifies upstream existence + impact), then render its
   // result. Polls the job every 2s, mirroring the Deleter's DryRunModal.
@@ -67,6 +77,7 @@ export function DeleteUsersModal({
               setItems(result.items ?? []);
               setUnrecognized(result.unrecognized ?? []);
               setMissingLive(result.missing_live ?? []);
+              setCacheAuthoritative(result.cache_authoritative === true);
               setLoading(false);
             }
           } catch {
@@ -96,6 +107,8 @@ export function DeleteUsersModal({
   // The server refuses an admin delete without it; asking here is what turns
   // that refusal into a decision instead of a dead end.
   const [confirmAdmin, setConfirmAdmin] = useState(false);
+  // Second acknowledgement, shown only when the counts above are uncertified.
+  const [confirmStaleCache, setConfirmStaleCache] = useState(false);
   const ownedTotal = items.reduce((acc, i) => acc + i.owned_object_count, 0);
 
   async function handleSubmit() {
@@ -150,10 +163,12 @@ export function DeleteUsersModal({
                   }}>ADMIN</span>
                 )}
                 <span style={{
-                  fontSize: 11, color: u.owned_object_count > 0 ? theme.color.warn : theme.color.textMuted,
+                  fontSize: 11,
+                  color: !cacheAuthoritative || u.owned_object_count > 0 ? theme.color.warn : theme.color.textMuted,
                   fontFamily: theme.font.sans,
                 }}>
                   {u.owned_object_count} owned object{u.owned_object_count === 1 ? "" : "s"}
+                  {!cacheAuthoritative && " in cache — may be incomplete"}
                 </span>
               </div>
             ))}
@@ -180,7 +195,7 @@ export function DeleteUsersModal({
             </div>
           )}
 
-          {(ownedTotal > 0 || adminCount > 0) && (
+          {(ownedTotal > 0 || adminCount > 0 || !cacheAuthoritative) && (
             <div style={{
               display: "flex", alignItems: "flex-start", gap: 8, marginTop: 10,
               padding: "10px 12px", background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
@@ -190,8 +205,13 @@ export function DeleteUsersModal({
               <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
               <div>
                 <strong>Warning:</strong>
+                {!cacheAuthoritative && (
+                  <span> Owned-object counts may be incomplete. The metadata cache for this org has no
+                    completed sync, so objects these users own may not be counted — including objects that
+                    are counted as 0 above. Run a metadata sync before deleting to see the real impact.</span>
+                )}
                 {ownedTotal > 0 && (
-                  <span> {ownedTotal} object{ownedTotal === 1 ? "" : "s"} will become orphaned. Transfer ownership first to preserve attribution.</span>
+                  <span> {ownedTotal} object{ownedTotal === 1 ? "" : "s"} will become orphaned (counted from synced metadata types). Transfer ownership first to preserve attribution.</span>
                 )}
                 {adminCount > 0 && (
                   <span> {adminCount} of these {adminCount === 1 ? "is an admin" : "are admins"}.</span>
@@ -218,6 +238,27 @@ export function DeleteUsersModal({
                 I understand {adminCount === 1 ? "one of these users is" : `${adminCount} of these users are`} a
                 ThoughtSpot admin. Deleting an admin can leave the instance without one — the server refuses
                 without this.
+              </span>
+            </label>
+          )}
+
+          {step === "confirming" && !cacheAuthoritative && (
+            <label style={{
+              display: "flex", alignItems: "flex-start", gap: 8, marginTop: 12,
+              padding: "10px 12px", background: theme.color.dangerSoft,
+              border: `1px solid ${theme.color.dangerBorder}`, borderRadius: 6,
+              fontSize: 12, color: theme.color.danger, fontFamily: theme.font.sans,
+              cursor: "pointer",
+            }}>
+              <input
+                type="checkbox"
+                checked={confirmStaleCache}
+                onChange={(e) => setConfirmStaleCache(e.target.checked)}
+                style={{ marginTop: 2, flexShrink: 0 }}
+              />
+              <span>
+                I understand the owned-object counts above are not certified complete and objects owned by
+                these users may be orphaned without appearing here.
               </span>
             </label>
           )}
@@ -254,7 +295,11 @@ export function DeleteUsersModal({
         )}
         {step === "confirming" && (
           <DangerButton
-            disabled={confirmText !== "DELETE" || (adminCount > 0 && !confirmAdmin)}
+            disabled={
+              confirmText !== "DELETE" ||
+              (adminCount > 0 && !confirmAdmin) ||
+              (!cacheAuthoritative && !confirmStaleCache)
+            }
             onClick={handleSubmit}
           >
             Confirm delete

@@ -38,7 +38,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_user import CachedUser
@@ -428,3 +428,51 @@ class TestReadPathIsFlagOnly:
 
         _certify(in_memory_db)
         assert MetadataService.stats(cluster_id=CLUSTER_ID, org_id=ORG_ID)["cache_authoritative"] is True
+
+    # ── S31: the owned-object count is flagged, never refused ─────────────────
+
+    def test_preview_delete_flags_instead_of_refusing(self):
+        """`preview_delete` feeds a WARNING, not an input set — it must stay
+        usable on a truncated cache and say so, rather than 409."""
+        from ts_admin.services import user_management_service as svc
+
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice", "u-bob"], org_id=ORG_ID)
+
+        assert result["total"] == 2
+        assert result["cache_authoritative"] is False
+
+    def test_the_acceptance_case_a_zero_count_is_never_bare(self, in_memory_db):
+        """S31 proper: a 0 on an uncertified cache must ship with the flag.
+
+        Non-vacuity first — over the SAME seed, a certified read reports a
+        non-zero count for alice, so the zero below is a real observation and
+        not an always-empty query.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        _certify(in_memory_db)
+        certified = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)
+        assert certified["items"][0]["owned_object_count"] == 1
+
+        with Session(in_memory_db) as s:
+            for row in s.exec(select(SyncLog)).all():
+                s.delete(row)
+            s.commit()
+
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-bob"], org_id=ORG_ID)
+        assert result["items"][0]["owned_object_count"] == 0
+        assert result["cache_authoritative"] is False
+
+    def test_certification_flips_the_flag(self, in_memory_db):
+        from ts_admin.services import user_management_service as svc
+
+        assert (
+            svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)["cache_authoritative"]
+            is False
+        )
+
+        _certify(in_memory_db)
+        assert (
+            svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)["cache_authoritative"]
+            is True
+        )

@@ -12,6 +12,9 @@ Action endpoints (preview is sync, execute is a background job):
   POST /api/v1/users/transfer-sharing/preview — live: what the source user can see
   POST /api/v1/users/transfer-sharing/execute — kick re-share job
   POST /api/v1/users/delete/preview        — snapshot users + owned-object counts
+                                             (carries cache_authoritative: the
+                                             counts come from a cache that may
+                                             be truncated)
   POST /api/v1/users/delete/execute        — admin-only; kick retry-to-10 delete job
 
 Every execute endpoint returns 202 with a job_id; poll /api/v1/jobs/{job_id}.
@@ -158,6 +161,9 @@ class DeletePreviewResponse(BaseModel):
     items: list[DeletePreviewItem]
     total: int
     unrecognized: list[str]
+    # False ⇒ the owned-object counts above are read from an uncertified
+    # metadata cache and may be incomplete (a 0 is not evidence of 0).
+    cache_authoritative: bool
 
 
 class DeleteDryRunRequest(BaseModel):
@@ -480,6 +486,7 @@ def delete_preview(body: DeletePreviewRequest) -> DeletePreviewResponse:
         items=[DeletePreviewItem(**i) for i in result["items"]],
         total=result["total"],
         unrecognized=result["unrecognized"],
+        cache_authoritative=result["cache_authoritative"],
     )
 
 

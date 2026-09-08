@@ -212,3 +212,51 @@ class TestExecuteEndpointsRefuseOnAnUncertifiedCache:
         assert r.status_code == 202, r.text
         assert r.json()["job_id"]
         assert len(_jobs(in_memory_db)) == 1
+
+
+class TestDeletePreviewFlagsRatherThanRefuses:
+    """S31: the pre-delete owned-object count is a WARNING, not an input set.
+
+    Refusing here would just remove the warning; the operator can still delete.
+    So these endpoints stay open and carry `cache_authoritative` instead — the
+    mirror image of the 409s above, asserted on the same uncertified fixture.
+    """
+
+    def test_preview_returns_200_with_the_flag_false(self, client, seeded):
+        r = client.post(
+            "/api/v1/users/delete/preview",
+            json={"cluster_id": CLUSTER_ID, "user_guids": ["u-alice", "u-bob"]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["items"]
+        assert body["cache_authoritative"] is False
+
+    def test_preview_flag_is_never_certifiable_without_org(self, client, seeded, in_memory_db):
+        """`DeletePreviewRequest` carries no org, so the count is cluster-wide —
+        and org 0's marker cannot certify a cluster-wide count."""
+        _certify(in_memory_db)
+        r = client.post(
+            "/api/v1/users/delete/preview",
+            json={"cluster_id": CLUSTER_ID, "user_guids": ["u-alice"]},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["cache_authoritative"] is False
+
+    def test_dryrun_still_202s_and_creates_a_job(self, client, seeded, in_memory_db, monkeypatch):
+        """The flag-not-refuse decision, pinned at the router: an uncertified
+        cache must NOT turn the delete dry-run into a 409."""
+        from ts_admin.services import user_management_service
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(user_management_service, "dryrun_delete", _noop)
+
+        assert _jobs(in_memory_db) == []
+        r = client.post(
+            "/api/v1/users/delete/dryrun",
+            json={"cluster_id": CLUSTER_ID, "org_id": ORG_ID, "user_guids": ["u-alice"]},
+        )
+        assert r.status_code == 202, r.text
+        assert len(_jobs(in_memory_db)) == 1
