@@ -225,7 +225,7 @@ The liveboard incremental watermark is a bare timestamp, which cannot express "n
 
 ### S31 — preview_delete trusts a possibly-truncated cache ('0 owned objects')
 
-`P2` · **open** · protected: no
+`P2` · **in-progress** · protected: no
 
 `preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
 
