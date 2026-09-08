@@ -101,6 +101,46 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     filterParams: { suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => formatDate(p.value),
   },
+  // ── Where a table actually comes from ────────────────────────────────────
+  // ThoughtSpot's own UI makes this genuinely hard to find, which is why it is
+  // here at all. Only tables have it, so the cells read "—" elsewhere rather
+  // than sitting empty and looking like missing data.
+  //
+  // No column filter: these are cache columns the server filters by GUID, not
+  // by name, and offering a text filter that silently does nothing is worse
+  // than offering none. Filtering by connection happens from the Connections
+  // page, which links here with connection_guid set.
+  {
+    field: "connection_name",
+    headerName: "Connection",
+    width: 180,
+    filter: false,
+    valueFormatter: (p) => (isDataObject(p.data?.object_type) ? (p.value || "—") : "—"),
+  },
+  {
+    field: "db_name",
+    headerName: "Database",
+    width: 150,
+    filter: false,
+    hide: true,
+    valueFormatter: (p) => p.value || "—",
+  },
+  {
+    field: "db_schema",
+    headerName: "Schema",
+    width: 140,
+    filter: false,
+    hide: true,
+    valueFormatter: (p) => p.value || "—",
+  },
+  {
+    field: "db_table",
+    headerName: "External table",
+    width: 180,
+    filter: false,
+    hide: true,
+    valueFormatter: (p) => p.value || "—",
+  },
 ];
 
 

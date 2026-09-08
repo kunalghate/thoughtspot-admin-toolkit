@@ -25,6 +25,9 @@ const ENTITY_NOUNS: Partial<Record<EntityType, string>> = {
   tags: "tags",
   metadata: "objects",
   dependencies: "objects",
+  // Connections are counted as connections, not "objects" — the sync fetches
+  // the connection list, not the content sitting on it.
+  connections: "connections",
 };
 
 /**

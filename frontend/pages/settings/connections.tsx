@@ -66,7 +66,7 @@ export default function ConnectionsPage() {
   };
 
   return (
-    <AppShell pageTitle="Settings — Connections">
+    <AppShell pageTitle="Settings — Instances">
       <div style={{ padding: 28, maxWidth: 760 }}>
         <SettingsTabs current="connections" />
 

@@ -25,9 +25,11 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 #
 # "dependencies" (lineage graph) is a valid explicit sync target but is
 # deliberately excluded from trigger_sync_all — it is heavy and gated per ADR-005.
-VALID_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "dependencies"}
+VALID_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "connections", "dependencies"}
 # Everything POST /sync/all fans out to. A strict subset of VALID_ENTITIES.
-STANDARD_ENTITIES = {"users", "groups", "metadata", "tags", "orgs"}
+# Connections are in: one call, no pagination, and the Connections page reads
+# as "nothing here" until it has run.
+STANDARD_ENTITIES = {"users", "groups", "metadata", "tags", "orgs", "connections"}
 
 
 # ── Response models ────────────────────────────────────────────────────────────

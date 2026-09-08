@@ -33,6 +33,7 @@ const JOB_LABELS: Record<string, string> = {
   "sync:tags": "Tag sync",
   "sync:dependencies": "Lineage sync",
   "sync:orgs": "Org sync",
+  "sync:connections": "Connection sync",
   lineage_deep_index: "Lineage deep index",
   archive: "Archiver action",
   archive_dryrun: "Archiver dry run",
@@ -49,16 +50,22 @@ const JOB_LABELS: Record<string, string> = {
 
 // Entities the dashboard can re-sync in place (retry on a failed sync job,
 // or the "never synced" nudge on a tile).
-const SYNCABLE_ENTITIES: EntityType[] = ["metadata", "users", "groups", "tags", "dependencies"];
+const SYNCABLE_ENTITIES: EntityType[] = ["metadata", "users", "groups", "tags", "connections", "dependencies"];
 
 // Cache-freshness row, in the order an admin reads the nav: identity first,
 // then content, then the derived graph. "dependencies" is the API/wire name for
 // what the UI calls Lineage. Tags are omitted — the toolkit has no tag page to
 // send anyone to, so a tag clock here would be freshness nobody acts on.
+//
+// Connections earn a clock (they have a page, and their object counts go stale
+// with the metadata cache) but deliberately NOT a StatTile: the tile row is the
+// four headline numbers an admin scans, and "how many connections exist" is a
+// reference figure, not one of them.
 const FRESHNESS_ENTITIES: { entity: EntityType; label: string }[] = [
   { entity: "users", label: "Users" },
   { entity: "groups", label: "Groups" },
   { entity: "metadata", label: "Metadata" },
+  { entity: "connections", label: "Connections" },
   { entity: "dependencies", label: "Lineage" },
 ];
 

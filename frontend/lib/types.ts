@@ -25,7 +25,7 @@ export interface Org {
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
 
-export type EntityType = "users" | "groups" | "metadata" | "tags" | "orgs" | "dependencies";
+export type EntityType = "users" | "groups" | "metadata" | "tags" | "orgs" | "connections" | "dependencies";
 export type SyncStatus = "SUCCESS" | "FAILED" | "IN_PROGRESS" | "NOT_SYNCED";
 
 export interface SyncLog {
@@ -119,6 +119,33 @@ export interface MetadataObject {
   modified_at: string | null;
   last_accessed_at: string | null;
   view_count: number;
+  /** Data connection this table sits on. Empty for non-table objects. */
+  connection_guid: string;
+  /** Resolved connection name, falling back to the GUID. */
+  connection_name: string;
+  db_name: string;
+  db_schema: string;
+  db_table: string;
+}
+
+// ── Data connections ──────────────────────────────────────────────────────────
+
+export interface DataConnection {
+  ts_guid: string;
+  name: string;
+  description: string;
+  data_warehouse_type: string;
+  counts_by_type: Record<string, number>;
+  object_count: number;
+  synced_at: string | null;
+}
+
+export interface DataConnectionListResponse {
+  items: DataConnection[];
+  total: number;
+  /** Cached objects carrying a connection. Zero + non-empty cache = re-sync. */
+  linked_rows: number;
+  metadata_rows: number;
 }
 
 // ── Permissions ───────────────────────────────────────────────────────────────
@@ -559,6 +586,7 @@ export interface DashboardCounts {
   users: number;
   groups: number;
   tags: number;
+  connections: number;
   objects_total: number;
   objects_by_type: Record<string, number>;
   archivable_total: number;

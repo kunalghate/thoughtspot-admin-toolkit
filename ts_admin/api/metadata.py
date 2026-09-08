@@ -41,9 +41,21 @@ class MetadataObjectResponse(BaseModel):
     modified_at: str | None
     last_accessed_at: str | None
     view_count: int
+    # Where a physical table lives. Empty for every other object type, and for
+    # tables cached before the linkage columns existed.
+    connection_guid: str
+    connection_name: str
+    db_name: str
+    db_schema: str
+    db_table: str
 
     @classmethod
-    def from_cache(cls, obj: CachedMetadata) -> MetadataObjectResponse:
+    def from_cache(
+        cls,
+        obj: CachedMetadata,
+        connection_names: dict[str, str] | None = None,
+    ) -> MetadataObjectResponse:
+        """`connection_names` is resolved once per page, not once per row."""
         return cls(
             ts_guid=obj.ts_guid,
             name=obj.name,
@@ -56,6 +68,16 @@ class MetadataObjectResponse(BaseModel):
             modified_at=obj.modified_at.isoformat() if obj.modified_at else None,
             last_accessed_at=obj.last_accessed_at.isoformat() if obj.last_accessed_at else None,
             view_count=obj.view_count,
+            connection_guid=obj.connection_guid,
+            # Falls back to the GUID when the connection cache is stale or the
+            # connection is one /connection/search does not return (Analyst
+            # Studio, and the built-in DEFAULT source). Better a GUID the admin
+            # can search for than a blank cell.
+            connection_name=(connection_names or {}).get(obj.connection_guid, "")
+            or (obj.connection_guid if obj.connection_guid else ""),
+            db_name=obj.db_name,
+            db_schema=obj.db_schema,
+            db_table=obj.db_table,
         )
 
 
@@ -116,6 +138,7 @@ def list_metadata(
     org_id: int = Query(default=0, description="Org ID"),
     types: list[str] | None = Query(default=None, description="Filter by object type"),
     owner_guid: str | None = Query(default=None, description="Filter by owner GUID"),
+    connection_guid: str | None = Query(default=None, description="Only objects on this data connection"),
     tag_names: list[str] | None = Query(default=None, description="Filter by tag name(s)"),
     search: str | None = Query(default=None, description="Substring search on name"),
     stale_days: int | None = Query(default=None, ge=1, description="Only objects unused for N+ days"),
@@ -150,6 +173,7 @@ def list_metadata(
         org_id=org_id,
         types=types,
         owner_guid=owner_guid,
+        connection_guid=connection_guid,
         tag_names=tag_names,
         search=search,
         stale_days=stale_days,
@@ -168,8 +192,13 @@ def list_metadata(
         record_offset=record_offset,
         page_size=page_size,
     )
+    # One lookup for the page, not one per row.
+    from ts_admin.services import connection_service
+
+    connection_names = connection_service.name_by_guid(cluster_id=cluster_id, org_id=org_id)
+
     return MetadataListResponse(
-        items=[MetadataObjectResponse.from_cache(i) for i in items],
+        items=[MetadataObjectResponse.from_cache(i, connection_names) for i in items],
         total=total,
         page=record_offset // page_size + 1,
         page_size=page_size,
@@ -272,4 +301,6 @@ def get_metadata(
             status_code=404,
             detail=f"Metadata object {ts_guid!r} not found in cache. Sync first.",
         )
-    return MetadataObjectResponse.from_cache(obj)
+    from ts_admin.services import connection_service
+
+    return MetadataObjectResponse.from_cache(obj, connection_service.name_by_guid(cluster_id=cluster_id, org_id=org_id))

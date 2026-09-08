@@ -15,6 +15,7 @@ from sqlmodel import Session, col, select
 
 from ts_admin import database as _db
 from ts_admin.models.archive_record import ArchiveRecord
+from ts_admin.models.cache.ts_connection import CachedConnection
 from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_tag import CachedTag
@@ -41,7 +42,7 @@ ACTIVITY_MAX_AGE_DAYS = 30
 # UPSERTS the single (cluster_id, org_id, entity_type) row and none append, so
 # there is never a prior row to diff against. A "change since the last sync"
 # needs a second stored number, not a second query.
-_TRACKED_ENTITIES = ("metadata", "users", "groups", "tags", "dependencies")
+_TRACKED_ENTITIES = ("metadata", "users", "groups", "tags", "connections", "dependencies")
 _IN_FLIGHT_STATUSES = ("QUEUED", "PENDING", "RUNNING")
 
 
@@ -79,6 +80,14 @@ class DashboardService:
                     select(CachedTag.ts_guid).where(
                         CachedTag.cluster_id == cluster_id,
                         CachedTag.org_id == org_id,
+                    )
+                ).all()
+            )
+            connections = len(
+                session.exec(
+                    select(CachedConnection.ts_guid).where(
+                        CachedConnection.cluster_id == cluster_id,
+                        CachedConnection.org_id == org_id,
                     )
                 ).all()
             )
@@ -144,6 +153,7 @@ class DashboardService:
                 "users": users,
                 "groups": groups,
                 "tags": tags,
+                "connections": connections,
                 "objects_total": meta["total"],
                 "objects_by_type": meta["by_type"],
                 "archivable_total": meta["archivable_total"],
