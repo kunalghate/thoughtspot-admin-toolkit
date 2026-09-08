@@ -311,7 +311,7 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
             <TransferOwnershipModal
               clusterId={activeCluster.id}
               orgId={activeOrg.org_id}
-              fromUser={selected[0]}
+              source={{ kind: "user", fromUser: selected[0] }}
               onClose={(reloadNeeded) => {
                 setAction(null);
                 if (reloadNeeded) refresh();

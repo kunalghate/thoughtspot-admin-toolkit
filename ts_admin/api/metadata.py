@@ -1,5 +1,5 @@
 """
-Metadata Explorer API — read-only endpoints for browsing cached TS content.
+Metadata Explorer API — browsing cached TS content, plus bulk ownership transfer.
 
 All responses come from the local SQLite cache, except /permissions which
 calls ThoughtSpot live (permissions are never cached).
@@ -9,6 +9,14 @@ Endpoints:
   GET  /api/v1/metadata/stats                    aggregate stats (for dashboard)
   GET  /api/v1/metadata/{guid}                   single object detail
   GET  /api/v1/metadata/{guid}/permissions       live permissions from ThoughtSpot
+  POST /api/v1/metadata/transfer/preview         objects + current owners
+  POST /api/v1/metadata/transfer/execute         kick reassign-ownership job
+
+The transfer pair mirrors /users/transfer/*, but keyed on an explicit object
+selection rather than a source user — the Users page transfers everything one
+user owns, the Metadata page transfers whatever the admin ticked, which can
+span several owners. Both delegate to the same service functions so the two
+entry points cannot drift.
 """
 
 from __future__ import annotations
@@ -17,14 +25,30 @@ import asyncio
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
+from ts_admin.api.users import (
+    JobAcceptedResponse,
+    TransferObjectItem,
+    TransferOwnerSummary,
+    TransferPreviewResponse,
+)
 from ts_admin.models.cache.ts_metadata import CachedMetadata
+from ts_admin.services import user_management_service as user_svc
 from ts_admin.services.metadata_service import MetadataService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/metadata", tags=["Metadata"])
+
+
+def _resolve_cluster_id(cluster_id: str | None) -> str:
+    if cluster_id:
+        return cluster_id
+    from ts_admin.config import load_config
+
+    return load_config().active_cluster.id
+
 
 # ── Response schemas ───────────────────────────────────────────────────────────
 
@@ -176,6 +200,94 @@ def list_metadata(
         cache_authoritative=MetadataService.cache_authoritative(cluster_id=cluster_id, org_id=org_id),
         hidden_system_count=MetadataService.hidden_system_count(cluster_id=cluster_id, org_id=org_id),
     )
+
+
+# ── Bulk ownership transfer ───────────────────────────────────────────────────
+# Registered before /{ts_guid} so "transfer" is never read as a GUID.
+
+
+class MetadataTransferPreviewRequest(BaseModel):
+    cluster_id: str | None = None
+    org_id: int = 0
+    object_ids: list[str]
+
+
+class MetadataTransferExecuteRequest(BaseModel):
+    cluster_id: str | None = None
+    org_id: int = 0
+    to_user_identifier: str
+    object_ids: list[str]
+
+
+@router.post("/transfer/preview", response_model=TransferPreviewResponse)
+def metadata_transfer_preview(body: MetadataTransferPreviewRequest) -> TransferPreviewResponse:
+    """
+    Resolve a selection into the objects that will move, and who owns them now.
+
+    Unlike the Users-page preview this is keyed on the selection, not a source
+    user — so the response's `owners` is what the confirmation step reads to
+    say whose content is about to change hands.
+    """
+    if not body.object_ids:
+        raise HTTPException(status_code=422, detail="object_ids must not be empty")
+
+    result = user_svc.preview_transfer(
+        cluster_id=_resolve_cluster_id(body.cluster_id),
+        org_id=body.org_id,
+        explicit_guids=body.object_ids,
+    )
+    return TransferPreviewResponse(
+        items=[TransferObjectItem(**i) for i in result["items"]],
+        total=result["total"],
+        by_type=result["by_type"],
+        owners=[TransferOwnerSummary(**o) for o in result["owners"]],
+    )
+
+
+@router.post("/transfer/execute", response_model=JobAcceptedResponse, status_code=202)
+async def metadata_transfer_execute(
+    body: MetadataTransferExecuteRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAcceptedResponse:
+    """Kick a background job reassigning `object_ids`, whoever owns them."""
+    if not body.object_ids:
+        raise HTTPException(status_code=422, detail="object_ids must not be empty")
+    if not body.to_user_identifier:
+        raise HTTPException(status_code=422, detail="to_user_identifier is required")
+
+    cluster_id = _resolve_cluster_id(body.cluster_id)
+
+    # Fail closed on a truncated metadata cache, HERE and not in the service —
+    # same reasoning as users.py::transfer_execute. `execute_transfer` only runs
+    # as a background task, i.e. after the 202 is on the wire, so a raise there
+    # cannot become a response and would strand the Job row forever.
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=body.org_id)
+
+    from ts_admin.services.job_service import create_job
+
+    job_id = create_job(
+        job_type="metadata_transfer_ownership",
+        parameters={
+            "cluster_id": cluster_id,
+            "org_id": body.org_id,
+            "to_user_identifier": body.to_user_identifier,
+            "object_ids": body.object_ids,
+        },
+    )
+    background_tasks.add_task(
+        user_svc.execute_transfer,
+        job_id=job_id,
+        cluster_id=cluster_id,
+        org_id=body.org_id,
+        # No single source owner: the service groups the selection by each
+        # object's current owner and files one record per owner.
+        from_user_guid=None,
+        to_user_identifier=body.to_user_identifier,
+        object_ids=body.object_ids,
+    )
+    return JobAcceptedResponse(job_id=job_id, total=len(body.object_ids))
 
 
 @router.get("/stats", response_model=MetadataStatsResponse)

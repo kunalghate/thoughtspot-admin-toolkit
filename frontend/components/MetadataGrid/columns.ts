@@ -34,6 +34,21 @@ function TypeChip({ value }: { value: string }) {
 }
 
 export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
+  // ── Checkbox (pinned) ────────────────────────────────────────────────────
+  // Selection is checkbox-only (the page sets suppressRowClickSelection), so
+  // clicking a row still opens the permissions drawer and cannot arm a bulk
+  // action by accident.
+  {
+    colId: "checkbox",
+    checkboxSelection: true,
+    // No headerCheckboxSelection: select-all is unsupported with the infinite
+    // row model (AG Grid ignores it and logs an error).
+    width: 40,
+    sortable: false,
+    resizable: false,
+    pinned: "left",
+    suppressSizeToFit: true,
+  },
   {
     field: "name",
     headerName: "Name",

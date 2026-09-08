@@ -212,6 +212,28 @@ export const metadataApi = {
 
   permissions: (guid: string, clusterId: string, orgId: number) =>
     request<PermissionsResponse>(`/metadata/${guid}/permissions?cluster_id=${clusterId}&org_id=${orgId}`),
+
+  // Ownership transfer keyed on an explicit selection rather than a source
+  // user — the selection can span owners. Same service, same job machinery as
+  // usersApi.transfer*; only the entry point differs.
+  transferPreview: (body: {
+    cluster_id: string;
+    org_id: number;
+    object_ids: string[];
+  }) =>
+    request<TransferPreviewResponse>("/metadata/transfer/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  transferExecute: (body: {
+    cluster_id: string;
+    org_id: number;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/metadata/transfer/execute", {
+      method: "POST", body: JSON.stringify(body),
+    }),
 };
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────

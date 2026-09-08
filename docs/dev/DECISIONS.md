@@ -258,6 +258,32 @@ is disabled. No periodic polling. Admin refreshes the page when the cluster is b
 
 ---
 
+## ADR-014: Ownership transfer confirms with a preview, not a dry-run job
+
+**Decision:** Ownership transfer — from the Users page or the Metadata page — gates
+on `POST .../transfer/preview` plus a typed `TRANSFER` confirmation, not on a
+`*_dryrun` job of the kind ADR-009 requires for archive/delete/share.
+
+**Rationale:**
+- ADR-009 exists because those operations destroy or expose things: a delete cannot
+  be undone, and a bad share hands data to people who should not have it. A transfer
+  does neither. Every object still exists, with the same content and the same
+  permissions; only `owner_guid` changes, and a second transfer puts it back.
+- The preview is already the impact report ADR-009 asks for: it returns the exact
+  object list, counts by type, and (for a Metadata-page selection) every current
+  owner. There is no estimate anywhere in the flow.
+- A `transfer_dryrun` job would restate what the preview just returned, from the
+  same cache query, with no live call to disagree with it.
+- This matches the shape the Users-page transfer has always had. Adding a dry-run to
+  only the new entry point would make the two disagree.
+
+**What this does NOT relax:** both entry points still fail closed on a truncated
+metadata cache (`require_authoritative_metadata`, refused in the router before any
+Job row exists), still write a `UserActionRecord` per source owner, and still write
+an `AuditLog` row. `DRYRUN_ENDPOINTS` is unchanged — transfer was never in it.
+
+---
+
 ## Deferred decisions (revisit in future phases)
 
 | Decision | Why deferred | Target phase |

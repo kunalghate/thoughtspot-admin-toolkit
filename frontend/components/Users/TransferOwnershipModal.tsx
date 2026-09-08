@@ -1,10 +1,18 @@
 /**
- * TransferOwnershipModal — wizard that reassigns ownership of every object
- * a user owns to a chosen replacement.
+ * TransferOwnershipModal — wizard that reassigns ownership to a chosen user.
+ *
+ * Two entry points share it, so there is one confirmation flow rather than two
+ * that can drift:
+ *   - `source.kind === "user"`    (Users page) — everything that user owns,
+ *     narrowable by object type. The offboarding flow.
+ *   - `source.kind === "objects"` (Metadata page) — exactly the objects the
+ *     admin ticked, whoever owns them. The selection can span several owners,
+ *     so the type-filter chips are read-only counts here: filtering would mean
+ *     silently transferring fewer objects than were checked.
  *
  * Steps:
  *   1. Pick target user
- *   2. Preview the objects that will move (with optional type filter)
+ *   2. Preview the objects that will move
  *   3. Typed `TRANSFER` confirm
  *   4. Kick background job, then close and redirect to /jobs for live progress
  */
@@ -12,9 +20,9 @@ import { useCallback, useEffect, useState } from "react";
 import { X, ArrowRight } from "lucide-react";
 
 import { UserPicker } from "@/components/Users/UserPicker";
-import { usersApi } from "@/lib/api";
+import { metadataApi, usersApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
-import type { UserListItem, TransferObjectItem } from "@/lib/types";
+import type { UserListItem, TransferObjectItem, TransferOwnerSummary } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
   LIVEBOARD: "Liveboard", ANSWER: "Answer", WORKSHEET: "Worksheet",
@@ -24,38 +32,54 @@ const TYPE_LABELS: Record<string, string> = {
 
 type Step = "pick-target" | "preview" | "confirming" | "submitting";
 
+/** Where the objects to transfer come from. */
+export type TransferSource =
+  | { kind: "user"; fromUser: UserListItem }
+  | { kind: "objects"; objectIds: string[] };
+
 export function TransferOwnershipModal({
   clusterId,
   orgId,
-  fromUser,
+  source,
   onClose,
 }: {
   clusterId: string;
   orgId: number;
-  fromUser: UserListItem;
+  source: TransferSource;
   onClose: (reloadNeeded: boolean) => void;
 }) {
   const [step, setStep] = useState<Step>("pick-target");
   const [target, setTarget] = useState<UserListItem | null>(null);
   const [items, setItems] = useState<TransferObjectItem[]>([]);
   const [byType, setByType] = useState<Record<string, number>>({});
+  const [owners, setOwners] = useState<TransferOwnerSummary[]>([]);
   const [typeFilter, setTypeFilter] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
 
+  const objectIds = source.kind === "objects" ? source.objectIds : null;
+  const fromGuid = source.kind === "user" ? source.fromUser.ts_guid : null;
+
   const loadPreview = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await usersApi.transferPreview({
-        cluster_id: clusterId,
-        org_id: orgId,
-        from_user_guid: fromUser.ts_guid,
-        object_types: typeFilter.length > 0 ? typeFilter : undefined,
-      });
+      const res = objectIds
+        ? await metadataApi.transferPreview({
+            cluster_id: clusterId,
+            org_id: orgId,
+            object_ids: objectIds,
+          })
+        : await usersApi.transferPreview({
+            cluster_id: clusterId,
+            org_id: orgId,
+            from_user_guid: fromGuid!,
+            object_types: typeFilter.length > 0 ? typeFilter : undefined,
+          });
       setItems(res.items);
       setByType(res.by_type);
+      setOwners(res.owners ?? []);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -63,7 +87,10 @@ export function TransferOwnershipModal({
     } finally {
       setLoading(false);
     }
-  }, [clusterId, orgId, fromUser.ts_guid, typeFilter]);
+    // objectIds is a fresh array each render on the Metadata page; key the
+    // dependency on its contents so the preview doesn't refetch forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clusterId, orgId, fromGuid, typeFilter, objectIds?.join(",")]);
 
   useEffect(() => {
     if (step === "preview" || step === "confirming") void loadPreview();
@@ -74,13 +101,20 @@ export function TransferOwnershipModal({
     setStep("submitting");
     setError(null);
     try {
-      const res = await usersApi.transferExecute({
-        cluster_id: clusterId,
-        org_id: orgId,
-        from_user_guid: fromUser.ts_guid,
-        to_user_identifier: target.username,
-        object_ids: items.map((i) => i.ts_guid),
-      });
+      const res = objectIds
+        ? await metadataApi.transferExecute({
+            cluster_id: clusterId,
+            org_id: orgId,
+            to_user_identifier: target.username,
+            object_ids: items.map((i) => i.ts_guid),
+          })
+        : await usersApi.transferExecute({
+            cluster_id: clusterId,
+            org_id: orgId,
+            from_user_guid: fromGuid!,
+            to_user_identifier: target.username,
+            object_ids: items.map((i) => i.ts_guid),
+          });
       onClose(true);
       window.location.href = `/jobs?highlight=${res.job_id}`;
     } catch (e) {
@@ -92,7 +126,7 @@ export function TransferOwnershipModal({
 
   return (
     <Modal onClose={() => onClose(false)} title="Transfer ownership">
-      <FromToBar fromUser={fromUser} target={target} />
+      <FromToBar source={source} owners={owners} target={target} />
 
       {step === "pick-target" && (
         <>
@@ -101,7 +135,7 @@ export function TransferOwnershipModal({
             clusterId={clusterId}
             orgId={orgId}
             picked={target}
-            excludeGuid={fromUser.ts_guid}
+            excludeGuid={fromGuid ?? undefined}
             onPick={setTarget}
             placeholder="Search by username, display name, or email…"
           />
@@ -154,7 +188,7 @@ export function TransferOwnershipModal({
               }}>
                 {items.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: theme.color.textMuted }}>
-                    No objects owned by this user.
+                    {objectIds ? "None of the selected objects are in the cache." : "No objects owned by this user."}
                   </div>
                 ) : items.slice(0, 100).map((i) => (
                   <div key={i.ts_guid} style={{
@@ -269,20 +303,44 @@ export function Modal({
 }
 
 export function FromToBar({
-  fromUser, target,
+  source, owners, target,
 }: {
-  fromUser: UserListItem;
+  source: TransferSource;
+  /** Current owners of the selection — several are possible from /metadata. */
+  owners?: TransferOwnerSummary[];
   target: UserListItem | null;
 }) {
+  // For a selection, the "from" side is whoever happens to own the checked
+  // objects. Naming one owner when there are four would misstate what the
+  // admin is about to do, so past one it becomes a count.
+  let fromTitle: string;
+  let fromSubtitle: string;
+  if (source.kind === "user") {
+    fromTitle = source.fromUser.display_name || source.fromUser.username;
+    fromSubtitle = source.fromUser.email || source.fromUser.username;
+  } else if (!owners || owners.length === 0) {
+    fromTitle = "Selected objects";
+    fromSubtitle = "current owners";
+  } else if (owners.length === 1) {
+    fromTitle = owners[0].owner_name;
+    fromSubtitle = `${owners[0].count} selected object${owners[0].count === 1 ? "" : "s"}`;
+  } else {
+    fromTitle = `${owners.length} owners`;
+    fromSubtitle = owners
+      .slice(0, 3)
+      .map((o) => `${o.owner_name} (${o.count})`)
+      .join(", ") + (owners.length > 3 ? `, +${owners.length - 3} more` : "");
+  }
+
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
       background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
       marginBottom: 16, fontSize: 12,
     }}>
-      <div>
-        <div style={{ fontWeight: 600, color: theme.color.textPrimary }}>{fromUser.display_name || fromUser.username}</div>
-        <div style={{ color: theme.color.textMuted }}>{fromUser.email || fromUser.username}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 600, color: theme.color.textPrimary }}>{fromTitle}</div>
+        <div style={{ color: theme.color.textMuted }} title={fromSubtitle}>{fromSubtitle}</div>
       </div>
       <ArrowRight size={14} style={{ color: theme.color.textMuted }} />
       <div>

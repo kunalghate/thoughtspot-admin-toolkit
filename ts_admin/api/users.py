@@ -100,10 +100,19 @@ class TransferPreviewRequest(BaseModel):
     explicit_guids: list[str] | None = None
 
 
+class TransferOwnerSummary(BaseModel):
+    owner_guid: str
+    owner_name: str
+    count: int
+
+
 class TransferPreviewResponse(BaseModel):
     items: list[TransferObjectItem]
     total: int
     by_type: dict[str, int]
+    # Who currently owns the selection. Always one entry for the Users-page
+    # flow; a Metadata-page selection can span several.
+    owners: list[TransferOwnerSummary] = []
 
 
 class TransferExecuteRequest(BaseModel):
@@ -351,6 +360,7 @@ def transfer_preview(body: TransferPreviewRequest) -> TransferPreviewResponse:
         items=[TransferObjectItem(**i) for i in result["items"]],
         total=result["total"],
         by_type=result["by_type"],
+        owners=[TransferOwnerSummary(**o) for o in result["owners"]],
     )
 
 

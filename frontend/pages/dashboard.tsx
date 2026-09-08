@@ -44,6 +44,7 @@ const JOB_LABELS: Record<string, string> = {
   user_delete: "User delete",
   user_delete_dryrun: "User delete dry run",
   user_transfer_ownership: "Ownership transfer",
+  metadata_transfer_ownership: "Ownership transfer",
   user_transfer_sharing: "Sharing transfer",
 };
 
