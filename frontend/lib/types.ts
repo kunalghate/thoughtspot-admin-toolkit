@@ -382,7 +382,9 @@ export interface DeletePreviewResponse {
   items: DeletePreviewItem[];
   total: number;
   unrecognized: string[];
-  cache_authoritative: boolean;   // false ⇒ counts above may be incomplete
+  // false ⇒ the owned-object counts above may be incomplete. Metadata sync only —
+  // it says nothing about is_admin (groups sync) or anything else.
+  metadata_cache_authoritative: boolean;
 }
 
 /** Item shape inside a user-delete dry-run job result (adds the live-existence flag). */
@@ -398,7 +400,9 @@ export interface DeleteDryRunResult {
   missing_live: string[];   // usernames/GUIDs no longer present on the cluster
   admin_count: number;
   owned_total: number;
-  cache_authoritative: boolean;   // false ⇒ counts below may be incomplete
+  // false ⇒ the owned-object counts above may be incomplete. Metadata sync only —
+  // it says nothing about is_admin (groups sync) or anything else.
+  metadata_cache_authoritative: boolean;
 }
 
 export interface UserHistoryItem {

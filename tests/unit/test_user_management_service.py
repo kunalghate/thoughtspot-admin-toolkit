@@ -858,7 +858,7 @@ class TestPreviewDelete:
         from ts_admin.services import user_management_service as svc
 
         result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)
-        assert result["cache_authoritative"] is True
+        assert result["metadata_cache_authoritative"] is True
         assert result["items"][0]["owned_object_count"] == 2
 
     def test_uncertified_scope_reports_the_flag_false(self, uncertified):
@@ -866,7 +866,7 @@ class TestPreviewDelete:
         from ts_admin.services import user_management_service as svc
 
         result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)
-        assert result["cache_authoritative"] is False
+        assert result["metadata_cache_authoritative"] is False
         assert result["total"] == 1
 
     def test_org_none_is_never_certified(self, seeded):
@@ -876,7 +876,40 @@ class TestPreviewDelete:
         from ts_admin.services import user_management_service as svc
 
         result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
-        assert result["cache_authoritative"] is False
+        assert result["metadata_cache_authoritative"] is False
+        assert result["items"][0]["owned_object_count"] == 2
+
+    def test_a_null_org_success_marker_does_not_certify_a_cluster_wide_count(self, in_memory_db, seeded, monkeypatch):
+        """KILL TEST for the ``org_id is None`` guard in ``_metadata_certified``.
+
+        Without it the guard is an EQUIVALENT MUTANT: replacing it with an
+        unconditional ``last_successful_sync(...)`` leaves the whole suite green,
+        because ``SyncLog.org_id == None`` compiles to ``org_id IS NULL`` and no
+        row on this schema can carry a NULL org — ``sync_log.org_id`` is
+        ``int`` (NOT NULL), so seeding one raises ``IntegrityError``. The tests
+        above therefore assert an outcome the guard does not cause.
+
+        So simulate the day the guard is actually load-bearing — a writer (or a
+        schema change) that produces a NULL-org / cluster-wide marker — by
+        making the lookup return one for ANY scope. The guard must short-circuit
+        before that lookup: no single marker can certify a cluster-wide count.
+        Delete the guard and the stub's row certifies it → this test goes red.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        marker = SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=2)
+        monkeypatch.setattr(svc, "last_successful_sync", lambda *a, **kw: marker)
+
+        # Non-vacuity: the stub IS reached and IS capable of certifying — with
+        # an org, the very same stub flips the flag True. Without this twin a
+        # never-called stub would produce the same False below.
+        assert (
+            svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)["metadata_cache_authoritative"]
+            is True
+        )
+
+        result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
+        assert result["metadata_cache_authoritative"] is False
         assert result["items"][0]["owned_object_count"] == 2
 
 
@@ -930,7 +963,7 @@ class TestDryRunDelete:
             job = s.get(Job, job_id)
             assert job.status == "COMPLETE"
             result = job.get_result()
-            assert result["cache_authoritative"] is False
+            assert result["metadata_cache_authoritative"] is False
             assert result["missing_live"] == ["bob"]
             assert "admin_count" in result
 

@@ -6,10 +6,18 @@
  *
  * Owned-object counts come from the local metadata cache, which an interrupted
  * sync leaves truncated — so a `0` can mean "owns nothing" OR "we never looked".
- * The dry-run result carries `cache_authoritative`; when it is false this modal
- * marks every count as cache-derived, shows the warning banner unconditionally
- * (even at zero), and gates Confirm behind a second acknowledgement. The
- * acknowledgement is UI-side only — it is never sent to the execute endpoint.
+ * The dry-run result carries `metadata_cache_authoritative`; when it is false
+ * this modal marks every OWNED-OBJECT COUNT as cache-derived, shows the warning
+ * banner unconditionally (even at zero), and gates Confirm behind a second
+ * acknowledgement. The acknowledgement is UI-side only — it is never sent to
+ * the execute endpoint.
+ *
+ * SCOPE, deliberately narrow: the flag certifies the METADATA sync and nothing
+ * else. The ADMIN badge / admin count on this modal come from
+ * `UserGroupMembership`, written only by the GROUPS sync, which this flag never
+ * consults. No copy in here may imply the modal as a whole — or the admin
+ * information — is certified. Every sentence it drives is about owned-object
+ * counts only.
  */
 import { useEffect, useState } from "react";
 import { AlertTriangle } from "lucide-react";
@@ -41,9 +49,18 @@ export function DeleteUsersModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
-  // Fail-safe default: a job result predating this field is treated as
-  // uncertified rather than silently certified.
-  const [cacheAuthoritative, setCacheAuthoritative] = useState(false);
+  // TRI-STATE, and the three values are not interchangeable:
+  //   null  — no dry-run result yet (still loading, or the job FAILED / the
+  //           poll threw). We never read the cache, so we say nothing about it:
+  //           no banner, no warn-styling, no acknowledgement. The error box is
+  //           the whole story in that state.
+  //   false — a result arrived and says the metadata cache is NOT certified.
+  //   true  — a result arrived and certifies the metadata cache.
+  // Fail-safe on arrival: a job result predating this field (`undefined`) must
+  // read as `false` (uncertified), never as `true` and never as `null` — see
+  // the `=== true` at the assignment site, pinned by a test that omits the
+  // field entirely.
+  const [metadataCacheAuthoritative, setMetadataCacheAuthoritative] = useState<boolean | null>(null);
 
   // Run a LIVE dry-run (verifies upstream existence + impact), then render its
   // result. Polls the job every 2s, mirroring the Deleter's DryRunModal.
@@ -77,7 +94,11 @@ export function DeleteUsersModal({
               setItems(result.items ?? []);
               setUnrecognized(result.unrecognized ?? []);
               setMissingLive(result.missing_live ?? []);
-              setCacheAuthoritative(result.cache_authoritative === true);
+              // `=== true` and not `!== false`/`!!x`: an absent field is
+              // uncertified. Mutating this to `!== false` makes a missing
+              // field mean CERTIFIED — the exact fail-open this modal exists
+              // to prevent.
+              setMetadataCacheAuthoritative(result.metadata_cache_authoritative === true);
               setLoading(false);
             }
           } catch {
@@ -107,9 +128,23 @@ export function DeleteUsersModal({
   // The server refuses an admin delete without it; asking here is what turns
   // that refusal into a decision instead of a dead end.
   const [confirmAdmin, setConfirmAdmin] = useState(false);
-  // Second acknowledgement, shown only when the counts above are uncertified.
+  // Second acknowledgement, shown only when the owned-object counts are known
+  // to be uncertified.
   const [confirmStaleCache, setConfirmStaleCache] = useState(false);
   const ownedTotal = items.reduce((acc, i) => acc + i.owned_object_count, 0);
+  // "A result arrived AND it says uncertified" — deliberately not
+  // `!metadataCacheAuthoritative`, which would also be true for `null` (no
+  // result) and so fire the banner on the FAILED / lost-connection paths,
+  // accusing a cache we never read alongside the real error box.
+  const countsUncertified = metadataCacheAuthoritative === false;
+
+  // NOTE on state lifetime: `pages/users.tsx` renders this modal under
+  // `{action === "delete" && <DeleteUsersModal .../>}`, so closing UNMOUNTS it
+  // and every piece of state above (including `confirmStaleCache` and
+  // `confirmAdmin`) resets on the next open. The acknowledgement gate relies on
+  // that. If a "change the selection without closing the modal" affordance is
+  // ever added, a ticked acknowledgement would carry forward onto a different
+  // set of users and a fresh dry-run — re-set these explicitly at that point.
 
   async function handleSubmit() {
     setStep("submitting");
@@ -164,11 +199,11 @@ export function DeleteUsersModal({
                 )}
                 <span style={{
                   fontSize: 11,
-                  color: !cacheAuthoritative || u.owned_object_count > 0 ? theme.color.warn : theme.color.textMuted,
+                  color: countsUncertified || u.owned_object_count > 0 ? theme.color.warn : theme.color.textMuted,
                   fontFamily: theme.font.sans,
                 }}>
                   {u.owned_object_count} owned object{u.owned_object_count === 1 ? "" : "s"}
-                  {!cacheAuthoritative && " in cache — may be incomplete"}
+                  {countsUncertified && " in cache — may be incomplete"}
                 </span>
               </div>
             ))}
@@ -195,7 +230,7 @@ export function DeleteUsersModal({
             </div>
           )}
 
-          {(ownedTotal > 0 || adminCount > 0 || !cacheAuthoritative) && (
+          {(ownedTotal > 0 || adminCount > 0 || countsUncertified) && (
             <div style={{
               display: "flex", alignItems: "flex-start", gap: 8, marginTop: 10,
               padding: "10px 12px", background: theme.color.dangerSoft, border: `1px solid ${theme.color.dangerBorder}`,
@@ -205,10 +240,19 @@ export function DeleteUsersModal({
               <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
               <div>
                 <strong>Warning:</strong>
-                {!cacheAuthoritative && (
-                  <span> Owned-object counts may be incomplete. The metadata cache for this org has no
-                    completed sync, so objects these users own may not be counted — including objects that
-                    are counted as 0 above. Run a metadata sync before deleting to see the real impact.</span>
+                {/* Neutral across all three uncertified states — never synced,
+                    sync in progress, or last sync failed. `_write_sync_log`
+                    UPSERTS the single (cluster, org, entity) row and the
+                    write-ahead IN_PROGRESS marker overwrites SUCCESS, so this
+                    fires for the whole duration of a NORMAL, HEALTHY re-sync;
+                    claiming "no completed sync" there contradicts the Topbar's
+                    last-sync timestamp one row up and trains operators to
+                    dismiss the warning. Scoped to owned-object counts only. */}
+                {countsUncertified && (
+                  <span> Owned-object counts may be incomplete — the metadata cache for this org is not
+                    certified complete (it has never synced, or a sync is in progress or failed). Objects
+                    these users own may not be counted, including counts shown as 0. Run or finish a
+                    metadata sync to see the real impact.</span>
                 )}
                 {ownedTotal > 0 && (
                   <span> {ownedTotal} object{ownedTotal === 1 ? "" : "s"} will become orphaned (counted from synced metadata types). Transfer ownership first to preserve attribution.</span>
@@ -230,6 +274,10 @@ export function DeleteUsersModal({
             }}>
               <input
                 type="checkbox"
+                // Named so tests (and screen readers) can tell the two
+                // acknowledgement checkboxes apart — both can be on screen at
+                // once when an admin is selected on an uncertified cache.
+                aria-label="Acknowledge admin deletion"
                 checked={confirmAdmin}
                 onChange={(e) => setConfirmAdmin(e.target.checked)}
                 style={{ marginTop: 2, flexShrink: 0 }}
@@ -242,7 +290,7 @@ export function DeleteUsersModal({
             </label>
           )}
 
-          {step === "confirming" && !cacheAuthoritative && (
+          {step === "confirming" && countsUncertified && (
             <label style={{
               display: "flex", alignItems: "flex-start", gap: 8, marginTop: 12,
               padding: "10px 12px", background: theme.color.dangerSoft,
@@ -252,6 +300,7 @@ export function DeleteUsersModal({
             }}>
               <input
                 type="checkbox"
+                aria-label="Acknowledge uncertified owned-object counts"
                 checked={confirmStaleCache}
                 onChange={(e) => setConfirmStaleCache(e.target.checked)}
                 style={{ marginTop: 2, flexShrink: 0 }}
@@ -298,7 +347,7 @@ export function DeleteUsersModal({
             disabled={
               confirmText !== "DELETE" ||
               (adminCount > 0 && !confirmAdmin) ||
-              (!cacheAuthoritative && !confirmStaleCache)
+              (countsUncertified && !confirmStaleCache)
             }
             onClick={handleSubmit}
           >

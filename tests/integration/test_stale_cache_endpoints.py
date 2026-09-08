@@ -218,7 +218,7 @@ class TestDeletePreviewFlagsRatherThanRefuses:
     """S31: the pre-delete owned-object count is a WARNING, not an input set.
 
     Refusing here would just remove the warning; the operator can still delete.
-    So these endpoints stay open and carry `cache_authoritative` instead — the
+    So these endpoints stay open and carry `metadata_cache_authoritative` instead — the
     mirror image of the 409s above, asserted on the same uncertified fixture.
     """
 
@@ -230,7 +230,7 @@ class TestDeletePreviewFlagsRatherThanRefuses:
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["items"]
-        assert body["cache_authoritative"] is False
+        assert body["metadata_cache_authoritative"] is False
 
     def test_preview_flag_is_never_certifiable_without_org(self, client, seeded, in_memory_db):
         """`DeletePreviewRequest` carries no org, so the count is cluster-wide —
@@ -241,7 +241,7 @@ class TestDeletePreviewFlagsRatherThanRefuses:
             json={"cluster_id": CLUSTER_ID, "user_guids": ["u-alice"]},
         )
         assert r.status_code == 200, r.text
-        assert r.json()["cache_authoritative"] is False
+        assert r.json()["metadata_cache_authoritative"] is False
 
     def test_dryrun_still_202s_and_creates_a_job(self, client, seeded, in_memory_db, monkeypatch):
         """The flag-not-refuse decision, pinned at the router: an uncertified
