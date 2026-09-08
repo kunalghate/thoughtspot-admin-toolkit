@@ -799,6 +799,22 @@ class TestExecuteDelete:
             assert s.get(Job, job_id).status == "FAILED"
 
 
+@pytest.fixture
+def uncertified(in_memory_db, seeded):
+    """The S31 shape: the same seeded cache with its metadata SUCCESS marker
+    removed, i.e. a cache no completed sync ever certified.
+
+    Deliberately a LOCAL fixture that only drops the ``metadata`` SyncLog row —
+    the shared `seeded` fixture's marker is load-bearing for the transfer tests
+    (they fail closed without it), so it must not be mutated in place.
+    """
+    with Session(in_memory_db) as s:
+        for row in s.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).all():
+            s.delete(row)
+        s.commit()
+    return in_memory_db
+
+
 class TestPreviewDelete:
     def test_owned_count_is_org_scoped_and_never_double_counted(self, in_memory_db, seeded):
         """
@@ -836,6 +852,66 @@ class TestPreviewDelete:
         unscoped = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
         assert unscoped["items"][0]["owned_object_count"] == 2
 
+    def test_certified_scope_reports_the_flag_true(self, seeded):
+        """Non-vacuity anchor for the two tests below: with the SUCCESS marker
+        the flag is True and the count is real."""
+        from ts_admin.services import user_management_service as svc
+
+        result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)
+        assert result["metadata_cache_authoritative"] is True
+        assert result["items"][0]["owned_object_count"] == 2
+
+    def test_uncertified_scope_reports_the_flag_false(self, uncertified):
+        """S31: flag, do not refuse. The items still come back."""
+        from ts_admin.services import user_management_service as svc
+
+        result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)
+        assert result["metadata_cache_authoritative"] is False
+        assert result["total"] == 1
+
+    def test_org_none_is_never_certified(self, seeded):
+        """Without an org the count is cluster-wide, and one org's marker cannot
+        certify a cluster-wide count — so the flag is False even though org 0 is
+        certified."""
+        from ts_admin.services import user_management_service as svc
+
+        result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
+        assert result["metadata_cache_authoritative"] is False
+        assert result["items"][0]["owned_object_count"] == 2
+
+    def test_a_null_org_success_marker_does_not_certify_a_cluster_wide_count(self, in_memory_db, seeded, monkeypatch):
+        """KILL TEST for the ``org_id is None`` guard in ``_metadata_marker``.
+
+        Without it the guard is an EQUIVALENT MUTANT: replacing it with an
+        unconditional ``last_successful_sync(...)`` leaves the whole suite green,
+        because ``SyncLog.org_id == None`` compiles to ``org_id IS NULL`` and no
+        row on this schema can carry a NULL org — ``sync_log.org_id`` is
+        ``int`` (NOT NULL), so seeding one raises ``IntegrityError``. The tests
+        above therefore assert an outcome the guard does not cause.
+
+        So simulate the day the guard is actually load-bearing — a writer (or a
+        schema change) that produces a NULL-org / cluster-wide marker — by
+        making the lookup return one for ANY scope. The guard must short-circuit
+        before that lookup: no single marker can certify a cluster-wide count.
+        Delete the guard and the stub's row certifies it → this test goes red.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        marker = SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=2)
+        monkeypatch.setattr(svc, "last_successful_sync", lambda *a, **kw: marker)
+
+        # Non-vacuity: the stub IS reached and IS capable of certifying — with
+        # an org, the very same stub flips the flag True. Without this twin a
+        # never-called stub would produce the same False below.
+        assert (
+            svc.preview_delete(cluster_id="c1", user_guids=["u-alice"], org_id=0)["metadata_cache_authoritative"]
+            is True
+        )
+
+        result = svc.preview_delete(cluster_id="c1", user_guids=["u-alice"])
+        assert result["metadata_cache_authoritative"] is False
+        assert result["items"][0]["owned_object_count"] == 2
+
 
 class TestDryRunDelete:
     def test_flags_users_missing_upstream_and_writes_no_changes(self, in_memory_db, patched_env, seeded):
@@ -869,6 +945,27 @@ class TestDryRunDelete:
             assert {"alice", "bob"} <= remaining
             # No audit row written
             assert s.exec(select(AuditLog)).all() == []
+
+    def test_result_carries_the_completeness_flag_and_still_completes(self, in_memory_db, patched_env, uncertified):
+        """S31 pins flag-not-refuse: on an uncertified cache the dry-run still
+        COMPLETEs and still reports missing_live / admin_count — it just says
+        the owned-object counts may be incomplete."""
+        from types import SimpleNamespace
+
+        from ts_admin.services.user_management_service import dryrun_delete
+
+        _FakeClient.users_pages = [[SimpleNamespace(id="u-alice", name="alice")]]
+
+        job_id = _create_job("user_delete_dryrun", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(dryrun_delete(job_id=job_id, cluster_id="c1", org_id=0, user_guids=["u-alice", "u-bob"]))
+
+        with Session(in_memory_db) as s:
+            job = s.get(Job, job_id)
+            assert job.status == "COMPLETE"
+            result = job.get_result()
+            assert result["metadata_cache_authoritative"] is False
+            assert result["missing_live"] == ["bob"]
+            assert "admin_count" in result
 
 
 # ── M14: zero successes is FAILED, never PARTIAL ──────────────────────────────

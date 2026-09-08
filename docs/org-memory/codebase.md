@@ -423,6 +423,10 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   reason about **direction** instead: truncation narrows every query, so selection
   paths fail safe (under-select) while **absence-as-evidence** paths fail dangerous
   (`deleter.resolve_downstream`, `user_management_service.preview_delete`).
+  **Amended 2026-09-08 (S31):** `preview_delete` is no longer unguarded — it now
+  returns `metadata_cache_authoritative` and the delete modal warns + gates on it.
+  The remaining unguarded twin is `get_user_detail`'s `owned_object_count`
+  (ledgered, not queued).
 - 2026-08-15 (S23): `ts_admin/services/sync_status.py` is now the single completeness
   helper (`last_successful_sync` / `metadata_is_authoritative` /
   `require_authoritative_metadata`); `StaleCacheError` → HTTP 409. `.first()` is
@@ -624,3 +628,122 @@ same tool rather than assuming these still hold.
   (`client.py:113`) returns `None` for `"test"`, `""`, `"10"`, `"v10.11.0"` and
   non-ASCII digits (`str.isdigit()` is True for superscripts that `int()`
   rejects, hence the `isascii()` guard).
+- **2026-09-08 (S31): a completeness marker read only AFTER the data it labels is
+  a fail-open, not a conservative approximation.** `preview_delete` reads
+  `last_successful_sync` **before and after** its count loop, in the caller's own
+  session, and ANDs the two. A sync *starting* mid-call is caught by the after
+  read; a sync *finishing* mid-call pairs already-read truncated counts
+  (post-DELETE-all, pre-repopulate — genuine bare zeros) with a fresh SUCCESS
+  marker, and is caught only by the before read. The window is **seconds, not
+  microseconds** (the count loop measures 3.4 s for 500 users), so this is
+  reachable. **The sound rule is marker IDENTITY, not presence:** two point-in-time
+  "is a SUCCESS marker present?" reads bracketing a loop CANNOT certify the loop,
+  because they are satisfied by two *different* markers — a full
+  SUCCESS -> IN_PROGRESS -> DELETE-all -> repopulate -> SUCCESS cycle fitting
+  inside the window reads as certified while the counts taken from the emptied
+  cache in between are certified by neither. Compare `(sync_log.id, synced_at)`
+  before and after and require them EQUAL; `_write_sync_log` bumps `synced_at` on
+  every non-`preserve_progress` write, so "same marker" is exactly "no sync
+  completed in the window". The presence-based version was implemented, reviewed,
+  and only caught by a scratch repro on the *second* review pass. Generalises to
+  every future `cache_authoritative` consumer.
+- **2026-09-08 (S31): pysqlite's default `isolation_level=""` does not open a
+  transaction on SELECT**, so two reads in one SQLAlchemy `Session` DO observe a
+  commit made between them. This is what makes the before/after read above work.
+  Anything relying on repeatable-read *within* a session is wrong on this stack.
+  Measured on SQLAlchemy 2.0.49 / sqlite3 3.51.3 / CPython 3.12.13 with a file DB
+  and two independent engines, in both directions (None->row, row->None). **Two
+  preconditions, both load-bearing:** the session must stay **read-only** (the
+  moment it issues DML first, a real transaction opens and the guarantee is gone),
+  and the discriminating predicate must be **in SQL** (`status == "SUCCESS"`), or
+  the ORM identity map can serve a stale attribute. Note the unit fixtures use
+  `poolclass=StaticPool` — ONE shared connection — so they are structurally
+  incapable of observing the cross-connection visibility production depends on;
+  the race tests pass because the two-connection case was measured separately,
+  not because the fixture proves it.
+- **2026-09-08 (S31): a completeness flag derived from ONE `entity_type` must be
+  named for that entity.** The unqualified `cache_authoritative` read as
+  whole-modal certification, but the delete modal renders a second cache-derived
+  fact — `is_admin`/`admin_count` from `UserGroupMembership`, written only by the
+  *groups* sync. A metadata-only sync therefore produced a fully
+  "certified"-looking modal that will delete a cluster admin with no
+  confirmation: "we didn't check" silently became "we checked and it's clean".
+  Renamed to `metadata_cache_authoritative` on the S31 surface; the groups half
+  is **S46**. (`metadata_service.stats`'s pre-existing `cache_authoritative` is a
+  different feature and keeps its name.)
+- **2026-09-08 (S31): `metadata_is_authoritative` being False does NOT mean
+  "never synced"** — the write-ahead `IN_PROGRESS` marker means the most common
+  False state is "a sync is running right now", while the Topbar one row up still
+  shows the previous success. This is the S23 IN_PROGRESS rule with a
+  **copywriting** corollary no gate can catch: UI copy asserting "no completed
+  sync" is false for the whole duration of a healthy re-sync, contradicts the
+  screen above it, and trains operators to dismiss the warning precisely when the
+  cache is most truncated. Uncertified copy must stay neutral across
+  never-synced / in-progress / failed.
+- **2026-09-08 (S31): a boolean UI flag fed by a job result needs THREE states.**
+  `null` (no result — job FAILED or the poll threw, so `items` is `[]` and
+  nothing was read) must render differently from `false`. A `!flag` gate collapses
+  them and pairs a real error box with a warning about data that was never
+  fetched. Measured in jsdom on `DeleteUsersModal`: on a FAILED dry-run the
+  pre-fix build rendered the error *and* an unrelated stale-cache accusation.
+- **2026-09-08 (S31): `sync_log.org_id` is `NOT NULL`** (`ts_admin/models/sync_log.py:16`),
+  so a NULL-org marker row **cannot be seeded by any test** — the insert raises
+  `IntegrityError`. Combined with `col(x) == None` compiling to `IS NULL`, an
+  `if org_id is None` short-circuit in front of a `SyncLog.org_id == org_id`
+  query is an **equivalent mutant at runtime today**: removing it is a silent
+  no-op, and a fail-open the day such a writer exists, green suite either way.
+  Generalises: **when a defensive guard protects against a state the schema
+  forbids, its kill power comes from stubbing the dependency, not from a
+  fixture.**
+- **2026-09-08 (S31): mutation-testing a `=== true` fail-safe needs TWO fixtures.**
+  `!!x` **survives** an omitted-field test, because `!!undefined === false` is the
+  correct reading; only a non-boolean truthy value (which untyped `job.result`
+  JSON can carry) kills it. `!== false` is killed by the omitted-field fixture
+  alone. A single fixture reports coverage it does not have.
+- **2026-09-08 (S31, process): a non-vacuity anchor and the assertion it anchors
+  must run on the SAME subject.** S31's first acceptance test anchored on
+  `u-alice` (owns 1, certified) and asserted the zero on `u-bob` — who owns
+  nothing under *any* conditions, so the zero was genuine and the S31 claim was
+  never exercised. Same class as S27, one level up: check the **subject**, not
+  just the fixture. The sound shape is one user, two reads, one seed.
+- **2026-09-08 (S31, process): a mypy "same error count" comparison is NOT
+  evidence of "no new errors."** The S31 branch shifted 14 pre-existing error
+  line numbers; a count-only check would read green even if a real new error had
+  replaced a fixed one. **But a naive sorted-set diff is ALSO insufficient**: an
+  insertion into a large service file shifts pre-existing errors' line numbers, so
+  a plain `comm` reported 14 "new" and 14 "removed" on a branch that introduced
+  none. The reliable recipe is to strip the line number first, then sort and diff:
+  `grep ": error:" | sed -E 's/^([^:]+):[0-9]+: /\1: /' | sort`. Baseline on
+  `main` @ `d586f60` is **exactly 90 errors in 18 files**, ~14 of them in
+  `user_management_service.py` alone (SQLAlchemy `where`/`join` `bool` arg-type
+  false positives, `str | datetime | None` `.asc()/.desc()` union-attr), so any
+  edit to that file re-triggers the shift. Applies to every advisory mypy report
+  until the W1 row lands.
+- **2026-09-08 (S31, performance): the `sync_log` marker read is cheap and does
+  not contend.** `last_successful_sync` compiles to
+  `SEARCH sync_log USING INDEX ix_sync_log_org_id` + `USE TEMP B-TREE FOR ORDER BY`
+  — a scan+sort — but the upsert-only writers bound the table at
+  clusters x orgs x entity_types (3,600 rows at 3 x 200 x 6), so it costs
+  **0.155 ms**. Do NOT add a composite index for it; DO re-check the moment any
+  writer starts appending. Engine connections carry `busy_timeout = 5000`
+  (pysqlite's default; `database.py` sets none) on a `QueuePool(5)`; measured
+  under a `_sync_metadata`-shaped concurrent writer on `journal_mode=delete`:
+  **21,676 reads, 0 `database is locked`, p95 0.83 ms**.
+- **2026-09-08 (S31): SQLAlchemy's identity map is WEAK-referencing, so a
+  before/after attribute comparison on one session is correct only by GC timing.**
+  Re-`SELECT`ing a row already loaded returns the in-memory instance with its
+  ORIGINAL attribute values *while something holds a strong reference*; drop the
+  reference and it is collected, so the re-read is fresh. Measured in this repo:
+  `hold_ref=True, expire=False -> stale`; `hold_ref=False, expire=False -> fresh`;
+  `hold_ref=True, expire=True -> fresh`. `_metadata_marker`
+  (`ts_admin/services/user_management_service.py:927`) calls `session.expire_all()`
+  unconditionally for this reason. **No test can pin it** — deleting the
+  `expire_all()` kills nothing, because today's code drops the row as soon as it
+  has the tuple. Any refactor that holds the row alive silently turns the identity
+  check back into a presence check.
+- **2026-09-08 (S31): `_write_sync_log` (`sync_service.py:920-926`) upserts ONE
+  row per `(cluster, org, entity)` in place and refreshes `synced_at` on every
+  non-`preserve_progress` write; the write-ahead IN_PROGRESS marker does NOT bump
+  it.** That is the property that makes `(SyncLog.id, synced_at)` equality mean
+  "no sync completed in the window" — and it is why a PK-only ("different row")
+  check would NOT work: the row is upserted in place, so the id never changes.

@@ -35,10 +35,10 @@ fail dangerous.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cache.ts_user import CachedUser
@@ -428,3 +428,263 @@ class TestReadPathIsFlagOnly:
 
         _certify(in_memory_db)
         assert MetadataService.stats(cluster_id=CLUSTER_ID, org_id=ORG_ID)["cache_authoritative"] is True
+
+    # ── S31: the owned-object count is flagged, never refused ─────────────────
+
+    def test_preview_delete_flags_instead_of_refusing(self):
+        """`preview_delete` feeds a WARNING, not an input set — it must stay
+        usable on a truncated cache and say so, rather than 409."""
+        from ts_admin.services import user_management_service as svc
+
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice", "u-bob"], org_id=ORG_ID)
+
+        assert result["total"] == 2
+        assert result["metadata_cache_authoritative"] is False
+
+    def test_the_acceptance_case_a_zero_count_is_never_bare(self, in_memory_db):
+        """S31 proper: the SAME user, genuinely owning an object, reads as 0
+        because the metadata cache was truncated under them — and that 0 must
+        ship with the flag False.
+
+        Two reads over one seed, one user (alice, who owns ``lb-1``):
+
+        1. certified — the count is NON-ZERO. This is what makes read 2 a real
+           observation: the counter works, the fixture really does give this
+           user an owned object, and the query is not always-empty. (The old
+           version of this test read alice here and *bob* below; bob owns
+           nothing under any conditions, so its "zero" was a genuine zero and
+           S31's actual claim was never exercised.)
+        2. the truncation the bug describes — alice's ``CachedMetadata`` rows
+           are deleted and the SUCCESS marker is replaced by the write-ahead
+           IN_PROGRESS one, which is precisely ``_sync_metadata``'s window:
+           DELETE-all committed, repopulation not yet done. Same user, same
+           call: the count is now a bare 0 and the flag says so.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        _certify(in_memory_db)
+        certified = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)
+        assert certified["metadata_cache_authoritative"] is True
+        assert certified["items"][0]["owned_object_count"] > 0
+
+        with Session(in_memory_db) as s:
+            for row in s.exec(select(CachedMetadata).where(CachedMetadata.owner_guid == "u-alice")).all():
+                s.delete(row)
+            for row in s.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).all():
+                s.delete(row)
+            s.add(
+                SyncLog(
+                    cluster_id=CLUSTER_ID,
+                    org_id=ORG_ID,
+                    entity_type="metadata",
+                    status="IN_PROGRESS",
+                    record_count=0,
+                )
+            )
+            s.commit()
+
+        mid_sync = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)
+        assert mid_sync["items"][0]["owned_object_count"] == 0
+        assert mid_sync["metadata_cache_authoritative"] is False
+
+    # ── The count loop and the sync marker race in BOTH directions ────────────
+
+    def test_a_sync_that_finishes_during_the_count_does_not_certify_it(self, in_memory_db, monkeypatch):
+        """The fail-OPEN direction, and the reason the marker is read twice.
+
+        ``preview_delete`` issues one COUNT per user (~3.4s for 500 users on the
+        performance lens's measurement), so a metadata sync can *complete* while
+        the loop is running. The counts were then read from the mid-sync
+        truncated cache — post-DELETE-all, pre-repopulate, genuine bare zeros —
+        and only afterwards did the marker flip to SUCCESS. A read-after-only
+        implementation ships those bare zeros as CERTIFIED: exactly the S31
+        shape the whole feature exists to prevent.
+
+        Here the marker flips to SUCCESS from inside the loop (``_is_admin`` is
+        called once per user, in the loop, on the same connection). Certified
+        before? No. So the flag must be False however the after-read comes out.
+
+        Non-vacuity: the sibling test below writes through the same hook in the
+        opposite direction and can only pass if the AFTER-read observes a
+        mid-call commit — that is what establishes the hook is effective and
+        that intra-call visibility is real.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        real_is_admin = svc._is_admin
+
+        def _certify_mid_loop(session, cluster_id, ts_guid):
+            _certify(in_memory_db)  # a metadata sync completes right here
+            return real_is_admin(session, cluster_id, ts_guid)
+
+        monkeypatch.setattr(svc, "_is_admin", _certify_mid_loop)
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)
+
+        assert result["metadata_cache_authoritative"] is False
+
+    def test_a_sync_that_starts_during_the_count_does_not_certify_it(self, in_memory_db, monkeypatch):
+        """The conservative direction — and the non-vacuity anchor for the test
+        above. The marker is SUCCESS when the call begins and is invalidated
+        (write-ahead IN_PROGRESS, which ``_sync_metadata`` writes *before* its
+        DELETE-all) from inside the loop. This can only come out False if the
+        AFTER-read really does observe a commit made during the call.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        _certify(in_memory_db)
+        real_is_admin = svc._is_admin
+
+        def _invalidate_mid_loop(session, cluster_id, ts_guid):
+            with Session(in_memory_db) as s:
+                for row in s.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).all():
+                    row.status = "IN_PROGRESS"
+                    s.add(row)
+                s.commit()
+            return real_is_admin(session, cluster_id, ts_guid)
+
+        monkeypatch.setattr(svc, "_is_admin", _invalidate_mid_loop)
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)
+
+        assert result["metadata_cache_authoritative"] is False
+
+    def test_a_whole_sync_cycle_inside_the_count_window_does_not_certify_it(self, in_memory_db, monkeypatch):
+        """KILL TEST for presence-vs-identity. The two reads must compare WHICH
+        marker they saw, not merely that *a* marker was there.
+
+        The gap a presence check leaves open: an entire sync cycle
+        (SUCCESS N → IN_PROGRESS → DELETE-all → repopulate → SUCCESS N+1) fits
+        inside the count loop. Marker N certifies the reads taken before the
+        DELETE-all, marker N+1 certifies the reads taken after it, and the
+        counts read from the truncated cache *in between* are certified by
+        neither — yet ``x is not None`` before AND after is True at both
+        instants, so a bare 0 ships as CERTIFIED. That is verbatim the S31
+        shape the feature exists to prevent. Comparing ``(id, synced_at)``
+        closes it: ``sync_service._write_sync_log`` upserts the row in place
+        and refreshes ``synced_at`` on every non-``preserve_progress`` write,
+        so "same identity before and after" is exactly "no sync completed in
+        the window".
+
+        Two OWNING users are required. The module fixture seeds ``u-alice``
+        (owns ``lb-1``) and ``u-bob`` (owns nothing), so a race fired on the
+        first user is read only by a user whose count is zero under all
+        conditions — vacuous. ``u-carol`` is seeded here owning ``lb-2`` and
+        ordered after alice, so the interesting count is genuinely read from
+        the truncated cache. The non-vacuity assertions below pin that.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedUser(
+                    cluster_id=CLUSTER_ID,
+                    ts_guid="u-carol",
+                    username="carol",
+                    display_name="Carol",
+                    email="carol@co.com",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            s.add(
+                CachedMetadata(
+                    cluster_id=CLUSTER_ID,
+                    org_id=ORG_ID,
+                    ts_guid="lb-2",
+                    name="Ops",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-carol",
+                    owner_name="Carol",
+                    tag_names=json.dumps([]),
+                    synced_at=now,
+                )
+            )
+            # Marker N — written the way `_write_sync_log` writes it: ONE row,
+            # upserted in place. A fresh row per sync would give the after-read
+            # a different primary key and let a weaker identity check pass.
+            s.add(
+                SyncLog(
+                    cluster_id=CLUSTER_ID,
+                    org_id=ORG_ID,
+                    entity_type="metadata",
+                    status="SUCCESS",
+                    record_count=2,
+                    synced_at=now - timedelta(minutes=5),
+                )
+            )
+            s.commit()
+
+        real_is_admin = svc._is_admin
+        fired: list[str] = []
+
+        def _run_a_whole_sync_cycle(session, cluster_id, ts_guid):
+            # `_is_admin` runs once per user, AFTER that user's count, on the
+            # call's own session — so hooking it lets the cycle straddle the
+            # two counts the way a real 3.4s loop does.
+            fired.append(ts_guid)
+            with Session(in_memory_db) as s:
+                marker = s.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).one()
+                if len(fired) == 1:
+                    # alice's count (=1) is already taken. The sync now starts:
+                    # write-ahead invalidation, then the DELETE-all commits.
+                    marker.status = "IN_PROGRESS"
+                    s.add(marker)
+                    s.commit()
+                    for row in s.exec(select(CachedMetadata)).all():
+                        s.delete(row)
+                    s.commit()
+                else:
+                    # carol's count (=0, a bare zero off the truncated cache) is
+                    # already taken. Only NOW does the sync repopulate and flip
+                    # the marker back to SUCCESS — same row, new `synced_at`.
+                    for guid, owner in [("lb-1", "u-alice"), ("lb-2", "u-carol")]:
+                        s.add(
+                            CachedMetadata(
+                                cluster_id=CLUSTER_ID,
+                                org_id=ORG_ID,
+                                ts_guid=guid,
+                                name=guid,
+                                object_type="LIVEBOARD",
+                                owner_guid=owner,
+                                owner_name=owner,
+                                tag_names=json.dumps([]),
+                                synced_at=datetime.now(tz=timezone.utc),
+                            )
+                        )
+                    marker.status = "SUCCESS"
+                    marker.synced_at = datetime.now(tz=timezone.utc)
+                    s.add(marker)
+                    s.commit()
+            return real_is_admin(session, cluster_id, ts_guid)
+
+        monkeypatch.setattr(svc, "_is_admin", _run_a_whole_sync_cycle)
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice", "u-carol"], org_id=ORG_ID)
+
+        counts = {i["ts_guid"]: i["owned_object_count"] for i in result["items"]}
+        # Non-vacuity: the hook fired for both users, alice was counted BEFORE
+        # the cycle (so the counter demonstrably works), and carol's count is
+        # the bare zero read from the emptied cache. Without these, a green
+        # assertion below could just mean "nothing interesting happened".
+        assert fired == ["u-alice", "u-carol"], fired
+        assert counts["u-alice"] == 1, counts
+        assert counts["u-carol"] == 0, counts
+        # A SUCCESS marker existed at BOTH reads — a presence check says True.
+        assert result["metadata_cache_authoritative"] is False, "FAIL-OPEN: bare 0 shipped as CERTIFIED"
+
+    def test_certification_flips_the_flag(self, in_memory_db):
+        from ts_admin.services import user_management_service as svc
+
+        assert (
+            svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)[
+                "metadata_cache_authoritative"
+            ]
+            is False
+        )
+
+        _certify(in_memory_db)
+        assert (
+            svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)[
+                "metadata_cache_authoritative"
+            ]
+            is True
+        )

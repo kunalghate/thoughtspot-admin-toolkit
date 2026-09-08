@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Literal
 
 import httpx
@@ -42,6 +43,7 @@ from ts_admin.models.cache.ts_user import (
     UserOrgMembership,
 )
 from ts_admin.models.user_action_record import UserActionRecord
+from ts_admin.services.sync_status import last_successful_sync
 from ts_admin.ts_client.exceptions import StaleCacheError, TSAdminError
 
 logger = logging.getLogger(__name__)
@@ -923,6 +925,56 @@ async def execute_transfer_sharing(
 # ── Delete users ──────────────────────────────────────────────────────────────
 
 
+def _metadata_marker(session: Session, *, cluster_id: str, org_id: int | None) -> tuple[int | None, datetime] | None:
+    """IDENTITY of the SUCCESS ``metadata`` sync marker for this scope, or None.
+
+    Returns ``(row.id, row.synced_at)`` — deliberately not a bool. Presence
+    ("*a* marker exists") is not enough for the before/after comparison in
+    :func:`preview_delete`: a whole sync cycle can complete inside the count
+    window, so *a* SUCCESS marker can be present at both reads while the counts
+    taken in between are certified by neither. The caller compares identities,
+    which is only sound because ``sync_service._write_sync_log`` upserts the
+    one row in place and refreshes ``synced_at`` on every non-``preserve_progress``
+    write: same ``(id, synced_at)`` before and after ⇔ no sync completed in the
+    window. (The write-ahead IN_PROGRESS marker does not bump ``synced_at`` —
+    it does not need to, since it is not SUCCESS and so is not a marker at all
+    as far as this function is concerned.)
+
+    ``session.expire_all()`` is not hygiene — it removes a GC dependency. Both
+    reads run on ONE session, and re-``SELECT``ing a row that is still in the
+    identity map returns the loaded instance with its ORIGINAL attribute
+    values: the after-read would then report the *before* ``synced_at`` for an
+    in-place upsert and the identity check would silently degrade back into a
+    presence check. Measured (SQLAlchemy 2.x, pysqlite): with a strong
+    reference held, the re-read IS stale; with none held it is fresh, because
+    the identity map is weak-referencing and this function drops the row as
+    soon as it has the tuple. So today's behaviour happens to be correct *by
+    garbage-collection timing* — which no test can pin and any future refactor
+    that keeps the row alive would flip. Expiring first makes it unconditional.
+
+    Says NOTHING about groups/`UserGroupMembership` (and so nothing about
+    ``is_admin``), nor about any other entity — see :func:`preview_delete`.
+
+    The ``org_id is None`` guard is load-bearing and is NOT redundant with the
+    query it guards. ``last_successful_sync`` filters ``SyncLog.org_id ==
+    org_id``, and SQLAlchemy compiles ``== None`` to SQL ``org_id IS NULL`` —
+    a perfectly matchable predicate. No writer produces a NULL-org
+    ``sync_log`` row *today*, so removing the guard is a silent no-op right
+    now; the day anything writes a cluster-wide/NULL-org marker, a bare
+    ``last_successful_sync`` would match it and certify a **cluster-wide**
+    count from a single marker. `org_id is None` means the caller asked for a
+    cluster-wide count (the preview endpoint's request carries no org), which
+    no single marker can certify. Fail closed.
+    """
+    if org_id is None:
+        return None
+    session.expire_all()
+    row = last_successful_sync(session, cluster_id=cluster_id, org_id=org_id, entity_type="metadata")
+    if row is None:
+        return None
+    return (row.id, row.synced_at)
+
+
 def preview_delete(*, cluster_id: str, user_guids: list[str], org_id: int | None = None) -> dict:
     """
     Snapshot users + owned-object counts so the UI can warn before delete.
@@ -934,8 +986,88 @@ def preview_delete(*, cluster_id: str, user_guids: list[str], org_id: int | None
     falls back to distinct GUIDs across the cluster — still not double-counted,
     just cluster-wide. The count is DISTINCT either way; scoping is what makes
     it the number for *this* operation.
+
+    Completeness (``metadata_cache_authoritative``)
+    -----------------------------------------------
+    The owned-object count is read from ``CachedMetadata``, which an interrupted
+    metadata sync leaves non-empty but truncated — so a **zero is not evidence
+    of zero**. ``metadata_cache_authoritative`` says whether the *metadata* sync
+    for this scope is certified complete. It is deliberately a flag, not a
+    refusal — the dry-run still runs and still reports ``missing_live`` /
+    ``admin_count``.
+
+    **The flag is named for the entity it covers, and it covers only that.**
+    What it says: the ``metadata`` sync for this (cluster, org) had the SAME
+    SUCCESS marker — same row, same ``synced_at`` — both before and after the
+    counts were read, so no sync completed underneath the loop and the
+    owned-object counts are read from one certified-complete metadata cache.
+    What it does NOT say — and no caller may present it as saying:
+
+    * Nothing about **group membership**. ``is_admin`` is derived from
+      ``UserGroupMembership``, which only the *groups* sync writes and which
+      this flag never consults. A True flag on a cluster that has never run a
+      groups sync still means every ``is_admin`` is an unverified False.
+    * Nothing about any other entity (users, tags, dependencies).
+    * Not "this is everything the user owns" even for metadata: only the seven
+      synced specs live in ``CachedMetadata``; CONNECTIONs, for instance, never
+      do (see the lineage notes in ``docs/org-memory/codebase.md``).
+    * When ``org_id`` is None (the cache-only preview endpoint, whose request
+      carries no org) the count is cluster-wide, and one org's sync marker
+      cannot certify a cluster-wide count — so the flag is hardcoded False.
+
+    User-facing copy built on this flag must therefore be scoped strictly to
+    owned-object counts.
     """
     with Session(_db.get_engine()) as session:
+        # Certification is read in THIS session (no second connection on a
+        # destructive-preview path) and TWICE — once before the count loop and
+        # once after — because a metadata sync that overlaps the counts is
+        # dangerous in BOTH directions:
+        #
+        #   * sync STARTS in the window  → the marker flips SUCCESS→IN_PROGRESS
+        #     (write-ahead, before `_sync_metadata`'s DELETE-all). Read-after
+        #     alone catches this.
+        #   * sync FINISHES in the window → the counts were already read from
+        #     the mid-sync truncated cache (post-DELETE-all, pre-repopulate: a
+        #     genuine bare 0), and only then does the marker flip to SUCCESS.
+        #     Read-after alone certifies that 0. Read-BEFORE catches it.
+        #
+        #   * a whole sync CYCLE fits in the window → SUCCESS marker N, then
+        #     IN_PROGRESS, DELETE-all, repopulate, SUCCESS marker N+1. Marker N
+        #     certifies only the reads before the DELETE-all and marker N+1 only
+        #     the reads after it; the counts in between are certified by
+        #     neither. Merely asking "was *a* SUCCESS marker present?" at both
+        #     instants answers yes here and ships a bare 0 as certified.
+        #
+        # The window is seconds wide, not microseconds: the loop below issues
+        # one COUNT per user (measured ~3.4s for 500 users), so the first count
+        # can be read from a cache that the last count no longer sees.
+        #
+        # What makes the flag sound is therefore comparing the marker's
+        # IDENTITY, not its presence: certify only when both reads return the
+        # SAME `(id, synced_at)`. `_write_sync_log` upserts the row in place and
+        # bumps `synced_at` on every completed sync, so an unchanged identity is
+        # exactly "no sync completed in this window". None before, None after,
+        # or a mismatch ⇒ not certified.
+        #
+        # INVARIANT — THIS SESSION MUST STAY READ-ONLY. Under pysqlite a session
+        # that has only issued SELECTs never opens a real transaction, which is
+        # why the second read sees commits made by other connections during the
+        # loop. Adding ANY DML before the second read opens one, freezes this
+        # session's snapshot, and silently reduces the after-read to a re-read
+        # of the before-read — the guarantee evaporates and no test goes red.
+        # (Under the current rollback journal it can instead surface as
+        # "database is locked".) If this function ever needs to write, take a
+        # separate short-lived session for the write.
+        #
+        # Test-fixture caveat, so nobody over-reads the suite: the race tests
+        # in tests/unit/test_stale_cache_guard.py run on a StaticPool
+        # in-memory engine — ONE shared DBAPI connection — so they are
+        # structurally incapable of exercising the cross-connection visibility
+        # production depends on. They pass because that behaviour was measured
+        # separately, not because the fixture proves it.
+        marker_before = _metadata_marker(session, cluster_id=cluster_id, org_id=org_id)
+
         users = session.exec(
             select(CachedUser).where(
                 CachedUser.cluster_id == cluster_id,
@@ -965,7 +1097,15 @@ def preview_delete(*, cluster_id: str, user_guids: list[str], org_id: int | None
                     "is_admin": _is_admin(session, cluster_id, u.ts_guid),
                 }
             )
-        return {"items": items, "total": len(items), "unrecognized": unrecognized}
+
+        marker_after = _metadata_marker(session, cluster_id=cluster_id, org_id=org_id)
+
+    return {
+        "items": items,
+        "total": len(items),
+        "unrecognized": unrecognized,
+        "metadata_cache_authoritative": marker_before is not None and marker_before == marker_after,
+    }
 
 
 async def dryrun_delete(
@@ -1025,14 +1165,16 @@ async def dryrun_delete(
             "missing_live": missing_live,
             "admin_count": sum(1 for i in snapshot["items"] if i["is_admin"]),
             "owned_total": sum(i["owned_object_count"] for i in snapshot["items"]),
+            "metadata_cache_authoritative": snapshot["metadata_cache_authoritative"],
         }
         mark_complete(job_id, result)
         logger.info(
-            "dryrun_delete job=%s cluster=%s total=%d missing_live=%d",
+            "dryrun_delete job=%s cluster=%s total=%d missing_live=%d authoritative=%s",
             job_id,
             cluster_id,
             result["total"],
             len(missing_live),
+            result["metadata_cache_authoritative"],
         )
     # Last-resort handler for a background task — see the note on the matching
     # handler in `execute_transfer`. Permitted to swallow ANY exception because
