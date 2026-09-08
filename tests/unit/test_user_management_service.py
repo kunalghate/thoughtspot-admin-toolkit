@@ -880,7 +880,7 @@ class TestPreviewDelete:
         assert result["items"][0]["owned_object_count"] == 2
 
     def test_a_null_org_success_marker_does_not_certify_a_cluster_wide_count(self, in_memory_db, seeded, monkeypatch):
-        """KILL TEST for the ``org_id is None`` guard in ``_metadata_certified``.
+        """KILL TEST for the ``org_id is None`` guard in ``_metadata_marker``.
 
         Without it the guard is an EQUIVALENT MUTANT: replacing it with an
         unconditional ``last_successful_sync(...)`` leaves the whole suite green,

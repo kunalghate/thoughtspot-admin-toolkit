@@ -35,7 +35,7 @@ fail dangerous.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import Session, create_engine, select
@@ -546,6 +546,130 @@ class TestReadPathIsFlagOnly:
         result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice"], org_id=ORG_ID)
 
         assert result["metadata_cache_authoritative"] is False
+
+    def test_a_whole_sync_cycle_inside_the_count_window_does_not_certify_it(self, in_memory_db, monkeypatch):
+        """KILL TEST for presence-vs-identity. The two reads must compare WHICH
+        marker they saw, not merely that *a* marker was there.
+
+        The gap a presence check leaves open: an entire sync cycle
+        (SUCCESS N → IN_PROGRESS → DELETE-all → repopulate → SUCCESS N+1) fits
+        inside the count loop. Marker N certifies the reads taken before the
+        DELETE-all, marker N+1 certifies the reads taken after it, and the
+        counts read from the truncated cache *in between* are certified by
+        neither — yet ``x is not None`` before AND after is True at both
+        instants, so a bare 0 ships as CERTIFIED. That is verbatim the S31
+        shape the feature exists to prevent. Comparing ``(id, synced_at)``
+        closes it: ``sync_service._write_sync_log`` upserts the row in place
+        and refreshes ``synced_at`` on every non-``preserve_progress`` write,
+        so "same identity before and after" is exactly "no sync completed in
+        the window".
+
+        Two OWNING users are required. The module fixture seeds ``u-alice``
+        (owns ``lb-1``) and ``u-bob`` (owns nothing), so a race fired on the
+        first user is read only by a user whose count is zero under all
+        conditions — vacuous. ``u-carol`` is seeded here owning ``lb-2`` and
+        ordered after alice, so the interesting count is genuinely read from
+        the truncated cache. The non-vacuity assertions below pin that.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as s:
+            s.add(
+                CachedUser(
+                    cluster_id=CLUSTER_ID,
+                    ts_guid="u-carol",
+                    username="carol",
+                    display_name="Carol",
+                    email="carol@co.com",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            s.add(
+                CachedMetadata(
+                    cluster_id=CLUSTER_ID,
+                    org_id=ORG_ID,
+                    ts_guid="lb-2",
+                    name="Ops",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-carol",
+                    owner_name="Carol",
+                    tag_names=json.dumps([]),
+                    synced_at=now,
+                )
+            )
+            # Marker N — written the way `_write_sync_log` writes it: ONE row,
+            # upserted in place. A fresh row per sync would give the after-read
+            # a different primary key and let a weaker identity check pass.
+            s.add(
+                SyncLog(
+                    cluster_id=CLUSTER_ID,
+                    org_id=ORG_ID,
+                    entity_type="metadata",
+                    status="SUCCESS",
+                    record_count=2,
+                    synced_at=now - timedelta(minutes=5),
+                )
+            )
+            s.commit()
+
+        real_is_admin = svc._is_admin
+        fired: list[str] = []
+
+        def _run_a_whole_sync_cycle(session, cluster_id, ts_guid):
+            # `_is_admin` runs once per user, AFTER that user's count, on the
+            # call's own session — so hooking it lets the cycle straddle the
+            # two counts the way a real 3.4s loop does.
+            fired.append(ts_guid)
+            with Session(in_memory_db) as s:
+                marker = s.exec(select(SyncLog).where(SyncLog.entity_type == "metadata")).one()
+                if len(fired) == 1:
+                    # alice's count (=1) is already taken. The sync now starts:
+                    # write-ahead invalidation, then the DELETE-all commits.
+                    marker.status = "IN_PROGRESS"
+                    s.add(marker)
+                    s.commit()
+                    for row in s.exec(select(CachedMetadata)).all():
+                        s.delete(row)
+                    s.commit()
+                else:
+                    # carol's count (=0, a bare zero off the truncated cache) is
+                    # already taken. Only NOW does the sync repopulate and flip
+                    # the marker back to SUCCESS — same row, new `synced_at`.
+                    for guid, owner in [("lb-1", "u-alice"), ("lb-2", "u-carol")]:
+                        s.add(
+                            CachedMetadata(
+                                cluster_id=CLUSTER_ID,
+                                org_id=ORG_ID,
+                                ts_guid=guid,
+                                name=guid,
+                                object_type="LIVEBOARD",
+                                owner_guid=owner,
+                                owner_name=owner,
+                                tag_names=json.dumps([]),
+                                synced_at=datetime.now(tz=timezone.utc),
+                            )
+                        )
+                    marker.status = "SUCCESS"
+                    marker.synced_at = datetime.now(tz=timezone.utc)
+                    s.add(marker)
+                    s.commit()
+            return real_is_admin(session, cluster_id, ts_guid)
+
+        monkeypatch.setattr(svc, "_is_admin", _run_a_whole_sync_cycle)
+        result = svc.preview_delete(cluster_id=CLUSTER_ID, user_guids=["u-alice", "u-carol"], org_id=ORG_ID)
+
+        counts = {i["ts_guid"]: i["owned_object_count"] for i in result["items"]}
+        # Non-vacuity: the hook fired for both users, alice was counted BEFORE
+        # the cycle (so the counter demonstrably works), and carol's count is
+        # the bare zero read from the emptied cache. Without these, a green
+        # assertion below could just mean "nothing interesting happened".
+        assert fired == ["u-alice", "u-carol"], fired
+        assert counts["u-alice"] == 1, counts
+        assert counts["u-carol"] == 0, counts
+        # A SUCCESS marker existed at BOTH reads — a presence check says True.
+        assert result["metadata_cache_authoritative"] is False, "FAIL-OPEN: bare 0 shipped as CERTIFIED"
 
     def test_certification_flips_the_flag(self, in_memory_db):
         from ts_admin.services import user_management_service as svc
