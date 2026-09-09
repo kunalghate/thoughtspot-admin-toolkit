@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import Session, create_engine
 
+from ts_admin.models.cache.ts_connection import CachedConnection
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.sync_log import SyncLog
@@ -162,6 +163,85 @@ class TestMetadataServiceSearch:
         items, total = MetadataService.search(cluster_id="test-cluster", org_id=0, record_offset=0, page_size=3)
         assert total == 10
         assert len(items) == 3
+
+
+class TestConnectionColumn:
+    """
+    The Connection column is served by a join, because the metadata row stores
+    only `connection_guid` — the display name lives on ts_connections.
+
+    Before that join existed, `sort_field="connection_name"` fell through
+    `_sortable.get(...)` to CachedMetadata.name: the header offered a sort, the
+    grid reordered, and what the admin got back was alphabetical by object name.
+    """
+
+    @staticmethod
+    def _seed(session):
+        session.add_all(
+            [
+                CachedConnection(cluster_id="test-cluster", org_id=0, ts_guid="c-snow", name="Snowflake Prod"),
+                CachedConnection(cluster_id="test-cluster", org_id=0, ts_guid="c-bq", name="BigQuery Sandbox"),
+            ]
+        )
+        session.commit()
+        # Deliberately named so that ordering by NAME and ordering by CONNECTION
+        # disagree — otherwise the old fall-through would pass this test.
+        for guid, name, conn in [
+            ("t1", "Aardvark table", "c-snow"),
+            ("t2", "Zebra table", "c-bq"),
+        ]:
+            obj = _make_obj(session, guid=guid, name=name, object_type="ONE_TO_ONE_LOGICAL")
+            obj.connection_guid = conn
+            session.add(obj)
+        # No connection at all — a Liveboard sits on a model, not a warehouse.
+        _make_obj(session, guid="lb", name="Mid Liveboard", object_type="LIVEBOARD")
+        session.commit()
+
+    def test_sorts_by_connection_name_not_object_name(self, session, cluster):
+        self._seed(session)
+        items, total = MetadataService.search(
+            cluster_id="test-cluster", org_id=0, sort_field="connection_name", sort_order="asc"
+        )
+        assert total == 3
+        # BigQuery Sandbox before Snowflake Prod — the reverse of name order.
+        assert [i.ts_guid for i in items][:2] == ["t2", "t1"]
+
+    def test_sorting_by_connection_keeps_objects_that_have_none(self, session, cluster):
+        """A LEFT join, not an inner one: sorting must never drop rows."""
+        self._seed(session)
+        items, total = MetadataService.search(
+            cluster_id="test-cluster", org_id=0, sort_field="connection_name", sort_order="asc"
+        )
+        assert total == 3
+        assert "lb" in {i.ts_guid for i in items}
+
+    def test_filters_by_connection_name_substring(self, session, cluster):
+        self._seed(session)
+        items, total = MetadataService.search(cluster_id="test-cluster", org_id=0, connection_name_search="snow")
+        assert total == 1
+        assert items[0].ts_guid == "t1"
+
+    def test_connection_filter_is_scoped_to_the_cluster(self, session, cluster):
+        """The join must match on cluster/org, not on GUID alone."""
+        self._seed(session)
+        other = Cluster(
+            id="other-cluster", name="Other", url="https://other.thoughtspot.cloud", username="a", auth_type="basic"
+        )
+        session.add(other)
+        session.commit()
+        stray = _make_obj(
+            session, cluster_id="other-cluster", guid="x1", name="Other table", object_type="ONE_TO_ONE_LOGICAL"
+        )
+        stray.connection_guid = "c-snow"
+        session.add(stray)
+        session.commit()
+
+        _, total = MetadataService.search(cluster_id="test-cluster", org_id=0, connection_name_search="snow")
+        assert total == 1
+        # The other cluster has no ts_connections row of its own, so the join
+        # finds nothing and the filter excludes its table.
+        _, other_total = MetadataService.search(cluster_id="other-cluster", org_id=0, connection_name_search="snow")
+        assert other_total == 0
 
 
 class TestSystemUserContent:

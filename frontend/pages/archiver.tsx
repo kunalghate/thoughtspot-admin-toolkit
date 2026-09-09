@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { IDatasource, IGetRowsParams } from "ag-grid-community";
 import { Download, X, Search, ChevronDown, Clock } from "lucide-react";
@@ -283,6 +283,72 @@ function StaleCriteriaPill(props: StaleCriteriaValues & {
   );
 }
 
+// ── Header select-all ──────────────────────────────────────────────────────────
+//
+// AG Grid's built-in `headerCheckboxSelection` does nothing under the infinite
+// row model — the grid only ever holds a few cached blocks, so it cannot answer
+// "select all 2,081". The header therefore rendered no checkbox at all, and the
+// only way to reach the whole filtered set was to tick a row and then find the
+// "Select all N matching" link inside the selection bar. Admins reasonably read
+// a header with no checkbox as a broken select-all.
+//
+// So: a real header checkbox, driven by the page's own state. Ticking it asks
+// for confirmation (it arms a bulk delete over thousands of objects) and then
+// enters select-all mode; unticking it clears. The column defs are plain `.ts`
+// and are shared with the Bulk Deleter, so the header is injected here rather
+// than added to OBJECT_COLUMNS.
+
+type HeaderMode = "none" | "some" | "all";
+type HeaderState = { mode: HeaderMode; total: number };
+
+/**
+ * A one-value store the header component subscribes to.
+ *
+ * The column defs are memoized once (`polishedColumns`) so the header component
+ * cannot close over React state — it would freeze at the first render's values.
+ * A store read through `useSyncExternalStore` keeps the checkbox live without
+ * rebuilding the column defs, which would tear down every open filter popup.
+ */
+function createHeaderStore() {
+  let state: HeaderState = { mode: "none", total: 0 };
+  const subscribers = new Set<() => void>();
+  return {
+    get: () => state,
+    set: (next: HeaderState) => {
+      if (next.mode === state.mode && next.total === state.total) return;
+      state = next;
+      for (const fn of subscribers) fn();
+    },
+    subscribe: (fn: () => void) => {
+      subscribers.add(fn);
+      return () => { subscribers.delete(fn); };
+    },
+  };
+}
+
+type HeaderStore = ReturnType<typeof createHeaderStore>;
+
+function SelectAllHeader({ store, onToggle }: { store: HeaderStore; onToggle: (mode: HeaderMode) => void }) {
+  const state = useSyncExternalStore(store.subscribe, store.get, store.get);
+  const label = state.mode === "all"
+    ? "Clear the selection"
+    : `Select all ${state.total.toLocaleString()} matching objects`;
+  return (
+    <input
+      type="checkbox"
+      data-testid="select-all-header"
+      aria-label={label}
+      title={label}
+      checked={state.mode === "all"}
+      // "Some rows checked" is a third state, and rendering it as unchecked
+      // would invite a click that silently *widens* the selection.
+      ref={(el) => { if (el) el.indeterminate = state.mode === "some"; }}
+      onChange={() => onToggle(state.mode)}
+      style={{ cursor: "pointer", width: 14, height: 14, margin: 0, accentColor: theme.color.accent }}
+    />
+  );
+}
+
 // ── Archive tab ────────────────────────────────────────────────────────────────
 
 function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onViewHistory: () => void }) {
@@ -303,6 +369,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   const [selectAllMode, setSelectAllMode] = useState(false);
   const [excludedGuids, setExcludedGuids] = useState<Set<string>>(new Set());
   const [resolving, setResolving] = useState(false);
+  // Ticking the header checkbox arms a bulk action over every matching object,
+  // so it confirms first rather than doing it on the click.
+  const [confirmSelectAll, setConfirmSelectAll] = useState(false);
+  const [headerStore] = useState(createHeaderStore);
   // handleSelectionChanged is a stable useCallback wired into the grid, so it
   // reads the mode through a ref rather than closing over stale state.
   const selectAllModeRef = useRef(false);
@@ -462,14 +532,53 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
     }
   }, []);
 
-  // Any change to the criteria, column filters or sort redefines "all
-  // matching", so a standing select-all no longer means what the admin agreed
-  // to. Drop it rather than silently re-pointing it at a different set.
+  /** Take the whole filtered set. Called from the header checkbox and the bar's link. */
+  const enterSelectAll = useCallback(() => {
+    setExcludedGuids(new Set());
+    excludedGuidsRef.current = new Set();
+    // Set the ref before ticking boxes: syncSelectAllCheckboxes and
+    // handleSelectionChanged both read it, and the state update behind it does
+    // not land until after this render.
+    selectAllModeRef.current = true;
+    setSelectAllMode(true);
+    syncSelectAllCheckboxes();
+  }, [syncSelectAllCheckboxes]);
+
+  /** Drop everything — select-all mode, its exclusions, and the ticked rows. */
+  const clearSelection = useCallback(() => {
+    selectAllModeRef.current = false;
+    excludedGuidsRef.current = new Set();
+    setSelectAllMode(false);
+    setExcludedGuids(new Set());
+    gridRef.current?.api?.deselectAll();
+  }, []);
+
+  // Any change to the criteria redefines "all matching", so a standing
+  // select-all no longer means what the admin agreed to. Drop it rather than
+  // silently re-pointing it at a different set. Column filters are handled in
+  // onFilterChanged — they live in a ref, so they never reach this dependency.
   useEffect(() => {
     selectAllModeRef.current = false;
     setSelectAllMode(false);
     setExcludedGuids(new Set());
   }, [buildFilters]);
+
+  // Keep the header checkbox in step with the selection.
+  useEffect(() => {
+    headerStore.set({
+      mode: selectAllMode ? "all" : selectedGuids.size > 0 ? "some" : "none",
+      total: total ?? previewTotal ?? 0,
+    });
+  }, [headerStore, selectAllMode, selectedGuids.size, total, previewTotal]);
+
+  // Read through a ref so the injected header component can hold ONE stable
+  // callback for the life of the grid.
+  const headerToggleRef = useRef<(mode: HeaderMode) => void>(() => {});
+  headerToggleRef.current = (mode: HeaderMode) => {
+    if (mode === "all") clearSelection();
+    else setConfirmSelectAll(true);
+  };
+  const handleHeaderToggle = useCallback((mode: HeaderMode) => headerToggleRef.current(mode), []);
 
   useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
 
@@ -696,7 +805,9 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
     setDryRunOpen(false);
     setPendingDeleteGuids([]);
     if (reloadNeeded) {
-      gridRef.current?.api.deselectAll();
+      // Objects just went away, so a standing select-all is stale too — clear
+      // the mode, not only the ticks.
+      clearSelection();
       setSelectedGuids(new Set());
       reloadGrid();
     }
@@ -706,6 +817,14 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   // Inject JSX cell renderers — columns.ts is plain .ts so can't use JSX there
   const polishedColumns = useMemo(() =>
     ARCHIVER_COLUMNS.map((col: any) => {
+      if (col.colId === "checkbox") {
+        return {
+          ...col,
+          headerComponent: () => (
+            <SelectAllHeader store={headerStore} onToggle={handleHeaderToggle} />
+          ),
+        };
+      }
       if (col.field === "object_type") {
         return {
           ...col,
@@ -980,16 +1099,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           {!selectAllMode && total != null && total > selectedGuids.size && (
             <button
               data-testid="select-all-matching"
-              onClick={() => {
-                setExcludedGuids(new Set());
-                excludedGuidsRef.current = new Set();
-                // Set the ref before ticking boxes: syncSelectAllCheckboxes and
-                // handleSelectionChanged both read it, and the state update
-                // behind it does not land until after this render.
-                selectAllModeRef.current = true;
-                setSelectAllMode(true);
-                syncSelectAllCheckboxes();
-              }}
+              onClick={() => setConfirmSelectAll(true)}
               style={{
                 padding: 0, border: "none", background: "none", cursor: "pointer",
                 fontSize: 12, fontWeight: 600, color: theme.color.accent2,
@@ -1122,12 +1232,7 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           <div style={{ flex: 1 }} />
 
           <button
-            onClick={() => {
-              selectAllModeRef.current = false;
-              setSelectAllMode(false);
-              setExcludedGuids(new Set());
-              gridRef.current?.api.deselectAll();
-            }}
+            onClick={clearSelection}
             style={{
               display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
               borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
@@ -1148,8 +1253,8 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         }}>
           <span style={{ fontSize: 13, color: theme.color.textMuted }}>☑</span>
           <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
-            Check rows to select objects — or check one and then{" "}
-            <strong style={{ color: theme.color.accent2 }}>Select all N matching</strong> to take the whole filtered set. Then{" "}
+            Check rows to select objects — or tick the{" "}
+            <strong style={{ color: theme.color.accent2 }}>header checkbox</strong> to take the whole filtered set. Then{" "}
             <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them,{" "}
             <strong style={{ color: theme.color.accent2 }}>Export TML</strong> to back them up without deleting, or{" "}
             <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
@@ -1178,6 +1283,14 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           onSortChanged={handleSortChanged}
           onFilterChanged={() => {
             colFiltersRef.current = gridRef.current?.api?.getFilterModel() ?? {};
+            // A column filter redefines "all matching" exactly as the toolbar
+            // criteria do, but it lives in a ref, so the effect above never
+            // sees it. Without this a standing select-all survived the change
+            // and silently re-pointed at a different set: measured on se-demo,
+            // "select all 2,081" → filter Owner to nothing → clear the filter
+            // left "ALL MATCHING · 2,081 selected" over objects the admin had
+            // never reviewed, still carrying an exclusion from the old set.
+            clearSelection();
             gridRef.current?.api?.purgeInfiniteCache();
           }}
           onSelectionChanged={handleSelectionChanged}
@@ -1202,6 +1315,15 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         />
       )}
 
+      {/* Select-all confirmation */}
+      {confirmSelectAll && (
+        <ConfirmSelectAllModal
+          count={total ?? previewTotal ?? 0}
+          onCancel={() => setConfirmSelectAll(false)}
+          onConfirm={() => { setConfirmSelectAll(false); enterSelectAll(); }}
+        />
+      )}
+
       {/* Tag/untag confirmation */}
       {pendingTag && (
         <ConfirmTagModal
@@ -1214,6 +1336,63 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         />
       )}
     </div>
+  );
+}
+
+/**
+ * "Are you sure?" for the header checkbox.
+ *
+ * Nothing is written yet — this only arms the selection — but the next click
+ * after it can be "Delete selected", and the whole point of the control is that
+ * it reaches far more objects than the admin can see. Saying the number out
+ * loud once is cheaper than discovering it in a dry-run.
+ */
+function ConfirmSelectAllModal({ count, onCancel, onConfirm }: {
+  count: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  const plural = count !== 1 ? "s" : "";
+  return (
+    <>
+      <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }} />
+      <div role="dialog" aria-modal="true" data-testid="confirm-select-all" style={{
+        position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+        width: 400, background: theme.color.surface, borderRadius: 10, zIndex: 301,
+        boxShadow: theme.shadow.lg, padding: 20, fontFamily: theme.font.sans,
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: theme.color.textPrimary, marginBottom: 8 }}>
+          Select everything matching?
+        </div>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: theme.color.textSecondary, lineHeight: 1.5 }}>
+          This selects all <strong>{count.toLocaleString()} object{plural}</strong> matching the current
+          filters — not just the rows on screen. You can untick individual rows afterwards, and every
+          action still confirms before it changes anything.
+        </p>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onCancel} style={{
+            padding: "7px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+            border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+            color: theme.color.textMuted, fontFamily: theme.font.sans,
+          }}>
+            Cancel
+          </button>
+          <button autoFocus data-testid="confirm-select-all-ok" onClick={onConfirm} style={{
+            padding: "7px 14px", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer",
+            border: "none", background: theme.gradient.accent, color: theme.color.onAccent,
+            fontFamily: theme.font.sans,
+          }}>
+            Select all {count.toLocaleString()}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

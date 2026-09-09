@@ -464,3 +464,69 @@ class TestMetadataTransfer:
             json={"cluster_id": "c1", "org_id": 0, "to_user_identifier": "carol", "object_ids": []},
         )
         assert r.status_code == 422
+
+
+class TestConnectionLabel:
+    """
+    The Connection column must show a NAME or nothing — never a GUID.
+
+    It used to fall back to `connection_guid` when the connections cache could
+    not resolve it, on the reasoning that a GUID beats a blank cell. Under a
+    header reading "Connection" a 36-character hex string reads as a name that
+    happens to be unreadable, not as "unresolved". The GUID still travels on the
+    row so the UI can surface it on hover.
+    """
+
+    @staticmethod
+    def _seed_tables(engine):
+        from ts_admin.models.cache.ts_connection import CachedConnection
+
+        now = datetime.now(tz=timezone.utc)
+        with Session(engine) as session:
+            session.add(CachedConnection(cluster_id="c1", org_id=0, ts_guid="conn-known", name="Snowflake Prod"))
+            for guid, conn, otype in [
+                ("t-known", "conn-known", "ONE_TO_ONE_LOGICAL"),
+                ("t-stale", "conn-not-cached", "ONE_TO_ONE_LOGICAL"),
+                ("t-studio", "conn-analyst-studio", "DATASET"),
+            ]:
+                session.add(
+                    CachedMetadata(
+                        cluster_id="c1",
+                        org_id=0,
+                        ts_guid=guid,
+                        name=f"Table {guid}",
+                        object_type=otype,
+                        owner_guid="u1",
+                        owner_name="Alice",
+                        tag_names=json.dumps([]),
+                        connection_guid=conn,
+                        synced_at=now,
+                    )
+                )
+            session.commit()
+
+    def _rows(self, client, in_memory_db):
+        self._seed_tables(in_memory_db)
+        r = client.get("/api/v1/metadata", params={"cluster_id": "c1", "org_id": 0, "page_size": 100})
+        assert r.status_code == 200
+        return {i["ts_guid"]: i for i in r.json()["items"]}
+
+    def test_resolved_connection_shows_its_name(self, client, seeded, in_memory_db):
+        rows = self._rows(client, in_memory_db)
+        assert rows["t-known"]["connection_name"] == "Snowflake Prod"
+
+    def test_unresolved_connection_is_blank_not_a_guid(self, client, seeded, in_memory_db):
+        rows = self._rows(client, in_memory_db)
+        assert rows["t-stale"]["connection_name"] == ""
+        # …but the GUID is still on the row, for the cell's tooltip.
+        assert rows["t-stale"]["connection_guid"] == "conn-not-cached"
+
+    def test_analyst_studio_is_named_rather_than_left_blank(self, client, seeded, in_memory_db):
+        """Its source is not in /connection/search, but DATASET already means it."""
+        rows = self._rows(client, in_memory_db)
+        assert rows["t-studio"]["connection_name"] == "Analyst Studio"
+
+    def test_objects_with_no_connection_stay_blank(self, client, seeded, in_memory_db):
+        rows = self._rows(client, in_memory_db)
+        assert rows["lb-1"]["connection_name"] == ""
+        assert rows["lb-1"]["connection_guid"] == ""

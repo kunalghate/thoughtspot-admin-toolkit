@@ -9,6 +9,7 @@ export type SerializedFilters = {
   search?: string;
   types?: string[];
   owner_name_search?: string;
+  connection_name_search?: string;
   tag_search?: string;
   days_unused_min?: number;
   days_unused_max?: number;
@@ -99,6 +100,12 @@ export function serializeFilterModel(model: Record<string, any>): SerializedFilt
     if (field === "owner_name") {
       const v = (entry.filter ?? "").toString().trim();
       if (v) out.owner_name_search = v;
+      continue;
+    }
+
+    if (field === "connection_name") {
+      const v = (entry.filter ?? "").toString().trim();
+      if (v) out.connection_name_search = v;
       continue;
     }
 

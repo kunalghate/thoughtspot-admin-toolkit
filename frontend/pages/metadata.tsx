@@ -83,6 +83,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
         connection_guid:     connectionGuid,
         search:              f.search ?? toolbarSearch,
         owner_name_search:   f.owner_name_search,
+        connection_name_search: f.connection_name_search,
         tag_search:          f.tag_search,
         views_min:           f.views_min,
         views_max:           f.views_max,

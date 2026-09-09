@@ -153,11 +153,17 @@ class TestMetadataConnectionColumns:
         assert by_guid["t-1"]["db_schema"] == "PUBLIC"
         assert by_guid["t-1"]["db_table"] == "T-1"
 
-    def test_falls_back_to_the_guid_for_an_uncached_connection(self, client, seeded):
-        """Analyst Studio and DEFAULT are not returned by /connection/search."""
+    def test_never_shows_a_guid_in_place_of_a_connection_name(self, client, seeded):
+        """
+        An uncached connection leaves the NAME blank — it does not fall back to
+        the GUID, which under a "Connection" header reads as an unreadable name
+        rather than as "unresolved". The GUID is still on the row for the
+        cell's tooltip. See _connection_label in ts_admin/api/metadata.py.
+        """
         r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0")
         by_guid = {o["ts_guid"]: o for o in r.json()["items"]}
-        assert by_guid["t-orphan"]["connection_name"] == "conn-unknown"
+        assert by_guid["t-orphan"]["connection_name"] == ""
+        assert by_guid["t-orphan"]["connection_guid"] == "conn-unknown"
 
     def test_filters_by_connection(self, client, seeded):
         r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0&connection_guid=conn-busy")

@@ -54,6 +54,36 @@ def _resolve_cluster_id(cluster_id: str | None) -> str:
 # ── Response schemas ───────────────────────────────────────────────────────────
 
 
+def _connection_label(obj: CachedMetadata, connection_names: dict[str, str] | None) -> str:
+    """
+    A connection's DISPLAY NAME, never its GUID.
+
+    This used to fall back to the raw `connection_guid` on the reasoning that a
+    GUID beats a blank cell. It does not: the column is headed "Connection" and
+    an admin scanning it reads a 36-character hex string as a name that happens
+    to be unreadable, not as "we could not resolve this". The GUID still travels
+    on the row (`connection_guid`), so the UI can surface it on hover.
+
+    Two things leave a table unresolved, and only one is a real gap:
+
+      * A stale connection cache. Measured on se-demo, 10 of the 13 unresolved
+        GUIDs were connections /connection/search returns today — the cache was
+        simply older than the metadata. A connections re-sync fixes those.
+      * Sources /connection/search never returns at all: the Analyst Studio
+        (RDBMS_MODE) source and ThoughtSpot's built-in default. Analyst Studio
+        is named here because the sync already identifies it — that is what the
+        DATASET object type means (see _is_analyst_studio_dataset).
+    """
+    if not obj.connection_guid:
+        return ""
+    resolved = (connection_names or {}).get(obj.connection_guid, "")
+    if resolved:
+        return resolved
+    if obj.object_type == "DATASET":
+        return "Analyst Studio"
+    return ""
+
+
 class MetadataObjectResponse(BaseModel):
     ts_guid: str
     name: str
@@ -94,12 +124,7 @@ class MetadataObjectResponse(BaseModel):
             last_accessed_at=obj.last_accessed_at.isoformat() if obj.last_accessed_at else None,
             view_count=obj.view_count,
             connection_guid=obj.connection_guid,
-            # Falls back to the GUID when the connection cache is stale or the
-            # connection is one /connection/search does not return (Analyst
-            # Studio, and the built-in DEFAULT source). Better a GUID the admin
-            # can search for than a blank cell.
-            connection_name=(connection_names or {}).get(obj.connection_guid, "")
-            or (obj.connection_guid if obj.connection_guid else ""),
+            connection_name=_connection_label(obj, connection_names),
             db_name=obj.db_name,
             db_schema=obj.db_schema,
             db_table=obj.db_table,
@@ -168,6 +193,9 @@ def list_metadata(
     search: str | None = Query(default=None, description="Substring search on name"),
     stale_days: int | None = Query(default=None, ge=1, description="Only objects unused for N+ days"),
     owner_name_search: str | None = Query(default=None, description="Substring match on owner display name"),
+    connection_name_search: str | None = Query(
+        default=None, description="Substring match on the data connection's display name"
+    ),
     tag_search: str | None = Query(default=None, description="Substring match on tag names"),
     views_min: int | None = Query(default=None, ge=0),
     views_max: int | None = Query(default=None, ge=0),
@@ -203,6 +231,7 @@ def list_metadata(
         search=search,
         stale_days=stale_days,
         owner_name_search=owner_name_search,
+        connection_name_search=connection_name_search,
         tag_search=tag_search,
         views_min=views_min,
         views_max=views_max,
