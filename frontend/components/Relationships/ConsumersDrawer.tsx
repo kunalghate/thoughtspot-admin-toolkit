@@ -66,8 +66,9 @@ export function ConsumersDrawer({
       aria-modal="true"
       style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", justifyContent: "flex-end" }}
     >
-      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: theme.color.overlay }} />
+      <div onClick={onClose} className="scrim" style={{ position: "absolute", inset: 0, background: theme.color.overlay }} />
       <div
+        className="drawer-panel"
         style={{
           position: "relative", width: 400, maxWidth: "90vw", height: "100%",
           background: theme.color.surface, borderLeft: `1px solid ${theme.color.border}`,

@@ -381,12 +381,12 @@ export function Modal({
   title: string;
 }) {
   return (
-    <div style={{
+    <div className="scrim" style={{
       position: "fixed", inset: 0, background: theme.color.overlay,
       display: "flex", alignItems: "center", justifyContent: "center",
       zIndex: 50, fontFamily: theme.font.sans,
     }} onClick={onClose}>
-      <div style={{
+      <div className="modal-panel" style={{
         width: 600, maxHeight: "85vh", overflowY: "auto",
         background: theme.color.surface, border: `1px solid ${theme.color.border}`,
         borderRadius: 10, padding: 24,

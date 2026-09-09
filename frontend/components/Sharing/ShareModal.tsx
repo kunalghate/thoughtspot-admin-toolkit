@@ -94,6 +94,7 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
     <>
       {/* Backdrop */}
       <div
+        className="scrim"
         style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }}
         onClick={busy ? undefined : onClose}
       />
@@ -101,6 +102,7 @@ export function ShareModal({ objectGuids, clusterId, orgId, onClose }: Props) {
       {/* Panel */}
       <div
         data-testid="share-modal"
+        className="modal-panel-fixed"
         style={{
           position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
           width: 720, maxHeight: "85vh", background: theme.color.surface, borderRadius: 10, zIndex: 301,

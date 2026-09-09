@@ -40,12 +40,25 @@ const COLORS: Record<ToastKind, { bg: string; border: string; fg: string; accent
   info: { bg: theme.color.violetSoft, border: theme.color.violetBorder, fg: theme.color.textPrimary, accent: theme.color.accent2 },
 };
 
+/** How long the exit animation runs before the toast is unmounted. Must match
+ *  the `toastOut` keyframe duration in theme.css. */
+const EXIT_MS = 140;
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  /** Toasts that are playing their exit animation but are still mounted. */
+  const [exiting, setExiting] = useState<number[]>([]);
   const nextId = useRef(1);
 
+  /* A toast slides in but used to vanish on a hard unmount — enter and exit
+   * should travel the same path. Mark it exiting, let the animation play, then
+   * drop it. */
   const dismiss = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
+    setExiting((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+      setExiting((prev) => prev.filter((x) => x !== id));
+    }, EXIT_MS);
   }, []);
 
   const push = useCallback(
@@ -90,7 +103,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           return (
             <div
               key={t.id}
-              role="status"
+              /* An error interrupts; a success or an info note does not. */
+              role={t.kind === "error" ? "alert" : "status"}
               style={{
                 background: c.bg,
                 border: `1px solid ${c.border}`,
@@ -101,7 +115,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 color: c.fg,
                 fontSize: 13,
                 lineHeight: 1.5,
-                animation: "popoverIn 160ms ease-out",
+                animation: exiting.includes(t.id)
+                  ? `toastOut ${EXIT_MS}ms ease-in forwards`
+                  : "popoverIn 160ms ease-out",
               }}
             >
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>

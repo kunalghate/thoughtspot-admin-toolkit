@@ -252,6 +252,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
     <>
       {/* Backdrop */}
       <div
+        className="scrim"
         style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }}
         onClick={state === "polling" || state === "running" ? undefined : () => onClose(state === "complete")}
       />
@@ -260,6 +261,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
       <div
         data-testid="dryrun-modal"
         data-state={state}
+        className="modal-panel-fixed"
         style={{
         position: "fixed", top: "50%", left: "50%",
         transform: "translate(-50%, -50%)",
@@ -318,7 +320,7 @@ export function DryRunModal({ api, objectIds, clusterId, orgId, onClose, onViewH
                     flex: 1, padding: "12px 14px", borderRadius: 8,
                     background: theme.color.surface, border: `1px solid ${theme.color.border}`, textAlign: "center",
                   }}>
-                    <div style={{ fontSize: 22, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.mono }}>
+                    <div style={{ fontSize: 22, fontWeight: 600, color: theme.color.textPrimary, fontFamily: theme.font.mono, letterSpacing: "-0.02em" }}>
                       {value.toLocaleString()}
                     </div>
                     <div style={{ fontSize: 11, color: theme.color.textMuted, fontFamily: theme.font.sans, marginTop: 2 }}>
