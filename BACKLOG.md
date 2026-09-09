@@ -174,7 +174,7 @@ Two bug-hunt passes graded the three grid pages' stale-response guards "clean" w
 
 ### M14 — Blanket except in batch loops: total failure reports PARTIAL
 
-`P2` · **open** · protected: no
+`P2` · **in-progress** · protected: no
 
 A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete
 
