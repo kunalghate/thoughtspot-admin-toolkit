@@ -55,6 +55,12 @@ class CachedMetadata(SQLModel, table=True):
     db_name: str = ""
     db_schema: str = ""
     db_table: str = ""
+    # For Answers/Liveboards, `connection_guid` above is DERIVED (not read from
+    # the metadata detail payload) by walking the lineage graph's USES/CONNECTS
+    # edges — see lineage_service.derive_content_connections. This is True when
+    # that walk found more than one distinct connection underneath the object,
+    # in which case connection_guid names just one of them.
+    connection_is_mixed: bool = False
     synced_at: datetime | None = None
 
     def get_tag_names(self) -> list[str]:

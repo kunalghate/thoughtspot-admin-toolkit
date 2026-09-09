@@ -119,10 +119,16 @@ export interface MetadataObject {
   modified_at: string | null;
   last_accessed_at: string | null;
   view_count: number;
-  /** Data connection this table sits on. Empty for non-table objects. */
+  /**
+   * Data connection this object sits on. For Answers/Liveboards this is
+   * DERIVED from the lineage graph (a Relationships/dependencies sync must
+   * have run) rather than read off the object itself.
+   */
   connection_guid: string;
   /** Resolved connection name, falling back to the GUID. */
   connection_name: string;
+  /** True when the object's lineage spans more than one connection. */
+  connection_is_mixed: boolean;
   db_name: string;
   db_schema: string;
   db_table: string;

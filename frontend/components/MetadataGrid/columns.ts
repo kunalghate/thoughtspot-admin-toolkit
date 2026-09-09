@@ -33,6 +33,28 @@ function TypeChip({ value }: { value: string }) {
   );
 }
 
+function ConnectionCell({ value, mixed }: { value: string; mixed?: boolean }) {
+  if (!value) return "—";
+  if (!mixed) return value;
+  return React.createElement(
+    "span",
+    { style: { display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 } },
+    React.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis" } }, value),
+    React.createElement(
+      "span",
+      {
+        style: {
+          display: "inline-block", flexShrink: 0, lineHeight: "16px",
+          padding: "0 6px", borderRadius: 20, fontSize: 10, fontWeight: 600,
+          background: theme.color.warnSoft, color: theme.color.warn, fontFamily: theme.font.sans,
+          whiteSpace: "nowrap",
+        },
+      },
+      "Mixed",
+    ),
+  );
+}
+
 export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
   // ── Checkbox (pinned) ────────────────────────────────────────────────────
   // Selection is checkbox-only (the page sets suppressRowClickSelection), so
@@ -68,10 +90,13 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
   },
   // ── Where a table actually comes from ────────────────────────────────────
   // ThoughtSpot's own UI makes this genuinely hard to find, which is why it is
-  // here at all. Every LOGICAL_TABLE subtype has one — tables, models,
-  // worksheets, SQL views, CSV uploads. Liveboards and Answers sit on models
-  // rather than on a connection, so their cells read "—" rather than sitting
-  // empty and looking like missing data.
+  // here at all. Every LOGICAL_TABLE subtype gets its connection straight from
+  // the metadata sync. Liveboards and Answers sit on models rather than on a
+  // connection directly, so their `connection_guid` is instead DERIVED by
+  // walking the lineage graph (lineage_service.derive_content_connections) —
+  // which needs a Relationships (dependencies) sync to have run at least once.
+  // An object reachable from more than one connection shows one of them plus
+  // a "Mixed" badge rather than silently picking one.
   //
   // Both the filter and the sort are served by a join on ts_connections
   // (metadata_service.search) — the row itself stores only the GUID, so neither
@@ -83,19 +108,26 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     width: 180,
     filter: "agTextColumnFilter",
     filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
-    valueFormatter: (p) => (isDataObject(p.data?.object_type) ? (p.value || "—") : "—"),
+    cellRenderer: (p: { value: string; data?: MetadataObject }) =>
+      ConnectionCell({ value: p.value, mixed: p.data?.connection_is_mixed }),
     // The cell shows a name or nothing — never a GUID, which reads as an
     // unreadable name rather than as "unresolved". The GUID is still on the
     // row, so hovering an unresolved cell recovers it (and says what to do).
     tooltipValueGetter: (p) => {
-      if (!isDataObject(p.data?.object_type)) return "Liveboards and Answers sit on a model, not on a connection";
-      if (p.value) return p.value as string;
-      const guid = p.data?.connection_guid;
-      if (!guid) return "No connection recorded — re-sync metadata to fill this in";
-      // A metadata sync refreshes the connection cache too, so a GUID still
-      // unresolved after one is a source /connection/search does not return
-      // (Analyst Studio, CSV uploads) rather than a cache that is simply old.
-      return `Connection ${guid} is not one ThoughtSpot lists — its source has no connection entry`;
+      if (p.value) {
+        return p.data?.connection_is_mixed
+          ? `${p.value} — and at least one other connection (this object's lineage spans more than one)`
+          : (p.value as string);
+      }
+      if (isDataObject(p.data?.object_type)) {
+        const guid = p.data?.connection_guid;
+        if (!guid) return "No connection recorded — re-sync metadata to fill this in";
+        // A metadata sync refreshes the connection cache too, so a GUID still
+        // unresolved after one is a source /connection/search does not return
+        // (Analyst Studio, CSV uploads) rather than a cache that is simply old.
+        return `Connection ${guid} is not one ThoughtSpot lists — its source has no connection entry`;
+      }
+      return "No connection resolved — run a Relationships (dependencies) sync to derive this from its lineage";
     },
   },
   {

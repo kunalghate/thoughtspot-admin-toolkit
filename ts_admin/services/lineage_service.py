@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timezone
 
 from sqlmodel import col, func, select
@@ -966,6 +967,133 @@ def _persist_column_map(
         "lb_uses": len(lb_uses_edges),
         "usage": len(usage_rows),
     }
+
+
+# ── BUILD: content connection backfill (Answers/Liveboards) ─────────────────────
+#
+# The metadata sync's Connection column is populated straight from the REST
+# detail payload, which only ONE_TO_ONE_LOGICAL tables carry (see the
+# ts_metadata model docstring and sync_service._sync_metadata). Answers and
+# Liveboards sit on worksheets/models, never directly on a connection, so they
+# are cached with an empty connection_guid no matter how many times metadata is
+# re-synced — that is by design, not a bug in the metadata sync.
+#
+# What they DO have is a path through the lineage graph this module already
+# builds: ANSWER/LIVEBOARD --USES--> ... --USES--> DB_TABLE --CONNECTS-->
+# CONNECTION. This walks that graph and writes a derived connection_guid back
+# onto ts_metadata for exactly those two object kinds, so the Metadata grid can
+# show it without the admin ever visiting the Relationship Visualizer.
+
+
+def _bfs_connections(
+    start_guid: str,
+    uses_adj: dict[str, list[str]],
+    connects: dict[str, tuple[str, str]],
+    cap: int,
+) -> dict[str, str]:
+    """
+    Forward BFS over USES edges from `start_guid`, collecting every distinct
+    connection reachable via a CONNECTS edge on any node visited along the way.
+    Returns {connection_guid: connection_name}. `cap` bounds the visited set —
+    same safety margin as the downstream-impact BFS (IMPACT_BFS_CAP) — so a
+    pathological graph (a cycle, or a liveboard with hundreds of models) can't
+    run away.
+    """
+    seen = {start_guid}
+    queue = deque([start_guid])
+    found: dict[str, str] = {}
+    while queue and len(seen) <= cap:
+        node = queue.popleft()
+        conn = connects.get(node)
+        if conn is not None:
+            conn_guid, conn_name = conn
+            found.setdefault(conn_guid, conn_name)
+        for nxt in uses_adj.get(node, ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                queue.append(nxt)
+    return found
+
+
+def derive_content_connections(*, cluster_id: str, org_id: int) -> int:
+    """
+    Backfill ts_metadata.connection_guid for Answers/Liveboards from the lineage
+    graph already sitting in ts_dependencies. Read-only against ThoughtSpot — no
+    API calls — so it is cheap to run after every dependencies sync.
+
+    Best-effort against whatever the graph currently holds: it does not require
+    THIS round's column-map (TML) pass to have succeeded, only for CONNECTS
+    edges to exist from any prior successful build. An object with no USES path
+    to a connected table keeps an empty connection_guid — a legitimate "no
+    connection" case (e.g. the lineage graph was never built, or the object
+    genuinely has none), not something this function can fix.
+
+    An object reachable from more than one connection gets one written as its
+    connection_guid (the alphabetically-first by name, for a stable choice
+    across runs) with connection_is_mixed=True, so the UI can say "and others"
+    instead of silently presenting one connection as the whole truth.
+
+    Returns the number of ts_metadata rows changed.
+    """
+    with get_session() as session:
+        content_rows = session.exec(
+            select(
+                CachedMetadata.id,
+                CachedMetadata.ts_guid,
+                CachedMetadata.object_type,
+                CachedMetadata.connection_guid,
+                CachedMetadata.connection_is_mixed,
+            ).where(
+                CachedMetadata.cluster_id == cluster_id,
+                CachedMetadata.org_id == org_id,
+            )
+        ).all()
+        edge_rows = session.exec(
+            select(
+                CachedDependency.source_guid,
+                CachedDependency.target_guid,
+                CachedDependency.target_name,
+                CachedDependency.relation,
+            ).where(
+                CachedDependency.cluster_id == cluster_id,
+                CachedDependency.org_id == org_id,
+                col(CachedDependency.relation).in_(("USES", "CONNECTS")),
+            )
+        ).all()
+
+    content_rows = [r for r in content_rows if _node_type_strict(r[2]) in ("ANSWER", "LIVEBOARD")]
+    if not content_rows:
+        return 0
+
+    uses_adj: dict[str, list[str]] = {}
+    connects: dict[str, tuple[str, str]] = {}
+    for source, target, target_name, relation in edge_rows:
+        if relation == "USES":
+            uses_adj.setdefault(source, []).append(target)
+        else:  # CONNECTS
+            connects[source] = (target, target_name)
+
+    updated = 0
+    with get_session() as session:
+        for chunk in _chunks(content_rows, 500):
+            for row_id, ts_guid, _object_type, prior_guid, prior_mixed in chunk:
+                found = _bfs_connections(ts_guid, uses_adj, connects, IMPACT_BFS_CAP)
+                if found:
+                    primary_guid = min(found.items(), key=lambda kv: (kv[1].lower(), kv[0]))[0]
+                    is_mixed = len(found) > 1
+                else:
+                    primary_guid, is_mixed = "", False
+                if primary_guid == prior_guid and is_mixed == prior_mixed:
+                    continue
+                row = session.get(CachedMetadata, row_id)
+                if row is None:
+                    continue
+                row.connection_guid = primary_guid
+                row.connection_is_mixed = is_mixed
+                session.add(row)
+                updated += 1
+            session.commit()
+    return updated
 
 
 # ── BUILD: Phase 3 saved-answer column usage (lazy / opt-in) + debug ────────────

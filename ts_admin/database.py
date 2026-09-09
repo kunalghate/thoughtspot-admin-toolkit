@@ -144,6 +144,7 @@ _BACKFILL_COLUMNS: dict[str, list[tuple[str, str, str | None]]] = {
         ("db_name", "VARCHAR NOT NULL DEFAULT ''", None),
         ("db_schema", "VARCHAR NOT NULL DEFAULT ''", None),
         ("db_table", "VARCHAR NOT NULL DEFAULT ''", None),
+        ("connection_is_mixed", "BOOLEAN NOT NULL DEFAULT 0", None),
     ],
     "archive_records": [
         (
