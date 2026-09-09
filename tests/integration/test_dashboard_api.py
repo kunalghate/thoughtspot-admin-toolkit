@@ -950,15 +950,23 @@ class TestShareFeedStatus:
         assert entry["status"] == "SUCCESS"
         assert entry["label"] == "Updated sharing on 2 objects for 1 principal"
 
-    def test_a_failed_share_job_is_not_success_even_when_every_row_says_success(self, client, seeded, in_memory_db):
+    def test_a_failed_share_job_is_failed_even_when_every_row_says_success(self, client, seeded, in_memory_db):
         """
-        Round-4 FIX A. `ShareRecord.status` is optimistic: the single writer at
+        Round-5 FIX 1. This assertion was `== "PARTIAL"` in round 4; it is
+        CORRECTED to `== "FAILED"` here — the right answer, not a relaxed one.
+        M14's acceptance criteria say verbatim that a job in which zero items
+        succeeded reports FAILED, never PARTIAL, and round 4 let `Job.status`
+        veto SUCCESS without letting it assert FAILED, so this session fell
+        straight through to the PARTIAL limb — which emits the SAME
+        "Updated sharing on N objects" f-string as SUCCESS.
+
+        `ShareRecord.status` is optimistic: the single writer at
         `bulk_sharing_service.py:891` commits `"FAILED" if chunk_error else
         "SUCCESS"` per chunk BEFORE verification, and `_verify_share`
-        (`:920-923`) adjusts only the JOB when ThoughtSpot's read-back says the
-        grant did not land. So this exact shape — terminal FAILED job, 100%
-        SUCCESS rows, `failed == 0` — is reachable, and used to render a green
-        "Updated sharing on 2 objects".
+        (`bulk_sharing_service.py:926-927`) adjusts only the JOB when
+        ThoughtSpot's read-back says the grant did not land. So this exact
+        shape — terminal FAILED job, 100% SUCCESS rows, `failed == 0` — is
+        reachable, and the label must not affirm an update that never happened.
         """
         with Session(in_memory_db) as session:
             session.add(Job(id="share-unverified", cluster_id="c1", job_type="bulk_share", status="FAILED"))
@@ -967,11 +975,30 @@ class TestShareFeedStatus:
             session.commit()
         entry = self._entry(client)
         assert entry["status"] != "SUCCESS"
-        assert entry["status"] == "PARTIAL"
+        assert entry["status"] == "FAILED"
+        assert "Updated sharing on" not in entry["label"], entry["label"]
+
+    def test_a_failed_share_job_with_some_failed_rows_is_failed_not_partial(self, client, seeded, in_memory_db):
+        """
+        The second reachable instance of the same defect: some chunks errored
+        (so `failed > 0`) AND the read-back landed nothing, so
+        `bulk_sharing_service.py:926-927` overrides the optimistic PARTIAL to
+        FAILED. `succeeded > 0 and failed > 0` misses the SUCCESS limb on the
+        row counts alone, so only the explicit `Job.status == "FAILED"` limb
+        keeps this out of PARTIAL.
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="share-mixed", cluster_id="c1", job_type="bulk_share", status="FAILED"))
+            session.add(self._share("share-mixed", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-mixed", "x2", "g1", "FAILED"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "FAILED"
+        assert "Updated sharing on" not in entry["label"], entry["label"]
 
     def test_a_partial_share_job_is_not_success_even_when_every_row_says_success(self, client, seeded, in_memory_db):
         """
-        The skipped-GUID / user-cancel shape: `bulk_sharing_service.py:915`
+        The skipped-GUID / user-cancel shape: `bulk_sharing_service.py:919-920`
         marks the job PARTIAL for GUIDs that were never attempted, and those
         GUIDs get NO `ShareRecord` row at all — so the rows are unanimously
         SUCCESS while the request was only partly served.
@@ -987,10 +1014,17 @@ class TestShareFeedStatus:
 
     def test_a_share_session_with_no_job_row_at_all_is_still_success(self, client, seeded, in_memory_db):
         """
-        Non-vacuity for the two tests above: the terminal-status gate must not
-        collapse the LEFT OUTER JOIN case. With the `Job` row absent,
-        `row.status` is NULL and an all-SUCCESS session must stay SUCCESS —
-        narrowing the guard to `("COMPLETE",)` turns this red.
+        This pins FORWARD-INSURANCE, not a reachable production state, and it
+        is NOT the non-vacuity guard for the FAILED limb (the COMPLETE-job test
+        above is). NO writer produces a missing `Job` row today: nothing in
+        `ts_admin/` deletes one, `api/jobs.py`'s only mutating route sets
+        `is_cancelled`, `database._REBUILDABLE_SENTINELS` does not list `jobs`,
+        and `config.delete_cluster` drops only the `Cluster` row. The LEFT
+        OUTER JOIN can still legitimately yield NULL the day a job-retention or
+        pruning feature exists, and the `None` disjunct fails safe there — with
+        the `Job` row absent, `row.status` is NULL and an all-SUCCESS session
+        must stay SUCCESS. Narrowing the guard to `("COMPLETE",)` turns this
+        red, which is what keeps the disjunct load-bearing.
         """
         with Session(in_memory_db) as session:
             session.add(self._share("share-orphan", "x1", "g1", "SUCCESS"))

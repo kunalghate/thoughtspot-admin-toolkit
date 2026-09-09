@@ -558,18 +558,38 @@ class DashboardService:
                 # `"FAILED" if chunk_error else "SUCCESS"` per chunk BEFORE any
                 # verification, and `_verify_share` — which runs after every row
                 # is committed — only adjusts the JOB
-                # (`bulk_sharing_service.py:920-923`), never rewriting the rows.
+                # (`bulk_sharing_service.py:926-927`), never rewriting the rows.
                 # So a job ThoughtSpot itself confirmed did not land is FAILED
                 # with 100% SUCCESS rows and `failed == 0`. Same for a PARTIAL
                 # from skipped GUIDs (which produce no ShareRecord at all), a
                 # user cancel, and `_recover_stuck_jobs` after a restart. Rows
                 # alone cannot be trusted; the job row can.
                 #
-                # `row.status is None` is the LEFT OUTER JOIN case — the Job row
-                # is gone (pruned/pre-dating the join) — and MUST stay in the
-                # SUCCESS limb, or every job-less session degrades to PARTIAL.
+                # `row.status is None` is the LEFT OUTER JOIN case. NO writer
+                # produces a missing `Job` row today: nothing in `ts_admin/`
+                # ever deletes one (no `session.delete(job)`, no
+                # `DELETE FROM jobs`; `api/jobs.py`'s only mutating route sets
+                # `is_cancelled`; `database._REBUILDABLE_SENTINELS` does not
+                # list `jobs`; `config.delete_cluster` drops only the `Cluster`
+                # row). So this disjunct is FORWARD-INSURANCE against a future
+                # job-retention/pruning feature — it fails safe by keeping a
+                # job-less all-SUCCESS session SUCCESS instead of degrading it
+                # to PARTIAL — not a live production case.
                 status = "SUCCESS"
                 label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
+            elif row.status == "FAILED":
+                # A terminal FAILED job overrides the row counts in BOTH
+                # directions. Without this limb the guard above only vetoes
+                # SUCCESS, and `elif row.succeeded` immediately catches the same
+                # session as PARTIAL — emitting the SAME "Updated sharing on N
+                # objects" f-string as the SUCCESS limb about a share
+                # ThoughtSpot confirmed did not land. Reachable two ways: every
+                # chunk returns without error (all rows SUCCESS, `failed == 0`)
+                # and the read-back lands nothing; or some chunks error AND the
+                # read-back lands nothing (`succeeded > 0` AND `failed > 0`).
+                # The label must NOT affirm an update that did not happen.
+                status = "FAILED"
+                label = f"Sharing update failed for {_plural(n, 'object')} ({_plural(m, 'principal')})"
             elif row.succeeded:
                 status = "PARTIAL"
                 label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
