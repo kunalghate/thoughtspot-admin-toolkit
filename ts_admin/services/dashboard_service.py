@@ -581,18 +581,38 @@ class DashboardService:
                 # A terminal FAILED job overrides the row counts in BOTH
                 # directions. Without this limb the guard above only vetoes
                 # SUCCESS, and `elif row.succeeded` immediately catches the same
-                # session as PARTIAL — emitting the SAME "Updated sharing on N
-                # objects" f-string as the SUCCESS limb about a share
-                # ThoughtSpot confirmed did not land. Reachable two ways: every
-                # chunk returns without error (all rows SUCCESS, `failed == 0`)
-                # and the read-back lands nothing; or some chunks error AND the
-                # read-back lands nothing (`succeeded > 0` AND `failed > 0`).
-                # The label must NOT affirm an update that did not happen.
+                # session as PARTIAL.
+                #
+                # `Job.status == "FAILED"` has THREE writers for a bulk_share
+                # job and they do NOT agree on what landed in ThoughtSpot:
+                #   (a) `bulk_sharing_service.py:926-927` — the `_verify_share`
+                #       read-back found nothing granted, so NOTHING landed.
+                #   (b) `bulk_sharing_service.py:1003-1005` — the last-resort
+                #       handler, i.e. anything raised AFTER the chunk loop
+                #       (inside `_verify_share`, `_share_failure_reason`, or the
+                #       audit-log commit at `:958-971`). Every chunk that already
+                #       committed SUCCESS rows at `:891` DID grant those
+                #       permissions and they are LIVE.
+                #   (c) `ts_admin/main.py:163` (`_recover_stuck_jobs`) — a
+                #       RUNNING job marked FAILED at startup after a restart.
+                #       Same story as (b): already-committed SUCCESS rows are
+                #       live grants; only the unreached chunks did not happen.
+                # From `(succeeded, failed, Job.status)` alone (a) is
+                # INDISTINGUISHABLE from (b)/(c), so any affirming verdict is
+                # false half the time — "failed for 2 objects" is a lie about
+                # permissions the admin can see granted in the UI. The status
+                # stays FAILED (conservative, and a re-share is idempotent) but
+                # the label must assert NEITHER outcome: "did not complete".
                 status = "FAILED"
-                label = f"Sharing update failed for {_plural(n, 'object')} ({_plural(m, 'principal')})"
+                label = f"Sharing update did not complete for {_plural(n, 'object')} ({_plural(m, 'principal')})"
             elif row.succeeded:
+                # `n`/`m` count DISTINCT guids over ALL rows of the session,
+                # SUCCESS and FAILED alike — they are the scope of the attempt,
+                # never the updated count. So this limb must not reuse the
+                # SUCCESS limb's "Updated sharing on n objects" wording, which
+                # over-counts by exactly the failed rows that made it PARTIAL.
                 status = "PARTIAL"
-                label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
+                label = f"Partially updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
             else:
                 # Every terminal row failed. `succeeded == failed == 0` is not
                 # reachable — the single writer above emits only SUCCESS or

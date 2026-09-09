@@ -967,6 +967,11 @@ class TestShareFeedStatus:
         ThoughtSpot's read-back says the grant did not land. So this exact
         shape — terminal FAILED job, 100% SUCCESS rows, `failed == 0` — is
         reachable, and the label must not affirm an update that never happened.
+
+        Round-6 FIX 1 adds the OTHER half of that: the label must not affirm
+        the failure either. This fixture is byte-identical to the
+        `_recover_stuck_jobs` shape below, so the same rendered sentence has to
+        be honest under both provenances — hence the NON-AFFIRMING wording.
         """
         with Session(in_memory_db) as session:
             session.add(Job(id="share-unverified", cluster_id="c1", job_type="bulk_share", status="FAILED"))
@@ -977,6 +982,52 @@ class TestShareFeedStatus:
         assert entry["status"] != "SUCCESS"
         assert entry["status"] == "FAILED"
         assert "Updated sharing on" not in entry["label"], entry["label"]
+        assert "did not complete" in entry["label"], entry["label"]
+        assert "failed" not in entry["label"].lower(), entry["label"]
+
+    def test_a_share_job_failed_by_restart_recovery_does_not_claim_the_update_failed(
+        self, client, seeded, in_memory_db
+    ):
+        """
+        Round-6 FIX 1, the provenance the FAILED limb cannot see. The writer
+        here is `_recover_stuck_jobs` (`ts_admin/main.py:163`), which sets
+        `job.status = "FAILED"` on every RUNNING job at startup after a server
+        restart — routine on this stack, because the backend is commonly
+        hand-launched without `--reload`.
+
+        Those SUCCESS `ShareRecord` rows were committed per 50-GUID chunk
+        INSIDE the loop at `bulk_sharing_service.py:891`, each after a 204 from
+        `security/metadata/share`. THE GRANTS THEY DESCRIBE MAY BE LIVE IN
+        THOUGHTSPOT RIGHT NOW — only the chunks the restart cut off did not
+        happen. `(succeeded, failed, Job.status)` is identical to the
+        `_verify_share` shape above where nothing landed, so the status stays
+        FAILED (conservative; a re-share is idempotent) but the label must NOT
+        assert that the update failed for these objects.
+
+        `frontend/pages/dashboard.tsx` renders `label` verbatim next to a
+        colour dot with no status word of its own, so this sentence is the
+        entire message the admin reads.
+        """
+        with Session(in_memory_db) as session:
+            session.add(
+                Job(
+                    id="share-restarted",
+                    cluster_id="c1",
+                    job_type="bulk_share",
+                    status="FAILED",
+                    error="Server restarted while job was running",
+                )
+            )
+            session.add(self._share("share-restarted", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-restarted", "x2", "g1", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "FAILED"
+        # Not an affirming failure claim about grants that may be live...
+        assert "failed" not in entry["label"].lower(), entry["label"]
+        # ...and not an affirming success claim either.
+        assert "Updated sharing on" not in entry["label"], entry["label"]
+        assert "did not complete" in entry["label"], entry["label"]
 
     def test_a_failed_share_job_with_some_failed_rows_is_failed_not_partial(self, client, seeded, in_memory_db):
         """
@@ -1011,6 +1062,33 @@ class TestShareFeedStatus:
         entry = self._entry(client)
         assert entry["status"] != "SUCCESS"
         assert entry["status"] == "PARTIAL"
+
+    def test_a_partial_share_job_with_failed_rows_does_not_reuse_the_success_label(self, client, seeded, in_memory_db):
+        """
+        Round-6 FIX 2. One chunk raised `TSAdminError`, so `failed_records` is
+        non-empty and `bulk_sharing_service.py:919-920` marks the job PARTIAL
+        while that chunk's GUIDs get FAILED `ShareRecord` rows.
+
+        `n` in the feed is `count(distinct object_guid)` over ALL rows of the
+        session, SUCCESS and FAILED alike, so the PARTIAL limb emitting the
+        SUCCESS limb's `f"Updated sharing on {n} objects…"` claimed 2 objects
+        were updated when only 1 was. The two limbs must be distinguishable in
+        the rendered sentence, and the PARTIAL one must not assert a count it
+        does not have.
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="share-halfway", cluster_id="c1", job_type="bulk_share", status="PARTIAL"))
+            session.add(self._share("share-halfway", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-halfway", "x2", "g1", "FAILED"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "PARTIAL"
+        # `n` is 2 (both rows), but only x1 was updated — never the SUCCESS f-string.
+        assert entry["label"] != "Updated sharing on 2 objects for 1 principal"
+        assert not entry["label"].startswith("Updated sharing on"), entry["label"]
+        assert "Partially updated sharing" in entry["label"], entry["label"]
+        # ...and distinguishable from the FAILED limb, which shares no wording.
+        assert "did not complete" not in entry["label"], entry["label"]
 
     def test_a_share_session_with_no_job_row_at_all_is_still_success(self, client, seeded, in_memory_db):
         """
