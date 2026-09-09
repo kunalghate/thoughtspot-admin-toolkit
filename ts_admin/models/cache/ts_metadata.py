@@ -23,7 +23,11 @@ class CachedMetadata(SQLModel, table=True):
     # selective of the three — and a per-object lookup degrades to a scan.
     # create_all does NOT add indexes to an already-existing table, so
     # database.init_db() also issues this as an explicit CREATE INDEX IF NOT EXISTS.
-    __table_args__ = (Index("ix_ts_metadata_cluster_org_guid", "cluster_id", "org_id", "ts_guid"),)
+    __table_args__ = (
+        Index("ix_ts_metadata_cluster_org_guid", "cluster_id", "org_id", "ts_guid"),
+        # Backs the per-connection object count (GROUP BY connection_guid).
+        Index("ix_ts_metadata_cluster_org_conn", "cluster_id", "org_id", "connection_guid"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     cluster_id: str = Field(foreign_key="clusters.id", index=True)
@@ -39,6 +43,18 @@ class CachedMetadata(SQLModel, table=True):
     modified_at: datetime | None = None
     last_accessed_at: datetime | None = None
     view_count: int = 0
+    # Where a physical table actually lives. Populated during the metadata sync
+    # from the detail payload the ONE_TO_ONE_LOGICAL pass already fetches, so
+    # this costs no extra API calls. Empty for every other object type, and for
+    # tables on a cluster that has not re-synced since these columns landed.
+    #
+    # The connection NAME is deliberately not stored here: it is resolved from
+    # ts_connections at read time, so a renamed connection needs no metadata
+    # re-sync and the two caches cannot disagree.
+    connection_guid: str = ""
+    db_name: str = ""
+    db_schema: str = ""
+    db_table: str = ""
     synced_at: datetime | None = None
 
     def get_tag_names(self) -> list[str]:

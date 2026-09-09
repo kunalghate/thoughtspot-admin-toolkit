@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard, Users, UsersRound, FolderSearch,
-  Archive, Trash2, Share2, GitFork, Briefcase, Settings,
+  Archive, Trash2, Share2, GitFork, Briefcase, Settings, Database,
 } from "lucide-react";
 import { healthApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
@@ -17,6 +17,7 @@ const BROWSE_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/users",         label: "Users",         icon: Users },
   { href: "/groups",        label: "Groups",        icon: UsersRound },
   { href: "/metadata",      label: "Metadata",      icon: FolderSearch },
+  { href: "/connections",   label: "Connections",   icon: Database },
   { href: "/relationships", label: "Lineage", icon: GitFork },
 ];
 

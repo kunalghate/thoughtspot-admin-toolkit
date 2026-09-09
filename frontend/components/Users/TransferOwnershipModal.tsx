@@ -1,10 +1,18 @@
 /**
- * TransferOwnershipModal — wizard that reassigns ownership of every object
- * a user owns to a chosen replacement.
+ * TransferOwnershipModal — wizard that reassigns ownership to a chosen user.
+ *
+ * Two entry points share it, so there is one confirmation flow rather than two
+ * that can drift:
+ *   - `source.kind === "user"`    (Users page) — everything that user owns,
+ *     narrowable by object type. The offboarding flow.
+ *   - `source.kind === "objects"` (Metadata page) — exactly the objects the
+ *     admin ticked, whoever owns them. The selection can span several owners,
+ *     so the type-filter chips are read-only counts here: filtering would mean
+ *     silently transferring fewer objects than were checked.
  *
  * Steps:
  *   1. Pick target user
- *   2. Preview the objects that will move (with optional type filter)
+ *   2. Preview the objects that will move
  *   3. Typed `TRANSFER` confirm
  *   4. Kick background job, then close and redirect to /jobs for live progress
  */
@@ -12,9 +20,9 @@ import { useCallback, useEffect, useState } from "react";
 import { X, ArrowRight } from "lucide-react";
 
 import { UserPicker } from "@/components/Users/UserPicker";
-import { usersApi } from "@/lib/api";
+import { jobsApi, metadataApi, usersApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
-import type { UserListItem, TransferObjectItem } from "@/lib/types";
+import type { UserListItem, TransferObjectItem, TransferOwnerSummary } from "@/lib/types";
 
 const TYPE_LABELS: Record<string, string> = {
   LIVEBOARD: "Liveboard", ANSWER: "Answer", WORKSHEET: "Worksheet",
@@ -22,40 +30,67 @@ const TYPE_LABELS: Record<string, string> = {
   USER_DEFINED: "Custom",
 };
 
-type Step = "pick-target" | "preview" | "confirming" | "submitting";
+type Step = "pick-target" | "preview" | "checking" | "confirming" | "submitting";
+
+/** What the live pre-flight found. */
+interface Preflight {
+  requested: number;
+  transferable: number;
+  missing_count: number;
+  missing_guids: string[];
+  target_found: boolean;
+  target_name: string;
+}
+
+/** Where the objects to transfer come from. */
+export type TransferSource =
+  | { kind: "user"; fromUser: UserListItem }
+  | { kind: "objects"; objectIds: string[] };
 
 export function TransferOwnershipModal({
   clusterId,
   orgId,
-  fromUser,
+  source,
   onClose,
 }: {
   clusterId: string;
   orgId: number;
-  fromUser: UserListItem;
+  source: TransferSource;
   onClose: (reloadNeeded: boolean) => void;
 }) {
   const [step, setStep] = useState<Step>("pick-target");
   const [target, setTarget] = useState<UserListItem | null>(null);
   const [items, setItems] = useState<TransferObjectItem[]>([]);
   const [byType, setByType] = useState<Record<string, number>>({});
+  const [owners, setOwners] = useState<TransferOwnerSummary[]>([]);
   const [typeFilter, setTypeFilter] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  const [preflight, setPreflight] = useState<Preflight | null>(null);
+
+  const objectIds = source.kind === "objects" ? source.objectIds : null;
+  const fromGuid = source.kind === "user" ? source.fromUser.ts_guid : null;
 
   const loadPreview = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await usersApi.transferPreview({
-        cluster_id: clusterId,
-        org_id: orgId,
-        from_user_guid: fromUser.ts_guid,
-        object_types: typeFilter.length > 0 ? typeFilter : undefined,
-      });
+      const res = objectIds
+        ? await metadataApi.transferPreview({
+            cluster_id: clusterId,
+            org_id: orgId,
+            object_ids: objectIds,
+          })
+        : await usersApi.transferPreview({
+            cluster_id: clusterId,
+            org_id: orgId,
+            from_user_guid: fromGuid!,
+            object_types: typeFilter.length > 0 ? typeFilter : undefined,
+          });
       setItems(res.items);
       setByType(res.by_type);
+      setOwners(res.owners ?? []);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -63,24 +98,96 @@ export function TransferOwnershipModal({
     } finally {
       setLoading(false);
     }
-  }, [clusterId, orgId, fromUser.ts_guid, typeFilter]);
+    // objectIds is a fresh array each render on the Metadata page; key the
+    // dependency on its contents so the preview doesn't refetch forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clusterId, orgId, fromGuid, typeFilter, objectIds?.join(",")]);
 
   useEffect(() => {
-    if (step === "preview" || step === "confirming") void loadPreview();
+    if (step === "preview") void loadPreview();
   }, [step, loadPreview]);
+
+  /**
+   * Ask ThoughtSpot — not the cache — whether this transfer can actually run.
+   *
+   * The preview above is a SQLite query, and the cache is exactly what goes
+   * stale between a sync and a transfer. This catches a recipient deactivated
+   * upstream, and objects deleted since the last sync: those are dropped from
+   * the submission rather than being sent in a 50-object chunk that would fail
+   * as a whole and take 49 healthy transfers with it.
+   */
+  async function runPreflight() {
+    if (!target) return;
+    setStep("checking");
+    setError(null);
+    setPreflight(null);
+    try {
+      const body = {
+        cluster_id: clusterId,
+        org_id: orgId,
+        to_user_identifier: target.username,
+        object_ids: items.map((i) => i.ts_guid),
+      };
+      const { job_id } = objectIds
+        ? await metadataApi.transferDryrun(body)
+        : await usersApi.transferDryrun({ ...body, from_user_guid: fromGuid! });
+
+      // Poll to a terminal state. A failing tick is tolerated a few times —
+      // the check is advisory, but a silent hang is not acceptable before a
+      // write.
+      let errors = 0;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          const job = await jobsApi.get(job_id);
+          errors = 0;
+          if (job.status === "COMPLETE") {
+            setPreflight((job as any).result as Preflight);
+            setStep("confirming");
+            return;
+          }
+          if (job.status === "FAILED" || job.status === "PARTIAL") {
+            setError((job as any).error || "The pre-flight check failed.");
+            setStep("preview");
+            return;
+          }
+        } catch (e) {
+          if (++errors >= 5) throw e;
+        }
+      }
+      setError("The pre-flight check timed out — try again.");
+      setStep("preview");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("preview");
+    }
+  }
 
   async function handleSubmit() {
     if (!target) return;
     setStep("submitting");
     setError(null);
     try {
-      const res = await usersApi.transferExecute({
-        cluster_id: clusterId,
-        org_id: orgId,
-        from_user_guid: fromUser.ts_guid,
-        to_user_identifier: target.username,
-        object_ids: items.map((i) => i.ts_guid),
-      });
+      // Drop anything the pre-flight found missing upstream. Sending a dead
+      // GUID would fail its whole 50-object chunk, so excluding it here is
+      // what protects the other 49.
+      const dead = new Set(preflight?.missing_guids ?? []);
+      const objectIdsToSend = items.map((i) => i.ts_guid).filter((g) => !dead.has(g));
+
+      const res = objectIds
+        ? await metadataApi.transferExecute({
+            cluster_id: clusterId,
+            org_id: orgId,
+            to_user_identifier: target.username,
+            object_ids: objectIdsToSend,
+          })
+        : await usersApi.transferExecute({
+            cluster_id: clusterId,
+            org_id: orgId,
+            from_user_guid: fromGuid!,
+            to_user_identifier: target.username,
+            object_ids: objectIdsToSend,
+          });
       onClose(true);
       window.location.href = `/jobs?highlight=${res.job_id}`;
     } catch (e) {
@@ -92,7 +199,7 @@ export function TransferOwnershipModal({
 
   return (
     <Modal onClose={() => onClose(false)} title="Transfer ownership">
-      <FromToBar fromUser={fromUser} target={target} />
+      <FromToBar source={source} owners={owners} target={target} />
 
       {step === "pick-target" && (
         <>
@@ -101,7 +208,7 @@ export function TransferOwnershipModal({
             clusterId={clusterId}
             orgId={orgId}
             picked={target}
-            excludeGuid={fromUser.ts_guid}
+            excludeGuid={fromGuid ?? undefined}
             onPick={setTarget}
             placeholder="Search by username, display name, or email…"
           />
@@ -114,7 +221,7 @@ export function TransferOwnershipModal({
         </>
       )}
 
-      {(step === "preview" || step === "confirming" || step === "submitting") && (
+      {(step === "preview" || step === "checking" || step === "confirming" || step === "submitting") && (
         <>
           <Label>Objects that will move</Label>
           {loading && <div style={hintStyle}>Loading preview…</div>}
@@ -154,7 +261,7 @@ export function TransferOwnershipModal({
               }}>
                 {items.length === 0 ? (
                   <div style={{ padding: 16, fontSize: 12, color: theme.color.textMuted }}>
-                    No objects owned by this user.
+                    {objectIds ? "None of the selected objects are in the cache." : "No objects owned by this user."}
                   </div>
                 ) : items.slice(0, 100).map((i) => (
                   <div key={i.ts_guid} style={{
@@ -179,6 +286,36 @@ export function TransferOwnershipModal({
                 <strong>{items.length}</strong> object{items.length === 1 ? "" : "s"} will be reassigned to{" "}
                 <strong>{target?.display_name || target?.username}</strong>.
               </div>
+
+              {step === "checking" && (
+                <div style={{ ...hintStyle, marginTop: 10 }}>
+                  Checking with ThoughtSpot that the recipient and these objects still exist…
+                </div>
+              )}
+
+              {step === "confirming" && preflight && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {!preflight.target_found && (
+                    <PreflightBox tone="danger">
+                      ThoughtSpot does not recognise <strong>{preflight.target_name || target?.username}</strong>.
+                      They may have been deleted or deactivated since the last sync — pick another recipient.
+                    </PreflightBox>
+                  )}
+                  {preflight.missing_count > 0 && (
+                    <PreflightBox tone="warn">
+                      <strong>{preflight.missing_count}</strong> of {preflight.requested} selected
+                      object{preflight.missing_count === 1 ? "" : "s"} no longer exist{preflight.missing_count === 1 ? "s" : ""} in
+                      ThoughtSpot and will be skipped. <strong>{preflight.transferable}</strong> will transfer.
+                    </PreflightBox>
+                  )}
+                  {preflight.target_found && preflight.missing_count === 0 && (
+                    <PreflightBox tone="ok">
+                      Checked live: all {preflight.requested} object{preflight.requested === 1 ? "" : "s"} still
+                      exist and {preflight.target_name} is an active recipient.
+                    </PreflightBox>
+                  )}
+                </div>
+              )}
 
               {step === "confirming" && (
                 <div style={{ marginTop: 12 }}>
@@ -205,14 +342,21 @@ export function TransferOwnershipModal({
             {step === "preview" && (
               <PrimaryButton
                 disabled={items.length === 0}
-                onClick={() => setStep("confirming")}
+                onClick={runPreflight}
               >
                 Continue
               </PrimaryButton>
             )}
+            {step === "checking" && <PrimaryButton disabled onClick={() => {}}>Checking…</PrimaryButton>}
             {step === "confirming" && (
               <PrimaryButton
-                disabled={confirmText !== "TRANSFER" || items.length === 0}
+                disabled={
+                  confirmText !== "TRANSFER" ||
+                  items.length === 0 ||
+                  // A recipient ThoughtSpot cannot see would fail every chunk.
+                  preflight?.target_found === false ||
+                  preflight?.transferable === 0
+                }
                 onClick={handleSubmit}
               >
                 Transfer {items.length} object{items.length === 1 ? "" : "s"}
@@ -269,20 +413,44 @@ export function Modal({
 }
 
 export function FromToBar({
-  fromUser, target,
+  source, owners, target,
 }: {
-  fromUser: UserListItem;
+  source: TransferSource;
+  /** Current owners of the selection — several are possible from /metadata. */
+  owners?: TransferOwnerSummary[];
   target: UserListItem | null;
 }) {
+  // For a selection, the "from" side is whoever happens to own the checked
+  // objects. Naming one owner when there are four would misstate what the
+  // admin is about to do, so past one it becomes a count.
+  let fromTitle: string;
+  let fromSubtitle: string;
+  if (source.kind === "user") {
+    fromTitle = source.fromUser.display_name || source.fromUser.username;
+    fromSubtitle = source.fromUser.email || source.fromUser.username;
+  } else if (!owners || owners.length === 0) {
+    fromTitle = "Selected objects";
+    fromSubtitle = "current owners";
+  } else if (owners.length === 1) {
+    fromTitle = owners[0].owner_name;
+    fromSubtitle = `${owners[0].count} selected object${owners[0].count === 1 ? "" : "s"}`;
+  } else {
+    fromTitle = `${owners.length} owners`;
+    fromSubtitle = owners
+      .slice(0, 3)
+      .map((o) => `${o.owner_name} (${o.count})`)
+      .join(", ") + (owners.length > 3 ? `, +${owners.length - 3} more` : "");
+  }
+
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
       background: theme.color.surface, border: `1px solid ${theme.color.border}`, borderRadius: 6,
       marginBottom: 16, fontSize: 12,
     }}>
-      <div>
-        <div style={{ fontWeight: 600, color: theme.color.textPrimary }}>{fromUser.display_name || fromUser.username}</div>
-        <div style={{ color: theme.color.textMuted }}>{fromUser.email || fromUser.username}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 600, color: theme.color.textPrimary }}>{fromTitle}</div>
+        <div style={{ color: theme.color.textMuted }} title={fromSubtitle}>{fromSubtitle}</div>
       </div>
       <ArrowRight size={14} style={{ color: theme.color.textMuted }} />
       <div>
@@ -403,3 +571,22 @@ const codeStyle: React.CSSProperties = {
   padding: "1px 6px", background: theme.color.surface3, borderRadius: 3,
   fontFamily: theme.font.mono, fontSize: 11,
 };
+
+
+/** One pre-flight verdict line. */
+function PreflightBox({ tone, children }: { tone: "ok" | "warn" | "danger"; children: React.ReactNode }) {
+  const palette = {
+    ok: { bg: theme.color.successSoft, border: theme.color.successBorder, fg: theme.color.textPrimary },
+    warn: { bg: theme.color.warnSoft ?? theme.color.surface, border: theme.color.border, fg: theme.color.textPrimary },
+    danger: { bg: theme.color.dangerSoft, border: theme.color.dangerBorder, fg: theme.color.danger },
+  }[tone];
+  return (
+    <div style={{
+      padding: "8px 12px", borderRadius: 6, fontSize: 12, lineHeight: 1.5,
+      background: palette.bg, border: `1px solid ${palette.border}`, color: palette.fg,
+      fontFamily: theme.font.sans,
+    }}>
+      {children}
+    </div>
+  );
+}

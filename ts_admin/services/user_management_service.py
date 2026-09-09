@@ -358,13 +358,18 @@ def preview_transfer(
     *,
     cluster_id: str,
     org_id: int,
-    from_user_guid: str,
+    from_user_guid: str | None = None,
     object_types: list[str] | None = None,
     tag_names: list[str] | None = None,
     explicit_guids: list[str] | None = None,
 ) -> dict:
     """
-    Return objects currently owned by `from_user_guid` that will be reassigned.
+    Return the objects that will be reassigned.
+
+    With `from_user_guid`, that is everything that user owns — the Users page
+    offboarding flow. With `from_user_guid=None` and `explicit_guids`, it is
+    exactly those objects whoever owns them, which is what a selection made on
+    the Metadata page means.
 
     Filters narrow the set:
       - object_types: only these CachedMetadata.object_type values
@@ -379,12 +384,18 @@ def preview_transfer(
 
     require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
 
+    if not from_user_guid and not explicit_guids:
+        # Neither a source user nor a selection: that would preview every object
+        # on the cluster and offer to reassign it. Refuse rather than guess.
+        raise ValueError("preview_transfer needs either from_user_guid or explicit_guids")
+
     with Session(_db.get_engine()) as session:
         q = select(CachedMetadata).where(
             CachedMetadata.cluster_id == cluster_id,
             CachedMetadata.org_id == org_id,
-            CachedMetadata.owner_guid == from_user_guid,
         )
+        if from_user_guid:
+            q = q.where(CachedMetadata.owner_guid == from_user_guid)
         if object_types:
             q = q.where(col(CachedMetadata.object_type).in_(object_types))
         if explicit_guids:
@@ -410,18 +421,139 @@ def preview_transfer(
         by_type: dict[str, int] = {}
         for r in rows:
             by_type[r.object_type] = by_type.get(r.object_type, 0) + 1
-        return {"items": items, "total": len(items), "by_type": by_type}
+        # A Metadata-page selection can span owners, and the confirmation step
+        # needs to say whose objects are about to move — "12 objects from 4
+        # owners" is a different decision from "12 objects from Alice".
+        owners: dict[str, dict] = {}
+        for r in rows:
+            entry = owners.setdefault(
+                r.owner_guid,
+                {"owner_guid": r.owner_guid, "owner_name": r.owner_name or r.owner_guid, "count": 0},
+            )
+            entry["count"] += 1
+        return {
+            "items": items,
+            "total": len(items),
+            "by_type": by_type,
+            "owners": sorted(owners.values(), key=lambda o: -o["count"]),
+        }
+
+
+async def dryrun_transfer(
+    job_id: str,
+    cluster_id: str,
+    org_id: int,
+    to_user_identifier: str,
+    object_ids: list[str],
+    *,
+    from_user_guid: str | None = None,
+) -> None:
+    """
+    Pre-flight a transfer against ThoughtSpot LIVE. Changes nothing.
+
+    The preview that precedes this is a cache query, and the cache is exactly
+    what goes stale between a sync and a transfer. Two failure modes only a
+    live check can see:
+
+      - **The recipient is gone.** A user deactivated or renamed upstream still
+        looks fine locally, and the transfer would discover it only after every
+        chunk had failed.
+      - **A poison GUID.** `assign_metadata_owner` takes 50 ids per call and the
+        executor buckets the whole chunk on failure, so one object deleted
+        upstream fails 49 healthy transfers alongside it. There is no bisection
+        on this path (unlike the TML export), so the pre-flight is what keeps
+        one stale row from costing an admin the other 49.
+
+    Result shape mirrors the deleter's dry-run: counts, plus the specific GUIDs
+    that would fail, so the modal can name them rather than warning in general.
+    """
+    from ts_admin.services.job_service import mark_complete, mark_failed, mark_running
+    from ts_admin.services.sync_status import require_authoritative_metadata
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    # Same fail-closed guard as the executor, for the same reason, and it must
+    # not raise out of a background task.
+    try:
+        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+    except StaleCacheError as exc:
+        mark_failed(job_id, exc)
+        return
+
+    total = len(object_ids)
+    mark_running(job_id, total)
+
+    try:
+        # Cache side: what we believe we are about to move, and from whom.
+        preview = preview_transfer(
+            cluster_id=cluster_id,
+            org_id=org_id,
+            from_user_guid=from_user_guid,
+            explicit_guids=None if from_user_guid else object_ids,
+        )
+        known = {i["ts_guid"] for i in preview["items"]}
+
+        cluster = _get_cluster(cluster_id)
+        async with ThoughtSpotClient(
+            url=cluster.url,
+            auth=cluster.build_auth_strategy(org_id=org_id),
+        ) as client:
+            target = await client.find_user(identifier=to_user_identifier)
+            live_guids = await client.verify_metadata_exists(object_ids=object_ids)
+
+        missing = [guid for guid in object_ids if guid not in live_guids]
+        # Objects the cache does not know either — selected from a stale grid.
+        uncached = [guid for guid in object_ids if guid not in known]
+
+        result = {
+            "requested": total,
+            "transferable": total - len(missing),
+            "missing_count": len(missing),
+            # Capped like every other job result; the counts above are exact.
+            "missing_guids": missing[:200],
+            "uncached_guids": uncached[:200],
+            "target_found": target is not None,
+            "target_name": (target.display_name or target.name) if target else "",
+            "target_identifier": to_user_identifier,
+            "by_type": preview["by_type"],
+            "owners": preview["owners"],
+        }
+        mark_complete(job_id, result)
+        logger.info(
+            "transfer dryrun job=%s cluster=%s requested=%d missing=%d target_found=%s",
+            job_id,
+            cluster_id,
+            total,
+            len(missing),
+            target is not None,
+        )
+    # Background task: an escaping exception is invisible to the caller and
+    # would strand the job at RUNNING. Logged with a traceback, reported FAILED.
+    except Exception as exc:
+        logger.exception("dryrun_transfer job %s failed: %s", job_id, exc)
+        mark_failed(job_id, exc)
 
 
 async def execute_transfer(
     job_id: str,
     cluster_id: str,
     org_id: int,
-    from_user_guid: str,
+    from_user_guid: str | None,
     to_user_identifier: str,
     object_ids: list[str],
 ) -> None:
     """Reassign ownership of `object_ids` to `to_user_identifier`. Chunked at 50.
+
+    `from_user_guid` names a single source owner — the Users page flow, where
+    every object belongs to the user being offboarded. Pass None for a
+    selection made on the Metadata page, which can span many owners; the source
+    owner of each object is then read from the cache and one UserActionRecord
+    is written per distinct owner, so the History tab still files each transfer
+    under the user it took objects away from.
+
+    Chunks are built WITHIN an owner group rather than across the whole
+    selection. Chunking across owners would make per-owner success counts a
+    guess whenever a chunk straddling two owners failed; this way every chunk
+    belongs to exactly one owner and the accounting is exact.
 
     Refuses on a non-authoritative metadata cache — `object_ids` was produced by
     `preview_transfer` against that cache, and executing a transfer the preview
@@ -441,12 +573,12 @@ async def execute_transfer(
     from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
 
-    # Defense in depth. The REAL refusal is in `api/users.py::transfer_execute`,
-    # which returns 409 before any Job row exists — this function only ever runs
-    # as a background task, so it is unreachable in practice. It must NOT raise:
-    # an exception escaping a background task is invisible to the caller and
-    # would leave the job QUEUED forever. Mark the job FAILED instead, BEFORE
-    # mark_running and before the UserActionRecord is written.
+    # Defense in depth. The REAL refusal is in the router, which returns 409
+    # before any Job row exists — this function only ever runs as a background
+    # task, so it is unreachable in practice. It must NOT raise: an exception
+    # escaping a background task is invisible to the caller and would leave the
+    # job QUEUED forever. Mark the job FAILED instead, BEFORE mark_running and
+    # before any UserActionRecord is written.
     try:
         require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
     except StaleCacheError as exc:
@@ -460,36 +592,70 @@ async def execute_transfer(
     failed_chunks: list[dict] = []
     cancelled = False
 
-    # Snapshot from / to identities for the record
+    # ── Group the selection by its source owner ──────────────────────────────
+    # One group for the Users-page flow (every object is the named user's, by
+    # construction of the preview). For a Metadata-page selection the owner is
+    # read from the cache; an object with no cached row groups under "" rather
+    # than being dropped, so it is still transferred and still accounted for.
     with Session(_db.get_engine()) as session:
-        from_user = session.exec(
-            select(CachedUser).where(
-                CachedUser.cluster_id == cluster_id,
-                CachedUser.ts_guid == from_user_guid,
-            )
-        ).first()
+        if from_user_guid:
+            owner_groups: dict[str, list[str]] = {from_user_guid: list(object_ids)}
+        else:
+            owner_of: dict[str, str] = {}
+            for chunk in _chunks(object_ids, 500):  # SQLite caps IN() at 999
+                rows = session.exec(
+                    select(CachedMetadata).where(
+                        CachedMetadata.cluster_id == cluster_id,
+                        CachedMetadata.org_id == org_id,
+                        col(CachedMetadata.ts_guid).in_(chunk),
+                    )
+                ).all()
+                for row in rows:
+                    owner_of[row.ts_guid] = row.owner_guid
+            owner_groups = {}
+            for guid in object_ids:
+                owner_groups.setdefault(owner_of.get(guid, ""), []).append(guid)
+
+        source_users = (
+            {
+                u.ts_guid: u
+                for u in session.exec(
+                    select(CachedUser).where(
+                        CachedUser.cluster_id == cluster_id,
+                        col(CachedUser.ts_guid).in_([g for g in owner_groups if g]),
+                    )
+                ).all()
+            }
+            if any(owner_groups)
+            else {}
+        )
         to_user = _resolve_user(session, cluster_id, to_user_identifier)
 
-    record = UserActionRecord(
-        cluster_id=cluster_id,
-        job_id=job_id,
-        org_id=org_id,
-        action_type="transfer",
-        from_user_guid=from_user_guid,
-        from_username=from_user.username if from_user else "",
-        from_display_name=from_user.display_name if from_user else "",
-        to_user_guid=to_user.ts_guid if to_user else "",
-        to_username=to_user.username if to_user else to_user_identifier,
-        to_display_name=to_user.display_name if to_user else "",
-        items_total=total,
-        status="PENDING",
-    )
-    record.set_affected([{"ts_guid": oid} for oid in object_ids[:200]])
-
+    # ── One record per source owner ──────────────────────────────────────────
+    record_ids: dict[str, str] = {}
     with Session(_db.get_engine(), expire_on_commit=False) as session:
-        session.add(record)
-        session.commit()
-        record_id = record.id
+        for owner_guid, guids in owner_groups.items():
+            from_user = source_users.get(owner_guid)
+            record = UserActionRecord(
+                cluster_id=cluster_id,
+                job_id=job_id,
+                org_id=org_id,
+                action_type="transfer",
+                from_user_guid=owner_guid,
+                from_username=from_user.username if from_user else "",
+                from_display_name=from_user.display_name if from_user else "",
+                to_user_guid=to_user.ts_guid if to_user else "",
+                to_username=to_user.username if to_user else to_user_identifier,
+                to_display_name=to_user.display_name if to_user else "",
+                items_total=len(guids),
+                status="PENDING",
+            )
+            record.set_affected([{"ts_guid": oid} for oid in guids[:200]])
+            session.add(record)
+            session.commit()
+            record_ids[owner_guid] = record.id
+
+    per_owner_succeeded: dict[str, int] = {owner: 0 for owner in owner_groups}
 
     try:
         cluster = _get_cluster(cluster_id)
@@ -497,49 +663,54 @@ async def execute_transfer(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
         ) as client:
-            for chunk in _chunks(object_ids, 50):
-                if is_cancelled(job_id):
-                    cancelled = True
+            for owner_guid, guids in owner_groups.items():
+                if cancelled:
                     break
-                try:
-                    await client.assign_metadata_owner(
-                        object_ids=chunk,
-                        new_owner_identifier=to_user_identifier,
-                    )
-                # ONLY the live call is guarded, and only against the two
-                # families it can raise (`_request` maps every HTTP outcome onto
-                # TSAdminError; httpx.HTTPError covers the transport). The
-                # blanket `except Exception` that used to wrap the cache update
-                # as well turned a bug in our own code into "this chunk failed
-                # upstream" — anything else must reach the outer handler.
-                except (TSAdminError, httpx.HTTPError) as exc:
-                    logger.warning("assign_metadata_owner chunk failed: %s", exc)
-                    failed_chunks.append({"guids": chunk, "error": str(exc)[:300]})
-                    update_progress(job_id, succeeded)
-                    continue
+                for chunk in _chunks(guids, 50):
+                    if is_cancelled(job_id):
+                        cancelled = True
+                        break
+                    try:
+                        await client.assign_metadata_owner(
+                            object_ids=chunk,
+                            new_owner_identifier=to_user_identifier,
+                        )
+                    # ONLY the live call is guarded, and only against the two
+                    # families it can raise (`_request` maps every HTTP outcome
+                    # onto TSAdminError; httpx.HTTPError covers the transport).
+                    # The blanket `except Exception` that used to wrap the cache
+                    # update as well turned a bug in our own code into "this
+                    # chunk failed upstream" — anything else must reach the
+                    # outer handler.
+                    except (TSAdminError, httpx.HTTPError) as exc:
+                        logger.warning("assign_metadata_owner chunk failed: %s", exc)
+                        failed_chunks.append({"guids": chunk, "error": str(exc)[:300]})
+                        update_progress(job_id, succeeded)
+                        continue
 
-                succeeded += len(chunk)
-                # Update CachedMetadata so the UI reflects new ownership
-                # immediately. Org-scoped: the same GUID can hold a row per
-                # org, and this transfer ran against exactly one org — a
-                # cluster-only .first() rewrote whichever org came back
-                # first, so the wrong org's cache showed the new owner and
-                # the right one kept the old.
-                with Session(_db.get_engine()) as session:
-                    for guid in chunk:
-                        obj = session.exec(
-                            select(CachedMetadata).where(
-                                CachedMetadata.cluster_id == cluster_id,
-                                CachedMetadata.org_id == org_id,
-                                CachedMetadata.ts_guid == guid,
-                            )
-                        ).first()
-                        if obj and to_user:
-                            obj.owner_guid = to_user.ts_guid
-                            obj.owner_name = to_user.display_name or to_user.username
-                            session.add(obj)
-                    session.commit()
-                update_progress(job_id, succeeded)
+                    succeeded += len(chunk)
+                    per_owner_succeeded[owner_guid] += len(chunk)
+                    # Update CachedMetadata so the UI reflects new ownership
+                    # immediately. Org-scoped: the same GUID can hold a row per
+                    # org, and this transfer ran against exactly one org — a
+                    # cluster-only .first() rewrote whichever org came back
+                    # first, so the wrong org's cache showed the new owner and
+                    # the right one kept the old.
+                    with Session(_db.get_engine()) as session:
+                        for guid in chunk:
+                            obj = session.exec(
+                                select(CachedMetadata).where(
+                                    CachedMetadata.cluster_id == cluster_id,
+                                    CachedMetadata.org_id == org_id,
+                                    CachedMetadata.ts_guid == guid,
+                                )
+                            ).first()
+                            if obj and to_user:
+                                obj.owner_guid = to_user.ts_guid
+                                obj.owner_name = to_user.display_name or to_user.username
+                                session.add(obj)
+                        session.commit()
+                    update_progress(job_id, succeeded)
 
         # Zero successes is FAILED, never PARTIAL — see the note in
         # `bulk_sharing_service.execute_share`. The succeeded == 0 branch is
@@ -558,42 +729,58 @@ async def execute_transfer(
         )
 
         with Session(_db.get_engine()) as session:
-            rec = session.get(UserActionRecord, record_id)
-            if rec:
-                rec.items_succeeded = succeeded
-                rec.items_failed = total - succeeded
-                rec.status = status
-                if status == "FAILED":
+            for owner_guid, record_id in record_ids.items():
+                rec = session.get(UserActionRecord, record_id)
+                if not rec:
+                    continue
+                owner_ok = per_owner_succeeded[owner_guid]
+                owner_total = len(owner_groups[owner_guid])
+                rec.items_succeeded = owner_ok
+                rec.items_failed = owner_total - owner_ok
+                # Per-owner status: one owner's objects failing must not mark
+                # another owner's record FAILED.
+                if owner_ok == 0:
+                    rec.status = "FAILED"
                     rec.error = failure_reason[:500]
+                elif owner_ok < owner_total:
+                    rec.status = "PARTIAL"
+                else:
+                    rec.status = "SUCCESS"
                 session.add(rec)
-                audit = AuditLog(
-                    cluster_id=cluster_id,
-                    action_type="transfer_ownership",
-                    entity_type="user",
-                    items_affected=succeeded,
-                    # Same terminal status as the job — the audit row used to be
-                    # computed from an expression that could not say FAILED.
-                    status=status,
-                )
-                audit.set_parameters(
-                    {
-                        "from_user_guid": from_user_guid,
-                        "to_user_identifier": to_user_identifier,
-                        "object_ids": object_ids,
-                        "succeeded": succeeded,
-                        "failed_chunks": failed_chunks,
-                        "cancelled": cancelled,
-                        "error": failure_reason if status == "FAILED" else "",
-                    }
-                )
-                session.add(audit)
-                session.commit()
+
+            audit = AuditLog(
+                cluster_id=cluster_id,
+                action_type="transfer_ownership",
+                # A Users-page transfer is an action ON a user (offboarding);
+                # a Metadata-page transfer is an action on content that happens
+                # to change its owner. The audit trail should not conflate them.
+                entity_type="user" if from_user_guid else "metadata",
+                items_affected=succeeded,
+                # Same terminal status as the job — the audit row used to be
+                # computed from an expression that could not say FAILED.
+                status=status,
+            )
+            audit.set_parameters(
+                {
+                    "from_user_guid": from_user_guid or "",
+                    "from_owner_guids": sorted(owner_groups),
+                    "to_user_identifier": to_user_identifier,
+                    "object_ids": object_ids,
+                    "succeeded": succeeded,
+                    "failed_chunks": failed_chunks,
+                    "cancelled": cancelled,
+                    "error": failure_reason if status == "FAILED" else "",
+                }
+            )
+            session.add(audit)
+            session.commit()
 
         result = {
             "succeeded": succeeded,
             "failed": total - succeeded,
             "cancelled": cancelled,
-            "record_id": record_id,
+            "record_id": next(iter(record_ids.values()), None),
+            "record_ids": list(record_ids.values()),
         }
         if status == "FAILED":
             mark_failed(job_id, failure_reason)
@@ -602,29 +789,31 @@ async def execute_transfer(
         else:
             mark_complete(job_id, result)
         logger.info(
-            "transfer job=%s cluster=%s status=%s from=%s to=%s succeeded=%d failed=%d",
+            "transfer job=%s cluster=%s status=%s from=%s to=%s succeeded=%d failed=%d owners=%d",
             job_id,
             cluster_id,
             status,
-            from_user_guid,
+            from_user_guid or "<multiple>",
             to_user_identifier,
             succeeded,
             total - succeeded,
+            len(owner_groups),
         )
     # Last-resort handler for a background task: this runs after the 202 is on
     # the wire, so an exception that escapes is invisible to the caller and
     # strands the Job row at RUNNING. Permitted to swallow ANY exception —
     # nothing is swallowed silently; each one is logged with a traceback, marks
-    # the UserActionRecord FAILED and re-reported as a FAILED job.
+    # every UserActionRecord FAILED and re-reported as a FAILED job.
     except Exception as exc:
         logger.exception("execute_transfer job %s failed: %s", job_id, exc)
         with Session(_db.get_engine()) as session:
-            rec = session.get(UserActionRecord, record_id)
-            if rec:
-                rec.status = "FAILED"
-                rec.error = str(exc)[:500]
-                session.add(rec)
-                session.commit()
+            for record_id in record_ids.values():
+                rec = session.get(UserActionRecord, record_id)
+                if rec:
+                    rec.status = "FAILED"
+                    rec.error = str(exc)[:500]
+                    session.add(rec)
+            session.commit()
         mark_failed(job_id, exc)
 
 

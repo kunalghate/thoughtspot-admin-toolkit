@@ -319,6 +319,7 @@ def _register_routers(app: FastAPI) -> None:
     from ts_admin.api import (
         archiver,
         clusters,
+        connections,
         dashboard,
         deleter,
         diagnostics,
@@ -346,6 +347,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(sharing.router, prefix="/api/v1")
     app.include_router(relationships.router, prefix="/api/v1")
     app.include_router(dashboard.router, prefix="/api/v1")
+    app.include_router(connections.router, prefix="/api/v1")
     app.include_router(update.router, prefix="/api/v1")
 
 

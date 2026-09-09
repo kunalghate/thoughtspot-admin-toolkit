@@ -52,6 +52,11 @@ READ_ENDPOINTS = [
         id="archiver-history",
     ),
     pytest.param(
+        "/api/v1/connections?cluster_id={cluster}&org_id=0",
+        lambda body: body["items"],
+        id="connections-list",
+    ),
+    pytest.param(
         "/api/v1/users?cluster_id={cluster}",
         lambda body: body["items"],
         id="users-list",

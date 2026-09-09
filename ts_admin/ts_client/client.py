@@ -36,6 +36,7 @@ from ts_admin.ts_client.exceptions import (
 from ts_admin.ts_client.models import (
     MetadataType,
     SharePermission,
+    TSConnection,
     TSGroup,
     TSMetadataObject,
     TSOrg,
@@ -164,6 +165,12 @@ def _belongs_to_org(user: dict, org_id: int) -> bool:
     if orgs is None:
         return True
     return any(o.get("id") == org_id for o in orgs if isinstance(o, dict))
+
+
+def _chunks(lst: list, size: int):
+    """Yield successive `size`-length slices of `lst`."""
+    for i in range(0, len(lst), size):
+        yield lst[i : i + size]
 
 
 def _unresolvable_guids(body: str) -> list[str]:
@@ -495,6 +502,83 @@ class ThoughtSpotClient:
         ("LOGICAL_TABLE", ["SQL_VIEW"], MetadataType.SQL_VIEW),
         ("LOGICAL_TABLE", ["USER_DEFINED"], MetadataType.USER_DEFINED),
     ]
+
+    async def find_user(self, *, identifier: str) -> TSUser | None:
+        """
+        Look one user up LIVE by GUID or username. None when TS does not know them.
+
+        Targeted rather than paging `search_users`: a transfer pre-flight only
+        needs to answer "does this recipient still exist upstream", and the
+        cache cannot answer that — a user deactivated since the last sync still
+        looks fine locally.
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/users/search",
+            json={"user_identifier": identifier, "include_favorite_metadata": False, "record_size": 1},
+            context="find_user",
+        )
+        items = data if isinstance(data, list) else data.get("users", [])
+        if not items:
+            return None
+        try:
+            return TSUser.model_validate(items[0])
+        except ValidationError as exc:
+            raise TSResponseParseError(url="/api/rest/2.0/users/search", detail=str(exc)) from exc
+
+    async def verify_metadata_exists(self, *, object_ids: list[str]) -> set[str]:
+        """
+        Of `object_ids`, which does ThoughtSpot still have? Live.
+
+        Used by the transfer pre-flight: a GUID deleted upstream since the last
+        sync would otherwise be sent in a 50-object `assign_metadata_owner`
+        call and fail the whole chunk, taking 49 healthy transfers with it.
+
+        **`metadata/search` does not silently omit unknown identifiers — it
+        rejects the entire request with a 400.** (Measured against SE Demo: one
+        bogus GUID alongside a real one fails the call outright.) So a batch
+        that is rejected is BISECTED until each unresolvable id is isolated to
+        a request of one, the same algorithm `_export_tml_resilient` uses on the
+        TML path. Cost is O(k log n) for k missing ids, and one dead object no
+        longer hides the status of the other 49.
+
+        Only "bad identifier" failures drive the bisect. An auth or server error
+        must propagate: reporting a 503 as "all of these objects are gone" would
+        make the pre-flight silently drop a whole transfer.
+        """
+        found: set[str] = set()
+
+        async def _probe(ids: list[str]) -> None:
+            if not ids:
+                return
+            try:
+                data = await self._request(
+                    "POST",
+                    "/api/rest/2.0/metadata/search",
+                    json={
+                        "metadata": [{"identifier": guid} for guid in ids],
+                        "include_headers": True,
+                        "record_offset": 0,
+                        "record_size": len(ids),
+                    },
+                    context="verify_metadata_exists",
+                )
+            except (TSInvalidParametersError, TSObjectNotFoundError):
+                if len(ids) == 1:
+                    return  # isolated: ThoughtSpot does not have this one
+                mid = len(ids) // 2
+                await _probe(ids[:mid])
+                await _probe(ids[mid:])
+                return
+
+            items = data if isinstance(data, list) else data.get("metadata_details", [])
+            for item in items:
+                if isinstance(item, dict) and item.get("metadata_id"):
+                    found.add(item["metadata_id"])
+
+        for chunk in _chunks(object_ids, 100):
+            await _probe(chunk)
+        return found
 
     async def search_metadata(
         self,
@@ -1183,6 +1267,38 @@ class ThoughtSpotClient:
         return result
 
     # ── Connections ──────────────────────────────────────────────────────────────
+
+    async def search_connections(self) -> list[TSConnection]:
+        """
+        Every data connection on the cluster, with its warehouse type.
+
+        POST /api/rest/2.0/connection/search — an empty body lists all.
+        Requires DATAMANAGEMENT ("Can manage data") or ADMINISTRATION; on an
+        RBAC instance, CAN_CREATE_OR_EDIT_CONNECTIONS.
+
+        Note `include_details` is NOT requested: it returns the full
+        configuration blob per connection, and nothing here reads it. Measured
+        on se-demo, this endpoint returns ~1,300 connections in one call.
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/connection/search",
+            json={"record_offset": 0, "record_size": -1},
+            context="search_connections",
+        )
+        items = data if isinstance(data, list) else data.get("connections", [])
+        out: list[TSConnection] = []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            try:
+                out.append(TSConnection.model_validate(item))
+            except ValidationError as exc:
+                raise TSResponseParseError(
+                    url="/api/rest/2.0/connection/search",
+                    detail=str(exc),
+                ) from exc
+        return out
 
     async def list_connections(self) -> list[dict]:
         """

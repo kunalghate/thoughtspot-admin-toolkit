@@ -258,6 +258,45 @@ is disabled. No periodic polling. Admin refreshes the page when the cluster is b
 
 ---
 
+## ADR-014: Ownership transfer pre-flights against ThoughtSpot, live
+
+**Superseded an earlier draft of this ADR** which argued transfer needed no dry-run
+because its preview was already the impact report ADR-009 asks for. That was wrong
+in one specific way: the preview is a SQLite query, and the cache is exactly what
+goes stale between a sync and a transfer. ADR-009's sibling rule — "verify live
+before executing" — was not being met.
+
+**Decision:** `POST .../transfer/dryrun` (on both the Users and Metadata entry
+points) checks the transfer against ThoughtSpot **live** before the typed
+`TRANSFER` confirmation. It verifies:
+
+- the **recipient** still exists upstream (`users/search` by identifier), and
+- which of the **selected objects** ThoughtSpot still has (`metadata/search` over
+  the GUIDs).
+
+Objects it reports as gone are excluded from the submission, not merely flagged.
+
+**Rationale:**
+- `assign_metadata_owner` takes 50 ids per call and `execute_transfer` buckets the
+  **whole chunk** as failed when a call raises. There is no bisection on this path
+  (unlike `_export_tml_resilient` on the TML backup path), so a single GUID deleted
+  upstream since the last sync costs 49 healthy transfers. Excluding it up front is
+  what makes that a warning instead of a failed batch.
+- A recipient deactivated or renamed upstream still looks fine in the cache. Without
+  the live check that is discovered only after every chunk has failed.
+- Neither condition is visible to a cache-only preview, so this is not a dry-run
+  that restates what the preview already said — the objection that sank the first
+  draft of this ADR.
+
+**Why it lives on both entry points:** the two flows share one confirmation modal.
+A pre-flight step that ran on only one of them would read as a bug.
+
+**Registered** in `DRYRUN_ENDPOINTS` (`tests/integration/test_dryrun_safety.py`), so
+the standing invariant — a dry-run endpoint never reaches a destructive write path —
+now covers transfer too. That suite gained a trip wire on `execute_transfer`.
+
+---
+
 ## Deferred decisions (revisit in future phases)
 
 | Decision | Why deferred | Target phase |

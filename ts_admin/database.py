@@ -101,6 +101,8 @@ def _drop_outdated_rebuildable_tables() -> None:
 # {index_name: (table, [columns])}
 _BACKFILL_INDEXES: dict[str, tuple[str, list[str]]] = {
     "ix_ts_metadata_cluster_org_guid": ("ts_metadata", ["cluster_id", "org_id", "ts_guid"]),
+    # Backs the per-connection object count on the Connections page.
+    "ix_ts_metadata_cluster_org_conn": ("ts_metadata", ["cluster_id", "org_id", "connection_guid"]),
 }
 
 
@@ -131,6 +133,18 @@ def _create_missing_indexes() -> None:
 # once, when the column first appears. It must never run again: re-running it
 # would overwrite values that later code wrote deliberately.
 _BACKFILL_COLUMNS: dict[str, list[tuple[str, str, str | None]]] = {
+    # ts_metadata is NOT rebuildable-by-drop: dropping it would also throw away
+    # the metadata sync_log that several guards read as "the cache is
+    # authoritative", turning an upgrade into a silent refusal of every
+    # transfer and archive until a full re-sync. So these are additive, and
+    # stay empty until the next metadata sync — the Connections page says so
+    # rather than reporting every connection as unused.
+    "ts_metadata": [
+        ("connection_guid", "VARCHAR NOT NULL DEFAULT ''", None),
+        ("db_name", "VARCHAR NOT NULL DEFAULT ''", None),
+        ("db_schema", "VARCHAR NOT NULL DEFAULT ''", None),
+        ("db_table", "VARCHAR NOT NULL DEFAULT ''", None),
+    ],
     "archive_records": [
         (
             "deleted_confirmed_at",
@@ -177,6 +191,7 @@ def init_db() -> None:
     import ts_admin.models.cache.content_permissions  # noqa: F401
     import ts_admin.models.cache.ts_column_lineage  # noqa: F401
     import ts_admin.models.cache.ts_column_usage  # noqa: F401
+    import ts_admin.models.cache.ts_connection  # noqa: F401
     import ts_admin.models.cache.ts_dependency  # noqa: F401
     import ts_admin.models.cache.ts_group  # noqa: F401
     import ts_admin.models.cache.ts_metadata  # noqa: F401

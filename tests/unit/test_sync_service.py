@@ -502,7 +502,15 @@ def _metadata_marker_status(org_id: int = 0) -> str | None:
     return row.status if row else None
 
 
-def _meta_obj(guid: str, object_type: str):
+def _meta_obj(
+    guid: str,
+    object_type: str,
+    *,
+    connection_guid: str = "",
+    db_name: str = "",
+    db_schema: str = "",
+    db_table: str = "",
+):
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
@@ -518,6 +526,10 @@ def _meta_obj(guid: str, object_type: str):
         modified=now,
         last_accessed=now,
         view_count=0,
+        connection_guid=connection_guid,
+        db_name=db_name,
+        db_schema=db_schema,
+        db_table=db_table,
     )
 
 
@@ -1332,6 +1344,10 @@ async def test_cancelled_metadata_sync_does_not_end_complete(monkeypatch, in_mem
             modified=None,
             last_accessed=None,
             view_count=0,
+            connection_guid="",
+            db_name="",
+            db_schema="",
+            db_table="",
         )
 
     class FakeClient:
@@ -1888,3 +1904,153 @@ async def test_user_resync_updates_the_author_guid_on_an_existing_row(monkeypatc
     pages[:] = [[_fake_user("u1", author_id="admin-guid")]]
     await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
     assert _author_guid_of("u1") == "admin-guid"
+
+
+# ── connections ──────────────────────────────────────────────────────────────
+# The connection list is what makes "which connection is this table on" and
+# "which connections have nothing on them" answerable at all. Same purge shape
+# as tags, including the empty guard.
+
+
+def _fake_connection(guid: str, *, name: str | None = None, warehouse: str = "SNOWFLAKE"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=guid,
+        name=name or f"conn-{guid}",
+        description="",
+        data_warehouse_type=warehouse,
+    )
+
+
+def _connections_client(connections: list, monkeypatch):
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def search_connections(self):
+            return list(connections)
+
+    monkeypatch.setattr(
+        "ts_admin.config.ClusterConfig.build_auth_strategy",
+        lambda self, org_id=None: None,
+    )
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", FakeClient)
+
+
+def _cached_connections() -> dict[str, str]:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_connection import CachedConnection
+
+    with get_session() as session:
+        rows = session.exec(select(CachedConnection).where(CachedConnection.cluster_id == CLUSTER_ID)).all()
+    return {r.ts_guid: r.data_warehouse_type for r in rows}
+
+
+@pytest.mark.anyio
+async def test_connection_sync_caches_the_warehouse_type(monkeypatch, in_memory_db, patched_config):
+    conns = [_fake_connection("c-1"), _fake_connection("c-2", warehouse="DATABRICKS")]
+    _connections_client(conns, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    job_id = _make_job("connections")
+    await run_sync(entity_type="connections", org_id=0, job_id=job_id)
+
+    assert _job_status(job_id)[0] == "COMPLETE"
+    assert _cached_connections() == {"c-1": "SNOWFLAKE", "c-2": "DATABRICKS"}
+
+
+@pytest.mark.anyio
+async def test_connection_resync_updates_an_existing_row(monkeypatch, in_memory_db, patched_config):
+    conns = [_fake_connection("c-1", name="Old name")]
+    _connections_client(conns, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="connections", org_id=0, job_id=_make_job("connections"))
+
+    conns[:] = [_fake_connection("c-1", name="New name", warehouse="DATABRICKS")]
+    await run_sync(entity_type="connections", org_id=0, job_id=_make_job("connections"))
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_connection import CachedConnection
+
+    with get_session() as session:
+        row = session.exec(select(CachedConnection).where(CachedConnection.ts_guid == "c-1")).one()
+    assert row.name == "New name"
+    assert row.data_warehouse_type == "DATABRICKS"
+
+
+@pytest.mark.anyio
+async def test_connection_sync_purges_what_is_gone_upstream(monkeypatch, in_memory_db, patched_config):
+    conns = [_fake_connection("c-1"), _fake_connection("c-2")]
+    _connections_client(conns, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="connections", org_id=0, job_id=_make_job("connections"))
+    assert set(_cached_connections()) == {"c-1", "c-2"}
+
+    conns[:] = [_fake_connection("c-1")]
+    await run_sync(entity_type="connections", org_id=0, job_id=_make_job("connections"))
+    assert set(_cached_connections()) == {"c-1"}
+
+
+@pytest.mark.anyio
+async def test_connection_sync_empty_sweep_deletes_nothing(monkeypatch, in_memory_db, patched_config):
+    """`not_in(<empty>)` is unconditionally true — one blank response would
+    empty the whole cache, and a genuinely connection-less org is
+    indistinguishable from a transient upstream failure."""
+    conns = [_fake_connection("c-1"), _fake_connection("c-2")]
+    _connections_client(conns, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="connections", org_id=0, job_id=_make_job("connections"))
+
+    conns[:] = []
+    await run_sync(entity_type="connections", org_id=0, job_id=_make_job("connections"))
+    assert set(_cached_connections()) == {"c-1", "c-2"}, "an empty sweep must never purge the cache"
+
+
+@pytest.mark.anyio
+async def test_metadata_sync_stores_the_connection_linkage(monkeypatch, in_memory_db, patched_config):
+    """The linkage that makes the Connection column possible without extra API calls."""
+    pages = [
+        [
+            _meta_obj(
+                "t-1",
+                "ONE_TO_ONE_LOGICAL",
+                connection_guid="conn-1",
+                db_name="DATA_CHALLENGE",
+                db_schema="PUBLIC",
+                db_table="SALES",
+            )
+        ]
+    ]
+    _install_metadata_client(monkeypatch, pages)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="metadata", org_id=0, job_id=_make_job("metadata"))
+
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+
+    with get_session() as session:
+        row = session.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == "t-1")).one()
+    assert row.connection_guid == "conn-1"
+    assert (row.db_name, row.db_schema, row.db_table) == ("DATA_CHALLENGE", "PUBLIC", "SALES")

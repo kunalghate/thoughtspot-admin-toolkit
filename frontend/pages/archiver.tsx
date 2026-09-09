@@ -304,7 +304,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [tagPickerOpen, setTagPickerOpen] = useState(false);  // filter-by-tag dropdown
   const [availableTags, setAvailableTags] = useState<{ ts_guid: string; name: string }[]>([]);
-  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  // `href` turns the toast into a hand-off: an export's whole point is the file,
+  // so the toast that reports it carries the link to it.
+  const [toast, setToast] = useState<{ msg: string; ok: boolean; href?: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
   // Tag/untag are live writes — never fire them straight off a button click.
   // The pending action is confirmed (with its count) in a small dialog first.
   const [pendingTag, setPendingTag] = useState<
@@ -437,9 +440,10 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
   // Resolved tag name: custom input wins over dropdown selection
   const resolvedTagName = showCustomInput ? (customTagName.trim() || "INACTIVE") : (tagName || "INACTIVE");
 
-  const showToast = (msg: string, ok: boolean) => {
-    setToast({ msg, ok });
-    setTimeout(() => setToast(null), 4000);
+  const showToast = (msg: string, ok: boolean, href?: string) => {
+    setToast({ msg, ok, href });
+    // A toast offering a download has to outlive the glance that notices it.
+    setTimeout(() => setToast(null), href ? 30000 : 4000);
   };
 
   // Actions
@@ -527,6 +531,45 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
     if (!selectedGuids.size) return;
     setPendingDeleteGuids([...selectedGuids]);
     setDryRunOpen(true);
+  };
+
+  // Export TML without deleting. No dry-run modal: nothing is destroyed, so
+  // there is no impact to check — the point of this action is to get the
+  // backup in hand *before* trusting the delete.
+  const handleExportSelected = async () => {
+    if (!activeCluster?.id || activeOrg?.org_id == null || !selectedGuids.size) return;
+    const guids = [...selectedGuids];
+    setExporting(true);
+    try {
+      const { job_id } = await archiverApi.execute({
+        cluster_id: activeCluster.id,
+        org_id: activeOrg.org_id,
+        object_ids: guids,
+        action: "export",
+      });
+      showToast(`Exporting TML for ${guids.length} object${guids.length === 1 ? "" : "s"}…`, true);
+      pollUntilDone(job_id, (job) => {
+        setExporting(false);
+        const result = (job as any).result;
+        const succeeded = result?.succeeded ?? 0;
+        const href = `/api/v1/archiver/export/${job_id}/download?cluster_id=${encodeURIComponent(activeCluster.id)}`;
+        if (job.status === "FAILED" || succeeded === 0) {
+          showToast((job as any).error || "TML export failed — no files were written.", false);
+          return;
+        }
+        const failed = result?.failed_tml_export ?? 0;
+        showToast(
+          failed
+            ? `Exported ${succeeded} of ${guids.length} objects — ${failed} failed. Nothing was deleted.`
+            : `Exported ${succeeded} object${succeeded === 1 ? "" : "s"}. Nothing was deleted.`,
+          failed === 0,
+          href,
+        );
+      });
+    } catch (e: any) {
+      setExporting(false);
+      showToast(e?.message ?? "Could not start the TML export.", false);
+    }
   };
 
   const handleDryRunClose = (reloadNeeded: boolean) => {
@@ -784,7 +827,17 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           color: toast.ok ? theme.color.success : theme.color.danger,
           fontSize: 13, fontFamily: theme.font.sans,
         }}>
-          {toast.msg}
+          <span>
+            {toast.msg}
+            {toast.href && (
+              <a
+                href={toast.href}
+                style={{ marginLeft: 10, color: "inherit", fontWeight: 600, textDecoration: "underline" }}
+              >
+                Download .zip
+              </a>
+            )}
+          </span>
           <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, marginLeft: 12, color: "inherit" }}>
             <X size={12} />
           </button>
@@ -881,6 +934,15 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
           <div style={{ width: 1, height: 18, background: theme.color.violetBorder }} />
 
           <ActionButton
+            data-testid="export-tml"
+            onClick={handleExportSelected}
+            disabled={exporting}
+            title="Write a TML backup for the selected objects without deleting anything"
+          >
+            {exporting ? "Exporting…" : "Export TML"}
+          </ActionButton>
+
+          <ActionButton
             data-testid="open-dryrun-modal"
             onClick={handleDeleteSelected}
             style={{ color: theme.color.danger, borderColor: theme.color.dangerBorder, background: theme.color.dangerSoft }}
@@ -912,7 +974,8 @@ function ArchiveTab({ syncVersion, onViewHistory }: { syncVersion: number; onVie
         }}>
           <span style={{ fontSize: 13, color: theme.color.textMuted }}>☑</span>
           <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans, lineHeight: 1.5 }}>
-            Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them, or{" "}
+            Check rows to select objects — then <strong style={{ color: theme.color.accent2 }}>Apply Tag</strong> to mark them,{" "}
+            <strong style={{ color: theme.color.accent2 }}>Export TML</strong> to back them up without deleting, or{" "}
             <strong style={{ color: theme.color.danger }}>Delete selected</strong> for a safety-checked deletion with TML backup.
           </span>
         </div>

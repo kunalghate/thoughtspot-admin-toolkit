@@ -139,6 +139,7 @@ describe("buildSyncLabel", () => {
     tags: "tags",
     metadata: "objects",
     dependencies: "objects",
+    connections: "connections",
     // Not a syncable Topbar entity — reaches the generic fallback, not a map hit.
     orgs: "objects",
   };
