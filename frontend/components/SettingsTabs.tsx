@@ -4,7 +4,12 @@ import { theme } from "@/lib/theme";
 type SettingsTab = "connections" | "diagnostics" | "appearance";
 
 const TABS: { key: SettingsTab; href: string; label: string }[] = [
-  { key: "connections", href: "/settings/connections", label: "Connections" },
+  // Labelled "Instances", not "Connections": this tab manages the ThoughtSpot
+  // instances the toolkit talks to, while /connections is the DATA connections
+  // (Snowflake, Databricks…) inside an instance. Two things called Connections
+  // in one nav is a trap. The route keeps its old path so existing links and
+  // the /settings redirect still work.
+  { key: "connections", href: "/settings/connections", label: "Instances" },
   { key: "diagnostics", href: "/settings/diagnostics", label: "Diagnostics" },
   { key: "appearance", href: "/settings/appearance", label: "Appearance" },
 ];

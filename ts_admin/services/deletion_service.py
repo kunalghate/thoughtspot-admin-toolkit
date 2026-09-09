@@ -176,6 +176,87 @@ def _delete_failure_reason(
     return f"0 of {total} objects deleted: " + "; ".join(parts) + "."
 
 
+def _finish_export_only(
+    *,
+    job_id: str,
+    cluster_id: str,
+    requested: list[str],
+    exported: list[str],
+    failed_tml: list[str],
+    error_samples: dict[str, str],
+    job_tml_dir: Path,
+) -> None:
+    """
+    Close out an export-only run: audit row, job status, log line.
+
+    Status follows the same rule as a delete: exporting nothing is FAILED, not
+    PARTIAL — PARTIAL reads as "some of it worked, retry the rest", and a run
+    that produced no backup produced nothing.
+    """
+    from ts_admin.models.audit_log import AuditLog
+    from ts_admin.services.job_service import mark_complete, mark_failed, mark_partial
+
+    total = len(requested)
+    succeeded = len(exported)
+
+    if succeeded == 0:
+        status = "FAILED"
+    elif succeeded == total:
+        status = "COMPLETE"
+    else:
+        status = "PARTIAL"
+
+    reason = ""
+    if status != "COMPLETE":
+        detail = error_samples.get("tml")
+        reason = f"{succeeded} of {total} objects exported; {len(failed_tml)} TML export(s) failed"
+        reason += f" — {detail}" if detail else "."
+
+    result = {
+        "succeeded": succeeded,
+        "failed_tml_export": len(failed_tml),
+        "requested": total,
+        "failed_tml_guids": failed_tml[:200],
+        "job_id": job_id,
+        "tml_export_path": str(job_tml_dir),
+    }
+
+    with Session(_db.get_engine()) as session:
+        entry = AuditLog(
+            cluster_id=cluster_id,
+            action_type="tml_export",
+            entity_type="metadata",
+            items_affected=succeeded,
+            status=status,
+        )
+        entry.set_parameters(
+            {
+                "object_ids": requested,
+                "error": reason if status == "FAILED" else "",
+                **result,
+            }
+        )
+        session.add(entry)
+        session.commit()
+
+    if status == "FAILED":
+        mark_failed(job_id, reason)
+    elif status == "PARTIAL":
+        mark_partial(job_id, result)
+    else:
+        mark_complete(job_id, result)
+
+    logger.info(
+        "tml_export job=%s cluster=%s status=%s exported=%d failed=%d dir=%s",
+        job_id,
+        cluster_id,
+        status,
+        succeeded,
+        len(failed_tml),
+        job_tml_dir,
+    )
+
+
 # ── Phase 5: Delete with mandatory TML safety net ─────────────────────────────
 
 
@@ -186,9 +267,18 @@ async def _execute_delete(
     object_ids: list[str],
     *,
     action_type: str = "delete",
+    export_only: bool = False,
 ) -> None:
     """
     Permanently delete objects with a mandatory TML backup before each deletion.
+
+    With `export_only=True` the run stops after Phase A: TML is exported and
+    recorded, and nothing is deleted. That is the "export without deleting"
+    flow — cs_tools offers the same thing, and an admin who does not yet trust
+    the export/delete round trip wants the backup in hand before being brave.
+    It shares this function rather than copying Phase A precisely because the
+    export step is the safety net for deletion: two implementations could
+    drift, and the one that drifts is the one guarding a permanent delete.
 
     Phase A — TML Export (resilient):
       Export TML for every object. Objects whose export fails are excluded from
@@ -416,6 +506,25 @@ async def _execute_delete(
                 len(delete_batch),
                 len(failed_tml),
             )
+
+            # Export-only stops here, before anything is destroyed. The
+            # ArchiveRecord rows it leaves behind — tml_export_status SUCCESS
+            # with deleted_confirmed_at still NULL — are already the state the
+            # rest of the app understands as "backed up, still live" (see
+            # ArchiveRecord.deleted_confirmed_at), so history, the download
+            # endpoint and crash recovery all read them correctly with no
+            # special-casing.
+            if export_only:
+                _finish_export_only(
+                    job_id=job_id,
+                    cluster_id=cluster_id,
+                    requested=requested,
+                    exported=delete_batch,
+                    failed_tml=failed_tml,
+                    error_samples=error_samples,
+                    job_tml_dir=job_tml_dir,
+                )
+                return
 
             # ── Phase B: Delete (cancel-aware) ───────────────────────────────
             deleted: list[str] = []

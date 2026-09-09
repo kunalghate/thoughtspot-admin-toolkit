@@ -474,6 +474,7 @@ class TestSyncInFlightFlag:
             "groups": False,
             "metadata": False,
             "tags": False,
+            "connections": False,
             "dependencies": False,
         }
 

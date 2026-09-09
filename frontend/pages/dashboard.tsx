@@ -33,6 +33,7 @@ const JOB_LABELS: Record<string, string> = {
   "sync:tags": "Tag sync",
   "sync:dependencies": "Lineage sync",
   "sync:orgs": "Org sync",
+  "sync:connections": "Connection sync",
   lineage_deep_index: "Lineage deep index",
   archive: "Archiver action",
   archive_dryrun: "Archiver dry run",
@@ -44,21 +45,30 @@ const JOB_LABELS: Record<string, string> = {
   user_delete: "User delete",
   user_delete_dryrun: "User delete dry run",
   user_transfer_ownership: "Ownership transfer",
+  metadata_transfer_ownership: "Ownership transfer",
+  user_transfer_dryrun: "Transfer pre-flight",
+  metadata_transfer_dryrun: "Transfer pre-flight",
   user_transfer_sharing: "Sharing transfer",
 };
 
 // Entities the dashboard can re-sync in place (retry on a failed sync job,
 // or the "never synced" nudge on a tile).
-const SYNCABLE_ENTITIES: EntityType[] = ["metadata", "users", "groups", "tags", "dependencies"];
+const SYNCABLE_ENTITIES: EntityType[] = ["metadata", "users", "groups", "tags", "connections", "dependencies"];
 
 // Cache-freshness row, in the order an admin reads the nav: identity first,
 // then content, then the derived graph. "dependencies" is the API/wire name for
 // what the UI calls Lineage. Tags are omitted — the toolkit has no tag page to
 // send anyone to, so a tag clock here would be freshness nobody acts on.
+//
+// Connections earn a clock (they have a page, and their object counts go stale
+// with the metadata cache) but deliberately NOT a StatTile: the tile row is the
+// four headline numbers an admin scans, and "how many connections exist" is a
+// reference figure, not one of them.
 const FRESHNESS_ENTITIES: { entity: EntityType; label: string }[] = [
   { entity: "users", label: "Users" },
   { entity: "groups", label: "Groups" },
   { entity: "metadata", label: "Metadata" },
+  { entity: "connections", label: "Connections" },
   { entity: "dependencies", label: "Lineage" },
 ];
 
@@ -664,35 +674,39 @@ function RecentJobsCard({ jobs, onRetry, syncing }: {
                 display: "flex", flexDirection: "column", gap: 3, padding: "8px 2px",
                 borderTop: i > 0 ? `1px solid ${theme.color.border}` : "none",
               }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {/* Fixed label gutter so the status pills share a left edge
-                      across rows (F5) — same idea as .dash-attn-row's gutter. */}
-                  <span style={{ fontSize: 12.5, color: theme.color.textPrimary, fontFamily: theme.font.sans, minWidth: 132, flexShrink: 0 }}>
+                {/* Fixed label gutter so the status pills share a left edge
+                    across rows (F5) — same idea as .dash-attn-row's gutter.
+                    A CSS grid track, not a min-width: a label longer than the
+                    gutter ellipsizes instead of pushing its pill out of line. */}
+                <div className="dash-job-row">
+                  <span className="label" style={{ fontSize: 12.5, color: theme.color.textPrimary, fontFamily: theme.font.sans }}
+                        title={JOB_LABELS[j.job_type] ?? j.job_type}>
                     {JOB_LABELS[j.job_type] ?? j.job_type}
                   </span>
-                  <span style={{
+                  <span className="pill" style={{
                     padding: "1px 8px", borderRadius: 10, fontSize: 10.5, fontWeight: 600,
                     background: pill.bg, color: pill.fg, fontFamily: theme.font.sans, letterSpacing: "0.03em",
                   }}>
                     {j.status}
                   </span>
-                  <span style={{ flex: 1 }} />
-                  {entity && (
-                    <button
-                      onClick={() => onRetry(entity)}
-                      disabled={syncing.has(entity)}
-                      style={{
-                        display: "inline-flex", alignItems: "center", gap: 3, padding: 0,
-                        border: "none", background: "none", cursor: syncing.has(entity) ? "default" : "pointer",
-                        fontSize: 11.5, fontFamily: theme.font.sans, fontWeight: 500, color: theme.color.accent2,
-                      }}
-                    >
-                      <RefreshCw size={10} /> {syncing.has(entity) ? "Retrying…" : "Retry"}
-                    </button>
-                  )}
-                  <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
-                    {timeAgo(j.created_at)}
-                  </span>
+                  <div className="trail">
+                    {entity && (
+                      <button
+                        onClick={() => onRetry(entity)}
+                        disabled={syncing.has(entity)}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 3, padding: 0,
+                          border: "none", background: "none", cursor: syncing.has(entity) ? "default" : "pointer",
+                          fontSize: 11.5, fontFamily: theme.font.sans, fontWeight: 500, color: theme.color.accent2,
+                        }}
+                      >
+                        <RefreshCw size={10} /> {syncing.has(entity) ? "Retrying…" : "Retry"}
+                      </button>
+                    )}
+                    <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
+                      {timeAgo(j.created_at)}
+                    </span>
+                  </div>
                 </div>
                 {/* The reason a job failed is the whole point of showing it. */}
                 {j.status === "FAILED" && (j.error || j.error_type) && (

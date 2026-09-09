@@ -1,13 +1,16 @@
 """
 Integration tests for the User Management API.
 
-Covers the list grid, the three preview endpoints, and execute endpoints
+Covers the list grid, the CSV export, the three preview endpoints, and
+execute endpoints
 (which kick background jobs we don't run end-to-end here — only verify the
 202 + job_id contract).
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime, timezone
 
@@ -304,3 +307,92 @@ class TestDeleteExecute:
 
         # Defaults to refusing, and only opts in when the caller says so.
         assert seen == [False, True]
+
+
+class TestExportCsv:
+    """
+    The export must cover every matching row, not just the page the grid has
+    loaded — that is the whole reason it is served from the backend instead of
+    AG Grid's own exportDataAsCsv().
+    """
+
+    def test_streams_every_row_with_headers(self, client, seeded):
+        r = client.get("/api/v1/users/export.csv?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/csv")
+        assert "attachment" in r.headers["content-disposition"]
+
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows[0] == [
+            "Username",
+            "Display name",
+            "Email",
+            "Status",
+            "Created",
+            "Modified",
+            "GUID",
+        ]
+        assert {row[0] for row in rows[1:]} == {"alice", "bob"}
+        assert {row[6] for row in rows[1:]} == {"u-alice", "u-bob"}
+
+    def test_honours_the_search_filter(self, client, seeded):
+        r = client.get("/api/v1/users/export.csv?cluster_id=c1&search=alice")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert [row[0] for row in rows[1:]] == ["alice"]
+
+    def test_honours_the_status_filter(self, client, in_memory_db, seeded):
+        with Session(in_memory_db) as session:
+            session.add(
+                CachedUser(
+                    cluster_id="c1",
+                    ts_guid="u-carol",
+                    username="carol",
+                    display_name="Carol",
+                    email="carol@co.com",
+                    status="INACTIVE",
+                    synced_at=datetime.now(tz=timezone.utc),
+                )
+            )
+            session.commit()
+
+        r = client.get("/api/v1/users/export.csv?cluster_id=c1&status=INACTIVE")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert [row[0] for row in rows[1:]] == ["carol"]
+
+    def test_pages_past_the_first_batch(self, client, seeded, monkeypatch):
+        """A cluster larger than one page must still export in full."""
+        from ts_admin.api import csv_export
+
+        monkeypatch.setattr(csv_export, "EXPORT_PAGE_SIZE", 1)
+        r = client.get("/api/v1/users/export.csv?cluster_id=c1")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert len(rows) == 3, "paging must not truncate the export"
+
+    def test_never_leaks_another_cluster(self, client, in_memory_db, seeded):
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as session:
+            session.add(
+                Cluster(
+                    id="c2",
+                    name="Dev",
+                    url="https://dev.thoughtspot.cloud",
+                    username="admin",
+                    auth_type="basic",
+                )
+            )
+            session.add(
+                CachedUser(
+                    cluster_id="c2",
+                    ts_guid="u-other",
+                    username="other-cluster-user",
+                    display_name="Other",
+                    email="other@co.com",
+                    status="ACTIVE",
+                    synced_at=now,
+                )
+            )
+            session.commit()
+
+        body = client.get("/api/v1/users/export.csv?cluster_id=c1").text
+        assert "other-cluster-user" not in body
+        assert "u-other" not in body

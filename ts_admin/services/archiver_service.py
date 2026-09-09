@@ -528,16 +528,24 @@ async def execute(
     create_tag_if_missing: bool = True,
 ) -> None:
     """
-    Background task: tag, untag, or delete a set of metadata objects.
+    Background task: tag, untag, export, or delete a set of metadata objects.
 
     action="tag"    — assign `tag_name` to all objects; create the tag if missing
     action="untag"  — remove `tag_name` from all objects
+    action="export" — TML-backup every object and stop; nothing is deleted
     action="delete" — TML-backup every object then permanently delete it (cancel-aware)
     """
-    if action == "delete":
+    if action in ("delete", "export"):
         from ts_admin.services.deletion_service import _execute_delete
 
-        await _execute_delete(job_id, cluster_id, org_id, object_ids)
+        await _execute_delete(
+            job_id,
+            cluster_id,
+            org_id,
+            object_ids,
+            action_type="tml_export" if action == "export" else "delete",
+            export_only=action == "export",
+        )
         return
 
     from ts_admin.models.audit_log import AuditLog
@@ -1081,10 +1089,15 @@ def history(
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
     """
-    Return paginated archive sessions (one row per delete job) sorted newest first.
+    Return paginated archive sessions (one row per job) sorted newest first.
 
-    A session = one delete job. Aggregates ArchiveRecord rows by job_id to compute
-    succeeded / failed counts.
+    A session = one archiver job. Aggregates ArchiveRecord rows by job_id to
+    compute exported / succeeded / failed counts.
+
+    `exported` and `succeeded` are deliberately separate numbers. An
+    export-only run backs objects up without deleting them, so every one of its
+    records has `deleted_confirmed_at IS NULL` — reporting only `succeeded`
+    would show a perfectly good export as "0 of 300".
     """
     from ts_admin.models.archive_record import ArchiveRecord
 
@@ -1113,6 +1126,7 @@ def history(
             records = session.exec(select(ArchiveRecord).where(ArchiveRecord.job_id == job_id)).all()
             total = len(records)
             succeeded = sum(1 for r in records if r.deleted_confirmed_at is not None and r.restored_at is None)
+            exported = sum(1 for r in records if r.tml_export_status == "SUCCESS")
             failed_tml = sum(1 for r in records if r.tml_export_status == "FAILED")
             failed_delete = 0  # hard to determine post-hoc; use 0 for now
             sessions.append(
@@ -1120,9 +1134,14 @@ def history(
                     "job_id": job_id,
                     "archived_at": archived_at.isoformat() if archived_at else None,
                     "total": total,
+                    "exported": exported,
                     "succeeded": succeeded,
                     "failed_tml_export": failed_tml,
                     "failed_delete": failed_delete,
+                    # No object in this session was deleted, so it was an
+                    # export-only run — the UI labels it differently and offers
+                    # the bundle download instead of a restore.
+                    "export_only": exported > 0 and succeeded == 0 and failed_delete == 0,
                 }
             )
 

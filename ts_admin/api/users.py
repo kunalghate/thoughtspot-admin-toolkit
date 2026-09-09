@@ -3,11 +3,13 @@ User Management API.
 
 Read endpoints:
   GET  /api/v1/users                       — paginated user grid (cluster + org scoped)
+  GET  /api/v1/users/export.csv            — every matching user as a CSV download
   GET  /api/v1/users/{ts_guid}             — single user detail
   GET  /api/v1/users/history               — past user-management actions
 
 Action endpoints (preview is sync, execute is a background job):
   POST /api/v1/users/transfer/preview      — list objects that will move
+  POST /api/v1/users/transfer/dryrun       — live pre-flight; changes nothing
   POST /api/v1/users/transfer/execute      — kick reassign-ownership job
   POST /api/v1/users/transfer-sharing/preview — live: what the source user can see
   POST /api/v1/users/transfer-sharing/execute — kick re-share job
@@ -26,8 +28,10 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ts_admin.api.csv_export import csv_response, paged_rows
 from ts_admin.services import user_management_service as svc
 from ts_admin.ts_client.exceptions import (
     TSAuthenticationError,
@@ -100,10 +104,19 @@ class TransferPreviewRequest(BaseModel):
     explicit_guids: list[str] | None = None
 
 
+class TransferOwnerSummary(BaseModel):
+    owner_guid: str
+    owner_name: str
+    count: int
+
+
 class TransferPreviewResponse(BaseModel):
     items: list[TransferObjectItem]
     total: int
     by_type: dict[str, int]
+    # Who currently owns the selection. Always one entry for the Users-page
+    # flow; a Metadata-page selection can span several.
+    owners: list[TransferOwnerSummary] = []
 
 
 class TransferExecuteRequest(BaseModel):
@@ -255,6 +268,51 @@ def list_users(
     )
 
 
+# Column order mirrors the Users grid, plus the GUID an admin needs to act on a
+# row outside the UI.
+_CSV_COLUMNS = [
+    ("username", "Username"),
+    ("display_name", "Display name"),
+    ("email", "Email"),
+    ("status", "Status"),
+    ("created_at", "Created"),
+    ("modified_at", "Modified"),
+    ("ts_guid", "GUID"),
+]
+
+
+@router.get("/export.csv")
+def export_users_csv(
+    cluster_id: str | None = Query(default=None),
+    org_id: int | None = Query(default=None),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    sort_field: str = Query(default="username"),
+    sort_order: Literal["asc", "desc"] = Query(default="asc"),
+) -> StreamingResponse:
+    """
+    Every user matching the current filters, as a CSV download.
+
+    Deliberately not paginated: the grid's own CSV button would only ever export
+    the rows AG Grid had cached. Takes the same filter/sort params as the list
+    endpoint so the file matches what is on screen.
+    """
+    resolved = _resolve_cluster_id(cluster_id)
+    rows = paged_rows(
+        lambda offset, size: svc.list_users(
+            cluster_id=resolved,
+            org_id=org_id,
+            status=status,
+            search=search,
+            sort_field=sort_field,
+            sort_order=sort_order,
+            record_offset=offset,
+            page_size=size,
+        )
+    )
+    return csv_response(filename_stem="users", columns=_CSV_COLUMNS, rows=rows)
+
+
 @router.get("/history", response_model=UserHistoryResponse)
 def list_history(
     cluster_id: str | None = Query(default=None),
@@ -351,7 +409,55 @@ def transfer_preview(body: TransferPreviewRequest) -> TransferPreviewResponse:
         items=[TransferObjectItem(**i) for i in result["items"]],
         total=result["total"],
         by_type=result["by_type"],
+        owners=[TransferOwnerSummary(**o) for o in result["owners"]],
     )
+
+
+@router.post("/transfer/dryrun", response_model=JobAcceptedResponse, status_code=202)
+async def transfer_dryrun(
+    body: TransferExecuteRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAcceptedResponse:
+    """
+    Pre-flight the transfer against ThoughtSpot live. Changes nothing.
+
+    Present here as well as on /metadata because the two flows share one
+    confirmation modal — a pre-flight step that ran on only one of them would
+    be a gap that looks like a bug.
+    """
+    if not body.object_ids:
+        raise HTTPException(status_code=422, detail="object_ids must not be empty")
+    if not body.to_user_identifier:
+        raise HTTPException(status_code=422, detail="to_user_identifier is required")
+
+    cluster_id = _resolve_cluster_id(body.cluster_id)
+
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=body.org_id)
+
+    from ts_admin.services.job_service import create_job
+
+    job_id = create_job(
+        job_type="user_transfer_dryrun",
+        parameters={
+            "cluster_id": cluster_id,
+            "org_id": body.org_id,
+            "from_user_guid": body.from_user_guid,
+            "to_user_identifier": body.to_user_identifier,
+            "object_ids": body.object_ids,
+        },
+    )
+    background_tasks.add_task(
+        svc.dryrun_transfer,
+        job_id=job_id,
+        cluster_id=cluster_id,
+        org_id=body.org_id,
+        to_user_identifier=body.to_user_identifier,
+        object_ids=body.object_ids,
+        from_user_guid=body.from_user_guid,
+    )
+    return JobAcceptedResponse(job_id=job_id, total=len(body.object_ids))
 
 
 @router.post("/transfer/execute", response_model=JobAcceptedResponse, status_code=202)

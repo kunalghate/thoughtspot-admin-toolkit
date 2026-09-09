@@ -20,7 +20,7 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ts_admin.services import archiver_service, deletion_service
@@ -77,7 +77,9 @@ class ExecuteRequest(BaseModel):
     cluster_id: str | None = None
     org_id: int = 0
     object_ids: list[str]
-    action: Literal["tag", "untag", "delete"]
+    # "export" writes the TML backup and stops — the deliberate half-step for
+    # an admin who wants the backup in hand before trusting the delete.
+    action: Literal["tag", "untag", "delete", "export"]
     tag_name: str = "INACTIVE"
     create_tag_if_missing: bool = True
 
@@ -116,9 +118,13 @@ class ArchiveSessionSummary(BaseModel):
     job_id: str
     archived_at: str | None
     total: int
+    # Objects with a TML backup on disk. Separate from `succeeded` (objects
+    # actually deleted) so an export-only run doesn't read as "0 of 300".
+    exported: int
     succeeded: int
     failed_tml_export: int
     failed_delete: int
+    export_only: bool
 
 
 class ArchiveRecordResponse(BaseModel):
@@ -392,18 +398,25 @@ async def archiver_execute(
     background_tasks: BackgroundTasks,
 ) -> ExecuteResponse:
     """
-    Tag or untag a selection of stale objects.
+    Tag, untag, export, or delete a selection of stale objects.
 
     Creates a background job, returns immediately with job_id.
     Poll GET /api/v1/jobs/{job_id} to track progress.
+
+    `action="export"` takes the TML backup and stops — nothing is deleted, so
+    it needs no dry-run. The resulting records download through
+    GET /archiver/export/{job_id}/download.
     """
     from ts_admin.config import load_config
     from ts_admin.services.job_service import create_job
 
     if not body.object_ids:
         raise HTTPException(status_code=422, detail="object_ids must not be empty")
-    if body.action not in ("tag", "untag", "delete"):
-        raise HTTPException(status_code=422, detail="action must be 'tag', 'untag', or 'delete'")
+    if body.action not in ("tag", "untag", "delete", "export"):
+        raise HTTPException(
+            status_code=422,
+            detail="action must be 'tag', 'untag', 'export', or 'delete'",
+        )
 
     cluster_id = body.cluster_id or load_config().active_cluster.id
 
@@ -583,6 +596,80 @@ def download_tml(
         path=str(path),
         media_type="text/plain",
         filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/export/{job_id}/download")
+def download_export_bundle(
+    job_id: str,
+    cluster_id: str | None = Query(default=None),
+) -> StreamingResponse:
+    """
+    Download every TML file one job exported, as a single zip.
+
+    The per-record endpoint above is fine for one object; an admin who just
+    exported 300 of them wants one file, not 300 clicks.
+
+    Scoped to the cluster: the records are filtered by cluster_id, so a job id
+    from another instance yields a 404 rather than that instance's TML.
+    """
+    import io
+    import zipfile
+    from pathlib import Path
+
+    from sqlmodel import select
+
+    from ts_admin.config import load_config
+    from ts_admin.database import get_session
+    from ts_admin.models.archive_record import ArchiveRecord
+
+    resolved = cluster_id or load_config().active_cluster.id
+    with get_session() as session:
+        records = session.exec(
+            select(ArchiveRecord).where(
+                ArchiveRecord.job_id == job_id,
+                ArchiveRecord.cluster_id == resolved,
+                ArchiveRecord.tml_export_status == "SUCCESS",
+            )
+        ).all()
+
+    if not records:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No successful TML exports found for job {job_id!r} on this instance",
+        )
+
+    buf = io.BytesIO()
+    written = 0
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for record in records:
+            if not record.tml_path:
+                continue
+            path = Path(record.tml_path)
+            if not path.exists():
+                # A file cleaned up or moved since the export. Skip it rather
+                # than failing the whole bundle — the rest is still useful, and
+                # the manifest below records what was expected.
+                logger.warning("TML file missing for record %s: %s", record.id, path)
+                continue
+            # GUID-suffixed so two objects sharing a name cannot overwrite each
+            # other inside the archive.
+            safe_name = record.name.replace("/", "_").replace("\\", "_") or record.ts_guid
+            zf.writestr(f"{safe_name}-{record.ts_guid}.tml", path.read_text(encoding="utf-8"))
+            written += 1
+
+    if written == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"TML files for job {job_id!r} are no longer on disk",
+        )
+
+    buf.seek(0)
+    filename = f"tml-export-{job_id}.zip"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

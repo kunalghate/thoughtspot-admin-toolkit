@@ -449,7 +449,7 @@ button { font-family: inherit; }
 .dash-tiles     { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .dash-attention { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 24px; }
 .dash-split     { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.dash-fresh     { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.dash-fresh     { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 
 @media (max-width: 1180px) {
   .dash-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -480,6 +480,23 @@ button { font-family: inherit; }
 .dash-attn-row:hover { background: var(--surface-2); }
 .dash-attn-row .chev { opacity: 0; transition: opacity 120ms ease; }
 .dash-attn-row:hover .chev { opacity: 1; }
+
+/* One recent-job row: fixed label gutter so every status pill shares a left
+   edge, the same trick as .dash-attn-row. The label track is fixed (not a
+   min-width) and ellipsizes, so an unusually long job label — or a raw
+   snake_case job_type with no entry in JOB_LABELS — cannot shove the pills out
+   of alignment. */
+.dash-job-row {
+  display: grid; grid-template-columns: 140px auto minmax(0, 1fr);
+  align-items: center; gap: 10px;
+}
+.dash-job-row .label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-job-row .pill { justify-self: start; }
+.dash-job-row .trail {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0;
+}
 
 /* One content-by-type row: label · bar track · count, all sharing a baseline.
    The track is capped — a bar stretched across a full-width card reads as a

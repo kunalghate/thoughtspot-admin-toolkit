@@ -360,3 +360,107 @@ class TestGetPermissions:
     def test_404_if_not_in_cache(self, client, seeded, fake_ts):
         r = client.get("/api/v1/metadata/nope/permissions?cluster_id=c1&org_id=0")
         assert r.status_code == 404
+
+
+class TestMetadataTransfer:
+    """
+    Ownership transfer keyed on a selection rather than a source user.
+
+    The selection can span owners (lb-1 is Alice's, ans-1 is Bob's in the
+    fixture), which is exactly what the Users-page endpoint cannot express.
+    """
+
+    @pytest.fixture
+    def authoritative(self, in_memory_db, seeded):
+        """Certify the metadata cache — both endpoints fail closed without it."""
+        from ts_admin.models.sync_log import SyncLog
+
+        with Session(in_memory_db) as s:
+            s.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=3))
+            s.commit()
+
+    def test_preview_reports_every_current_owner(self, client, authoritative):
+        r = client.post(
+            "/api/v1/metadata/transfer/preview",
+            json={"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1", "ans-1"]},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == 2
+        owners = {o["owner_guid"]: o["count"] for o in body["owners"]}
+        assert owners == {"u1": 1, "u2": 1}
+
+    def test_preview_rejects_an_empty_selection(self, client, authoritative):
+        r = client.post(
+            "/api/v1/metadata/transfer/preview",
+            json={"cluster_id": "c1", "org_id": 0, "object_ids": []},
+        )
+        assert r.status_code == 422
+
+    def test_preview_refuses_a_truncated_cache(self, client, seeded):
+        """No SyncLog row: the selection query itself would under-report."""
+        r = client.post(
+            "/api/v1/metadata/transfer/preview",
+            json={"cluster_id": "c1", "org_id": 0, "object_ids": ["lb-1"]},
+        )
+        assert r.status_code == 409
+
+    def test_execute_creates_a_metadata_scoped_job(self, client, authoritative, monkeypatch):
+        import ts_admin.services.user_management_service as svc
+
+        captured: dict = {}
+
+        async def _fake_transfer(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(svc, "execute_transfer", _fake_transfer)
+
+        r = client.post(
+            "/api/v1/metadata/transfer/execute",
+            json={
+                "cluster_id": "c1",
+                "org_id": 0,
+                "to_user_identifier": "carol",
+                "object_ids": ["lb-1", "ans-1"],
+            },
+        )
+        assert r.status_code == 202, r.text
+        assert r.json()["total"] == 2
+
+        from ts_admin.database import get_session
+        from ts_admin.models.job import Job
+
+        with get_session() as s:
+            job = s.get(Job, r.json()["job_id"])
+        assert job.job_type == "metadata_transfer_ownership"
+        # No single source owner — the service groups by each object's owner.
+        assert captured["from_user_guid"] is None
+        assert captured["object_ids"] == ["lb-1", "ans-1"]
+
+    def test_execute_refuses_a_truncated_cache_before_creating_a_job(self, client, seeded):
+        from sqlmodel import select as sm_select
+
+        from ts_admin.database import get_session
+        from ts_admin.models.job import Job
+
+        r = client.post(
+            "/api/v1/metadata/transfer/execute",
+            json={"cluster_id": "c1", "org_id": 0, "to_user_identifier": "carol", "object_ids": ["lb-1"]},
+        )
+        assert r.status_code == 409
+        with get_session() as s:
+            assert list(s.exec(sm_select(Job))) == [], "no job may be created when the guard refuses"
+
+    def test_execute_requires_a_target(self, client, authoritative):
+        r = client.post(
+            "/api/v1/metadata/transfer/execute",
+            json={"cluster_id": "c1", "org_id": 0, "to_user_identifier": "", "object_ids": ["lb-1"]},
+        )
+        assert r.status_code == 422
+
+    def test_execute_rejects_an_empty_selection(self, client, authoritative):
+        r = client.post(
+            "/api/v1/metadata/transfer/execute",
+            json={"cluster_id": "c1", "org_id": 0, "to_user_identifier": "carol", "object_ids": []},
+        )
+        assert r.status_code == 422

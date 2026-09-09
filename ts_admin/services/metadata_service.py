@@ -54,6 +54,7 @@ class MetadataService:
         org_id: int,
         types: list[str] | None = None,
         owner_guid: str | None = None,
+        connection_guid: str | None = None,
         tag_names: list[str] | None = None,
         search: str | None = None,
         stale_days: int | None = None,
@@ -80,6 +81,7 @@ class MetadataService:
         Filters:
           types       — object types to include (LIVEBOARD, ANSWER, etc.)
           owner_guid  — filter by owner GUID
+          connection_guid — only objects sitting on this data connection
           tag_names   — filter objects that have ALL of the given tags
           search      — substring match on object name (case-insensitive)
           stale_days  — objects not accessed in the last N days
@@ -101,6 +103,8 @@ class MetadataService:
 
         if owner_guid:
             conditions.append(CachedMetadata.owner_guid == owner_guid)
+        if connection_guid:
+            conditions.append(CachedMetadata.connection_guid == connection_guid)
 
         if search:
             conditions.append(col(CachedMetadata.name).ilike(f"%{search}%"))

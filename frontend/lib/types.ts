@@ -25,7 +25,7 @@ export interface Org {
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
 
-export type EntityType = "users" | "groups" | "metadata" | "tags" | "orgs" | "dependencies";
+export type EntityType = "users" | "groups" | "metadata" | "tags" | "orgs" | "connections" | "dependencies";
 export type SyncStatus = "SUCCESS" | "FAILED" | "IN_PROGRESS" | "NOT_SYNCED";
 
 export interface SyncLog {
@@ -119,6 +119,33 @@ export interface MetadataObject {
   modified_at: string | null;
   last_accessed_at: string | null;
   view_count: number;
+  /** Data connection this table sits on. Empty for non-table objects. */
+  connection_guid: string;
+  /** Resolved connection name, falling back to the GUID. */
+  connection_name: string;
+  db_name: string;
+  db_schema: string;
+  db_table: string;
+}
+
+// ── Data connections ──────────────────────────────────────────────────────────
+
+export interface DataConnection {
+  ts_guid: string;
+  name: string;
+  description: string;
+  data_warehouse_type: string;
+  counts_by_type: Record<string, number>;
+  object_count: number;
+  synced_at: string | null;
+}
+
+export interface DataConnectionListResponse {
+  items: DataConnection[];
+  total: number;
+  /** Cached objects carrying a connection. Zero + non-empty cache = re-sync. */
+  linked_rows: number;
+  metadata_rows: number;
 }
 
 // ── Permissions ───────────────────────────────────────────────────────────────
@@ -267,9 +294,13 @@ export interface ArchiveSessionSummary {
   job_id: string;
   archived_at: string;
   total: number;
+  /** Objects with a TML backup on disk — not the same as deleted. */
+  exported: number;
   succeeded: number;
   failed_tml_export: number;
   failed_delete: number;
+  /** Nothing in this session was deleted: it was an export-only run. */
+  export_only: boolean;
 }
 
 // ── Bulk Deleter ──────────────────────────────────────────────────────────────
@@ -354,10 +385,18 @@ export interface TransferObjectItem {
   tags: string[];
 }
 
+export interface TransferOwnerSummary {
+  owner_guid: string;
+  owner_name: string;
+  count: number;
+}
+
 export interface TransferPreviewResponse {
   items: TransferObjectItem[];
   total: number;
   by_type: Record<string, number>;
+  /** Who owns the selection now. One entry from /users, possibly many from /metadata. */
+  owners: TransferOwnerSummary[];
 }
 
 export interface SharingPermissionItem {
@@ -559,6 +598,7 @@ export interface DashboardCounts {
   users: number;
   groups: number;
   tags: number;
+  connections: number;
   objects_total: number;
   objects_by_type: Record<string, number>;
   archivable_total: number;

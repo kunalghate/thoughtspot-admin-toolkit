@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import { AgGridReact } from "ag-grid-react";
 import type { GridReadyEvent, RowClickedEvent, SortChangedEvent } from "ag-grid-community";
-import { Download, Search, X } from "lucide-react";
+import { ArrowRightLeft, Download, Search, X } from "lucide-react";
 import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
+import { TransferOwnershipModal } from "@/components/Users/TransferOwnershipModal";
 import { metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
@@ -33,6 +35,9 @@ export default function MetadataPage() {
 
 function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const { activeCluster, activeOrg } = useShell();
+  const router = useRouter();
+  // Deep link from the Connections page: /metadata?connection_guid=…
+  const connectionGuid = typeof router.query.connection_guid === "string" ? router.query.connection_guid : undefined;
   const gridRef = useRef<AgGridReact>(null);
   // Generation counter for the active datasource — see the same guard on the
   // Groups page. Drops responses from a superseded datasource.
@@ -47,6 +52,8 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const [sortField, setSortField]     = useState("modified_at");
   const [sortOrder, setSortOrder]     = useState<"asc" | "desc">("desc");
   const [colFilters, setColFilters]   = useState<Record<string, any>>({});
+  const [selected, setSelected]       = useState<MetadataObject[]>([]);
+  const [transferOpen, setTransferOpen] = useState(false);
 
   // Debounce search input → search state
   useEffect(() => {
@@ -73,6 +80,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
         cluster_id: clusterId,
         org_id: orgId,
         types:               intersectTypes(f.types, toolbarTypes),
+        connection_guid:     connectionGuid,
         search:              f.search ?? toolbarSearch,
         owner_name_search:   f.owner_name_search,
         tag_search:          f.tag_search,
@@ -96,7 +104,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
     });
 
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder, colFilters]);
+  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder, colFilters, connectionGuid]);
 
   const handleGridReady = useCallback((e: GridReadyEvent) => {
     e.api.applyColumnState({
@@ -200,6 +208,26 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           })}
         </div>
 
+        {/* A deep-linked connection filter is invisible in the toolbar chips, so
+            it gets its own removable pill — a filter the admin cannot see or
+            clear is one they will read as a broken object count. */}
+        {connectionGuid && (
+          <button
+            data-testid="connection-filter-chip"
+            onClick={() => router.push("/metadata")}
+            title="Showing only objects on this connection — click to clear"
+            style={{
+              display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
+              borderRadius: 14, border: `1px solid ${theme.color.accent}`,
+              background: theme.color.accentSoft, color: theme.color.accent2,
+              fontSize: 11.5, fontWeight: 500, cursor: "pointer", fontFamily: theme.font.sans,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Connection filter <X size={11} />
+          </button>
+        )}
+
         {/* Clear filters */}
         {hasFilters && (
           <button onClick={clearFilters} style={{
@@ -227,6 +255,48 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
         </button>
       </div>
 
+      {/* ── Selection bar (shown when rows are checked) ──────────────────── */}
+      {selected.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+          background: theme.color.violetSoft, border: `1px solid ${theme.color.violetBorder}`,
+          borderRadius: 6, flexShrink: 0, flexWrap: "wrap",
+        }}>
+          <span style={{
+            fontSize: 13, color: theme.color.accent2, fontWeight: 500,
+            fontFamily: theme.font.sans, whiteSpace: "nowrap",
+          }}>
+            {selected.length.toLocaleString()} selected
+          </span>
+
+          <div style={{ flex: 1 }} />
+
+          <button
+            data-testid="transfer-ownership"
+            onClick={() => setTransferOpen(true)}
+            style={{
+              display: "flex", alignItems: "center", gap: 5, padding: "5px 11px",
+              borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+              fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, cursor: "pointer",
+              fontFamily: theme.font.sans, whiteSpace: "nowrap",
+            }}
+          >
+            <ArrowRightLeft size={12} /> Transfer ownership…
+          </button>
+
+          <button
+            onClick={() => gridRef.current?.api?.deselectAll()}
+            style={{
+              display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
+              borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
+              fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
+            }}
+          >
+            <X size={11} /> Clear
+          </button>
+        </div>
+      )}
+
       {/* AG Grid — Infinite Row Model */}
       <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%" }}>
         <AgGridReact
@@ -240,7 +310,11 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           onGridReady={handleGridReady}
           onSortChanged={handleSortChanged}
           onFilterChanged={handleFilterChanged}
-          rowSelection="single"
+          rowSelection="multiple"
+          // Checkbox-only selection: a row click still opens the drawer and
+          // cannot arm the transfer action by accident.
+          suppressRowClickSelection
+          onSelectionChanged={() => setSelected(gridRef.current?.api?.getSelectedRows() ?? [])}
           rowStyle={{ cursor: "pointer" }}
           onRowClicked={(e: RowClickedEvent<MetadataObject>) => {
             if (e.data) setDrawerObject(e.data);
@@ -254,9 +328,26 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           object={drawerObject}
           clusterId={activeCluster.id}
           orgId={activeOrg.org_id}
-          onClose={() => {
-            setDrawerObject(null);
-            gridRef.current?.api?.deselectAll();
+          // Deliberately does NOT deselectAll: selection is now the admin's
+          // pending transfer set, not a side effect of opening this drawer.
+          onClose={() => setDrawerObject(null)}
+        />
+      )}
+
+      {/* Ownership transfer for the checked objects. Same modal the Users page
+          uses — one confirmation flow, not two that can drift. */}
+      {transferOpen && activeCluster && activeOrg != null && (
+        <TransferOwnershipModal
+          clusterId={activeCluster.id}
+          orgId={activeOrg.org_id}
+          source={{ kind: "objects", objectIds: selected.map((o) => o.ts_guid) }}
+          onClose={(reloadNeeded) => {
+            setTransferOpen(false);
+            if (reloadNeeded) {
+              gridRef.current?.api?.deselectAll();
+              setSelected([]);
+              reloadGrid();
+            }
           }}
         />
       )}

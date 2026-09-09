@@ -28,7 +28,7 @@ const ROWS = [
 /** Everything the filter matches — far more than the grid hands back. */
 const TOTAL_MATCHING = 2000;
 
-type Captured = { resolveBody?: any; dryrunBody?: any };
+type Captured = { resolveBody?: any; dryrunBody?: any; executeBody?: any };
 
 const installStubs = async (page: Page, captured: Captured) => {
   const json = (route: Route, status: number, body: unknown) =>
@@ -92,6 +92,15 @@ const installStubs = async (page: Page, captured: Captured) => {
     const all = Array.from({ length: TOTAL_MATCHING }, (_, i) => `all-${i}`).concat(ROWS.map((r) => r.guid));
     const guids = all.filter((g) => !excluded.includes(g)).slice(0, TOTAL_MATCHING - excluded.length);
     return json(route, 200, { guids, total: guids.length });
+  });
+
+  await page.route("**/api/v1/archiver/execute", (route) => {
+    captured.executeBody = JSON.parse(route.request().postData() ?? "{}");
+    return json(route, 202, {
+      job_id: "job-export",
+      action: captured.executeBody.action,
+      total: captured.executeBody.object_ids.length,
+    });
   });
 
   await page.route("**/api/v1/archiver/dryrun", (route) => {
@@ -185,4 +194,36 @@ test("changing the filter drops a standing select-all", async ({ page }) => {
   // must not silently re-point at a different set of objects.
   await page.getByPlaceholder(/search by name/i).fill("board two");
   await expect(page.getByTestId("select-all-badge")).toHaveCount(0, { timeout: 10_000 });
+});
+
+
+/**
+ * Regression guard for a semantic conflict between two individually-green
+ * branches: "Export TML" (#41) and select-all (#43) both landed in this
+ * selection bar. Export originally read `selectedGuids` directly, so in
+ * select-all mode it would have backed up only the rows AG Grid happened to
+ * have loaded while the bar claimed thousands — a silent under-export of the
+ * exact objects an admin is about to trust a delete against.
+ *
+ * Every action in this bar must resolve through /archiver/resolve.
+ */
+test("select all → Export TML exports the whole filtered set, not the loaded rows", async ({ page }) => {
+  const captured: Captured = {};
+  await installStubs(page, captured);
+  await page.goto("/archiver");
+
+  await expect(page.locator(".ag-row", { hasText: "Stale Board One" })).toBeVisible({ timeout: 15_000 });
+
+  await firstRowCheckbox(page).first().click();
+  await page.getByTestId("select-all-matching").click();
+
+  await page.getByTestId("export-tml").click();
+  await expect.poll(() => captured.executeBody?.action).toBe("export");
+
+  expect(captured.resolveBody, "export must expand the filter server-side").toBeTruthy();
+  expect(captured.executeBody.object_ids.length).toBe(TOTAL_MATCHING);
+  expect(
+    captured.executeBody.object_ids.length,
+    "exporting only the loaded rows would silently under-back-up the selection"
+  ).toBeGreaterThan(ROWS.length);
 });

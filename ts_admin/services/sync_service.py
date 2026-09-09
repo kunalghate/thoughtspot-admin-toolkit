@@ -469,6 +469,14 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
                                 modified_at=obj.modified,
                                 last_accessed_at=obj.last_accessed,
                                 view_count=obj.view_count,
+                                # Connection + external table identity. Free:
+                                # the tables pass already fetches the detail
+                                # payload these come from. Empty for every
+                                # other object type.
+                                connection_guid=obj.connection_guid,
+                                db_name=obj.db_name,
+                                db_schema=obj.db_schema,
+                                db_table=obj.db_table,
                                 synced_at=datetime.now(timezone.utc),
                             )
                         )
@@ -600,6 +608,89 @@ async def _sync_tags(*, org_id: int, job_id: str, target_cluster_id: str | None 
         "tags", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
     )
     mark_complete(job_id, {"entity_type": "tags", "record_count": count})
+
+
+async def _sync_connections(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+    """Cache the cluster's data connections. Same shape as `_sync_tags`.
+
+    Needs DATAMANAGEMENT or ADMINISTRATION on the cluster; without it
+    `/connection/search` 403s and `run_sync` marks the job FAILED with the
+    privilege message, which is the honest outcome.
+    """
+    from sqlmodel import col, select
+    from sqlmodel import delete as sql_delete
+
+    from ts_admin.models.cache.ts_connection import CachedConnection
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    cluster = _resolve_cluster(target_cluster_id)
+    cluster_id = cluster.id
+    start = datetime.now(timezone.utc)
+
+    mark_running(job_id, total=0)
+
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
+        connections = await client.search_connections()
+
+    with get_session() as session:
+        for conn in connections:
+            existing = session.exec(
+                select(CachedConnection).where(
+                    CachedConnection.cluster_id == cluster_id,
+                    CachedConnection.org_id == org_id,
+                    CachedConnection.ts_guid == conn.id,
+                )
+            ).first()
+
+            if existing:
+                existing.name = conn.name
+                existing.description = conn.description
+                existing.data_warehouse_type = conn.data_warehouse_type
+                existing.synced_at = datetime.now(timezone.utc)
+                session.add(existing)
+            else:
+                session.add(
+                    CachedConnection(
+                        cluster_id=cluster_id,
+                        org_id=org_id,
+                        ts_guid=conn.id,
+                        name=conn.name,
+                        description=conn.description,
+                        data_warehouse_type=conn.data_warehouse_type,
+                        synced_at=datetime.now(timezone.utc),
+                    )
+                )
+        session.commit()
+
+    # Purge connections deleted in TS since the last sync, same shape as
+    # `_sync_tags` — including the empty guard, for the same reason:
+    # `not_in(<empty>)` is unconditionally true, so one blank response would
+    # empty the whole cache, and "this org really has no connections" is
+    # indistinguishable from a transient failure.
+    seen_guids = {conn.id for conn in connections}
+    if not seen_guids:
+        logger.warning(
+            "Connection sync for cluster=%s org=%s returned nothing; skipping purge to protect the cache",
+            cluster_id,
+            org_id,
+        )
+    else:
+        with get_session() as session:
+            session.exec(
+                sql_delete(CachedConnection).where(
+                    CachedConnection.cluster_id == cluster_id,
+                    CachedConnection.org_id == org_id,
+                    col(CachedConnection.ts_guid).not_in(seen_guids),
+                )
+            )
+            session.commit()
+
+    count = len(connections)
+    duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+    _write_sync_log(
+        "connections", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
+    )
+    mark_complete(job_id, {"entity_type": "connections", "record_count": count})
 
 
 async def _sync_orgs(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
@@ -811,6 +902,7 @@ def sync_handlers() -> dict[str, Callable[..., Awaitable[None]]]:
         "groups": _sync_groups,
         "metadata": _sync_metadata,
         "tags": _sync_tags,
+        "connections": _sync_connections,
         "orgs": _sync_orgs,
         "dependencies": _sync_dependencies,
     }

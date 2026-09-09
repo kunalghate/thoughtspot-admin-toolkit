@@ -16,6 +16,7 @@ class DashboardCounts(BaseModel):
     users: int
     groups: int
     tags: int
+    connections: int = 0
     objects_total: int
     objects_by_type: dict[str, int]
     archivable_total: int

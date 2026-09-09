@@ -1,0 +1,152 @@
+
+=== 2026-09-09T03:45:29+00:00 exit=0
+$ ruff check ts_admin/ tests/
+All checks passed!
+
+=== 2026-09-09T03:47:59+00:00 exit=False
+$ cd "/Users/bibekshrestha/Visual Studio/Admin_tookit" && python3 - <<'PY'
+import pathlib
+p = pathlib.Path(".claude/hooks/protected_paths.py"); t = p.read_text()
+old = '''# Only a shell command that actually writes counts; `cat CLAUDE.md` is not an edit.
+WRITES = re.compile(r"(>>?\\s|sed -i|\\btee\\b|\\bmv\\b|\\brm\\b|\\bcp\\b|\\bpatch\\b|\\btruncate\\b)")
+'''
+new = '''# Only a shell command that actually writes counts, and only when the write verb
+# comes just before the path: `cat CLAUDE.md` is not an edit, and neither is
+# `pytest tests/integration/test_dryrun_safety.py | tee log` (the tee is after it).
+WRITES = re.compile(r"(>>?|sed -i\\S*|\\btee\\b|\\bmv\\b|\\brm\\b|\\bcp\\b|\\bpatch\\b|\\btruncate\\b)")
+LOOKBACK = 60
+
+
+def written_by(command: str, path: str) -> bool:
+    for m in re.finditer(re.escape(path), command):
+        if WRITES.search(command[max(0, m.start() - LOOKBACK) : m.start()]):
+            return True
+    return False
+'''
+assert t.count(old) == 1
+t = t.replace(old, new)
+
+old2 = '''    elif tool == "Bash":
+        target = str(args.get("command", ""))
+        if not WRITES.search(target):
+            return None
+    else:
+        return None
+    return next((p for p in PROTECTED if p in target), None)'''
+new2 = '''    elif tool == "Bash":
+        command = str(args.get("command", ""))
+        return next((p for p in PROTECTED if written_by(command, p)), None)
+    else:
+        return None
+    return next((p for p in PROTECTED if p in target), None)'''
+assert t.count(old2) == 1
+p.write_text(t.replace(old2, new2)); print("ok")
+PY
+echo "--- cases (expect: ask, silent, silent, ask, silent, ask)"
+for c in 'sed -i "" s/a/b/ CLAUDE.md' 'pytest tests/integration/test_dryrun_safety.py -v | tee /tmp/l' 'cat CLAUDE.md' 'cat > ts_admin/main.py <<EOF' 'git diff .github/workflows/ci.yml' 'echo x >> .github/workflows/ci.yml'; do
+  printf '%-55s => ' "$c"
+  python3 -c "import json,sys;print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]}}))" "$c" | python3 .claude/hooks/protected_paths.py | python3 -c "import sys;d=sys.stdin.read();print('ASK' if d.strip() else 'silent')"
+done
+ok
+--- cases (expect: ask, silent, silent, ask, silent, ask)
+sed -i "" s/a/b/ CLAUDE.md                              => ASK
+pytest tests/integration/test_dryrun_safety.py -v | tee /tmp/l => silent
+cat CLAUDE.md                                           => silent
+cat > ts_admin/main.py <<EOF                            => ASK
+git diff .github/workflows/ci.yml                       => silent
+echo x >> .github/workflows/ci.yml                      => ASK
+
+=== 2026-09-09T03:48:05+00:00 exit=False
+$ cd "/Users/bibekshrestha/Visual Studio/Admin_tookit" && ruff check .claude/hooks/ && ruff format --check .claude/hooks/; echo "--- repo lint"; ruff check ts_admin/ tests/ && ruff format --check ts_admin/ tests/ | tail -2
+All checks passed!
+Would reformat: .claude/hooks/gate_evidence.py
+1 file would be reformatted, 1 file already formatted
+--- repo lint
+All checks passed!
+114 files already formatted
+
+=== 2026-09-09T03:48:09+00:00 exit=False
+$ cd "/Users/bibekshrestha/Visual Studio/Admin_tookit" && ruff format .claude/hooks/ && ruff check .claude/hooks/ && git add -A .claude .gitignore && git status --short
+1 file reformatted, 1 file left unchanged
+All checks passed!
+M  .claude/agents/architect.md
+M  .claude/agents/implementer.md
+M  .claude/agents/reviewer.md
+A  .claude/hooks/gate_evidence.py
+A  .claude/hooks/protected_paths.py
+A  .claude/settings.json
+M  .claude/skills/improve-cycle/SKILL.md
+M  .gitignore
+
+=== 2026-09-09T03:48:20+00:00 exit=False
+$ cd "/Users/bibekshrestha/Visual Studio/Admin_tookit" && git commit -q -F - <<'MSG' && git log --oneline -1
+org: add a simplicity lens and machine-collected gate evidence
+
+Two borrowings, both aimed at failure modes the current cycle cannot see.
+
+From ponytail (already installed as a user skill, never wired into the org):
+nothing in the pipeline asks whether the diff should have been written. Five
+lenses can go green on code that should not exist. The ladder now runs at three
+points — architect justifies each new file/abstraction/dependency, implementer
+climbs it before writing, and a fifth `simplicity` review lens (plus
+`/ponytail-review`) hunts what to cut. Simplicity findings never block the PR;
+cheap ones get applied, the rest are filed as R rows.
+
+From ECC: enforcement that lives outside the model's context. Two hooks —
+`gate_evidence.py` (PostToolUse) appends every verification-bar command, exit
+code and output tail to `.claude/evidence/<branch>.log` as it actually ran, so
+the PR evidence section quotes a machine trail instead of an agent's account of
+its own gates; `protected_paths.py` (PreToolUse) asks before an edit lands on a
+CLAUDE.md protected path, moving that failure from a wasted cycle to a prompt.
+CI's `guard` job stays the authority — the hook is a fast-fail, not a gate.
+
+The Bash arm of the guard only fires when a write verb precedes the path, so
+`pytest tests/integration/test_dryrun_safety.py | tee log` is not flagged.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+MSG
+82ad1f2 org: add a simplicity lens and machine-collected gate evidence
+
+=== 2026-09-09T03:48:59+00:00 exit=False
+$ cd "/Users/bibekshrestha/Visual Studio/Admin_tookit" && git push -q -u origin org/ponytail-and-hook-evidence 2>&1 | tail -3 && gh pr create --base main --head org/ponytail-and-hook-evidence --title "org: simplicity lens (ponytail) + machine-collected gate evidence (hooks)" --body "$(cat <<'MD'
+Two borrowings evaluated against the org as it stands, not adopted wholesale.
+
+## What was taken
+
+**From [ponytail](https://github.com/DietrichGebert/ponytail)** — the skill was already installed globally but had never been wired into the cycle. Nothing in the pipeline currently asks *whether the diff should have been written*: all five gates and four review lenses can go green on code that should not exist. The ladder now runs at three points:
+
+- `architect` — one line of justification for each new file, abstraction, dependency; if it can't be written, the plan has a rung too many.
+- `implementer` — climb the ladder before writing; `ponytail:` comment for a deliberate shortcut with a known ceiling.
+- `reviewer` — new fifth lens **simplicity**, reporting *what to cut → what replaces it*; plus `/ponytail-review` alongside `/code-review` and `/security-review` in phase 4.
+
+Simplicity findings **never block the PR** (only correctness/security/regression do). Cheap ones are applied in the diff, the rest filed as `R` rows. The lens cuts what the diff added; it does not re-open a settled design.
+
+**From [ECC](https://github.com/affaan-m/ecc)** — the one idea worth having is enforcement *outside* the model's context. ECC's 286 skills / 68 agents / 94 commands are a breadth play; this repo has six sharp agents and a constitution, and importing that catalogue would be pure context bloat. Its hooks layer is the exception:
+
+- `.claude/hooks/gate_evidence.py` (PostToolUse) — appends every verification-bar command, exit code and output tail to `.claude/evidence/<branch>.log` (gitignored) as it actually ran. Phase 5 now says to quote that file in the PR evidence section: the board is already told not to trust an implementer's self-reported kill table, and self-reported green gates deserve the same treatment. A gate not in the log did not run.
+- `.claude/hooks/protected_paths.py` (PreToolUse) — asks before an edit lands on a CLAUDE.md protected path. CI's `guard` job stays the authority; this only moves the failure from one wasted cycle to one prompt. It *asks* rather than denies, because a human in the session may edit these files and a headless subagent (which cannot answer) may not.
+
+## Evidence
+
+- `ruff check .claude/hooks/` + `ruff format --check` — clean.
+- `ruff check ts_admin/ tests/` + `ruff format --check ts_admin/ tests/` — `All checks passed!`, `114 files already formatted`. No product code is touched, so the remaining gates are unaffected by this diff.
+- Both hooks driven with synthetic PreToolUse/PostToolUse payloads:
+  - `sed -i ... CLAUDE.md` → ask · `cat > ts_admin/main.py` → ask · `echo x >> .github/workflows/ci.yml` → ask
+  - `cat CLAUDE.md` → silent · `git diff .github/workflows/ci.yml` → silent · `pytest tests/integration/test_dryrun_safety.py -v | tee /tmp/l` → **silent** (write verb must precede the path, or QA's own gate run would be blocked)
+  - `Edit ts_admin/services/user_service.py` → silent
+  - gate-evidence hook on a `ruff check` payload → wrote the expected `=== <ts> exit=0 / $ cmd / output` block.
+- Found and fixed in the live session: the first settings.json wired the hook command unquoted, and this project's path contains a space (`Visual Studio/`), which broke every tool call until the command was quoted. Verified working after the fix.
+
+## Not taken
+
+ECC's rules packs, memory vault, and multi-harness adapters — `docs/org-memory/` + `CLAUDE.md` already cover that ground for one repo and one harness. A simplicity **hunting lens** for `discover` was also left out: `/ponytail-audit` can do a repo-wide pass on request, and B2/B3 exist to keep the queue from absorbing more rows.
+
+Touches no protected path and no product code. `guard` should be green.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+MD
+)" 2>&1 | tail -3
+remote: Create a pull request for 'org/ponytail-and-hook-evidence' on GitHub by visiting:        
+remote:      https://github.com/kunalghate/thoughtspot-admin-toolkit/pull/new/org/ponytail-and-hook-evidence        
+remote: 
+https://github.com/kunalghate/thoughtspot-admin-toolkit/pull/45
