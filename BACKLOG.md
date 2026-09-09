@@ -217,6 +217,19 @@ success predicate, job intent comes from a LEFT OUTER join to `jobs`, and
 `_collapse` ranks by explicit severity. Export-only runs (F9) stop rendering as
 deletions — a pre-existing defect this row's expression made visible.
 
+Rounds 5 and 6 were about the *sentences*, not the verdicts. Once the share
+ladder was correct in every reachable cell, two labels still lied in opposite
+directions: a job marked FAILED by `_recover_stuck_jobs` after a restart, or by
+the last-resort handler, leaves already-committed SUCCESS rows describing grants
+that are **live in ThoughtSpot** — yet the label asserted the update had failed;
+and the PARTIAL limb emitted the SUCCESS f-string byte-for-byte, over-counting by
+exactly the failed rows. This matters more than copy: `dashboard.tsx:732-762`
+renders a 6px colour dot plus the label with no status chip text, so the sentence
+is the entire message. `Job.status == "FAILED"` has three writers with
+contradictory ground truth that are indistinguishable from
+`(succeeded, failed, status)`, so the status stays conservative (FAILED) while
+the label is now non-affirming.
+
 **AC(2)** met via ruff `BLE` in `select` plus the `reviewer.md` checklist, which
 was strengthened mid-cycle: an earlier draft blessed a blanket handler that
 "carries a comment naming what it swallows", which `CLAUDE.md` does not grant, so
