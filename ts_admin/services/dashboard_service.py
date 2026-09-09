@@ -551,7 +551,23 @@ class DashboardService:
             if row.status in _IN_FLIGHT_STATUSES:
                 status = "PENDING"
                 label = f"Sharing update in progress on {_plural(n, 'object')} for {_plural(m, 'principal')}…"
-            elif row.succeeded and not row.failed:
+            elif row.succeeded and not row.failed and row.status in (None, "COMPLETE"):
+                # The TERMINAL job status gates SUCCESS exactly as the in-flight
+                # one gates PENDING, because `ShareRecord.status` is OPTIMISTIC:
+                # `bulk_sharing_service.py:891` writes
+                # `"FAILED" if chunk_error else "SUCCESS"` per chunk BEFORE any
+                # verification, and `_verify_share` — which runs after every row
+                # is committed — only adjusts the JOB
+                # (`bulk_sharing_service.py:920-923`), never rewriting the rows.
+                # So a job ThoughtSpot itself confirmed did not land is FAILED
+                # with 100% SUCCESS rows and `failed == 0`. Same for a PARTIAL
+                # from skipped GUIDs (which produce no ShareRecord at all), a
+                # user cancel, and `_recover_stuck_jobs` after a restart. Rows
+                # alone cannot be trusted; the job row can.
+                #
+                # `row.status is None` is the LEFT OUTER JOIN case — the Job row
+                # is gone (pruned/pre-dating the join) — and MUST stay in the
+                # SUCCESS limb, or every job-less session degrades to PARTIAL.
                 status = "SUCCESS"
                 label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
             elif row.succeeded:

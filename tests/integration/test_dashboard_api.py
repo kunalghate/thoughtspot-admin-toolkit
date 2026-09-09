@@ -950,6 +950,56 @@ class TestShareFeedStatus:
         assert entry["status"] == "SUCCESS"
         assert entry["label"] == "Updated sharing on 2 objects for 1 principal"
 
+    def test_a_failed_share_job_is_not_success_even_when_every_row_says_success(self, client, seeded, in_memory_db):
+        """
+        Round-4 FIX A. `ShareRecord.status` is optimistic: the single writer at
+        `bulk_sharing_service.py:891` commits `"FAILED" if chunk_error else
+        "SUCCESS"` per chunk BEFORE verification, and `_verify_share`
+        (`:920-923`) adjusts only the JOB when ThoughtSpot's read-back says the
+        grant did not land. So this exact shape — terminal FAILED job, 100%
+        SUCCESS rows, `failed == 0` — is reachable, and used to render a green
+        "Updated sharing on 2 objects".
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="share-unverified", cluster_id="c1", job_type="bulk_share", status="FAILED"))
+            session.add(self._share("share-unverified", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-unverified", "x2", "g1", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] != "SUCCESS"
+        assert entry["status"] == "PARTIAL"
+
+    def test_a_partial_share_job_is_not_success_even_when_every_row_says_success(self, client, seeded, in_memory_db):
+        """
+        The skipped-GUID / user-cancel shape: `bulk_sharing_service.py:915`
+        marks the job PARTIAL for GUIDs that were never attempted, and those
+        GUIDs get NO `ShareRecord` row at all — so the rows are unanimously
+        SUCCESS while the request was only partly served.
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="share-skipped", cluster_id="c1", job_type="bulk_share", status="PARTIAL"))
+            session.add(self._share("share-skipped", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-skipped", "x2", "g1", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] != "SUCCESS"
+        assert entry["status"] == "PARTIAL"
+
+    def test_a_share_session_with_no_job_row_at_all_is_still_success(self, client, seeded, in_memory_db):
+        """
+        Non-vacuity for the two tests above: the terminal-status gate must not
+        collapse the LEFT OUTER JOIN case. With the `Job` row absent,
+        `row.status` is NULL and an all-SUCCESS session must stay SUCCESS —
+        narrowing the guard to `("COMPLETE",)` turns this red.
+        """
+        with Session(in_memory_db) as session:
+            session.add(self._share("share-orphan", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-orphan", "x2", "g1", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "SUCCESS"
+        assert entry["label"] == "Updated sharing on 2 objects for 1 principal"
+
     def test_the_share_feed_is_scoped_by_both_cluster_and_org(self, client, seeded, in_memory_db):
         """
         S27 diagonal, re-confirmed after the `Job` join was added: a single

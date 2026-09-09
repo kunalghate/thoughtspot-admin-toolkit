@@ -180,3 +180,67 @@ write to that session. If neither is adopted, at minimum a non-StaticPool
 class of error becomes observable.
 
 **Status:** unpromoted
+### The share activity entry reports ATTEMPTED objects, not REQUESTED ones
+`CONFIRMED` · measured against `364f671` on 2026-09-09 · lens: correctness
+
+**Failure scenario:** An admin selects 100 objects to share with a group. 40 of
+the GUIDs are skipped before any share call is made, so the job is marked
+PARTIAL and **no `ShareRecord` row exists for them at all**. The dashboard feed
+groups `ShareRecord` rows and renders "Updated sharing on 60 objects for 1
+principal" — a denominator the admin never asked for, with nothing on screen
+saying 40 were dropped. The delete feed does not have this problem:
+`ArchiveRecord` gets one row per REQUESTED GUID, so its counts are a true
+denominator. Even with the M14 round-4 terminal-status fix (which correctly
+degrades that entry to PARTIAL), the *count* remains silently narrower than the
+request — the entry says PARTIAL about 60 objects while the request was 100.
+
+**Evidence:** one `ArchiveRecord` per requested GUID at
+`ts_admin/services/deletion_service.py:352-374`; skipped GUIDs mark the job
+PARTIAL with no share row written at
+`ts_admin/services/bulk_sharing_service.py:915`; the feed's counts are
+`COUNT(DISTINCT ShareRecord.object_guid)` /
+`COUNT(DISTINCT ShareRecord.principal_guid)` in
+`ts_admin/services/dashboard_service.py` (share aggregate).
+
+**Drafted acceptance criteria:** The share feed entry distinguishes requested
+from attempted — either it names the skipped count ("Updated sharing on 60 of
+100 objects; 40 skipped") or a row is written for every requested pair with a
+`SKIPPED` status so the denominator is recoverable from the table; a test seeds
+a session with skipped GUIDs and asserts the rendered label is not narrower than
+the request.
+
+**Status:** unpromoted
+
+### The two new dashboard aggregates bind ix_*_cluster_id only and post-filter org_id
+`CONFIRMED` · measured against `364f671` on 2026-09-09 · lens: performance
+
+**Failure scenario:** The dashboard's archive and share activity aggregates are
+the S25 pathology on `archive_records` / `share_records`: only single-column
+indexes exist, so `EXPLAIN QUERY PLAN` binds `cluster_id=?` and post-filters
+`org_id`, then builds temp b-trees for the GROUP BY, the `COUNT(DISTINCT …)`
+pair and the ORDER BY. Measured on a 50k+50k-row synthetic DB: **148 ms and
+76 ms median** — on **every dashboard poll**, and on the **event loop** (nothing
+in this path uses `to_thread`), so the whole app stalls for ~0.2 s per poll.
+`.limit(50)` bounds only what Python renders, not what SQLite reads, so the cost
+grows with total table size rather than with the 30-day window the feature
+advertises.
+
+**Evidence:** the archive and share aggregates in
+`ts_admin/services/dashboard_service.py` (`_ACTIVITY_SCAN_SESSIONS` limit, the
+`HAVING max(executed_at) >= cutoff` clause); indexes on
+`ts_admin/models/archive_record.py` and `ts_admin/models/share_record.py`
+(`cluster_id` / `org_id` single-column only). The 30-day cutoff must STAY in
+`HAVING` — moving it to `WHERE` would filter rows before grouping and break the
+exact-count property those aggregates were rewritten to provide — so a
+`(cluster_id, org_id)` composite index is the safe lever, not a predicate move.
+Note `create_all` does NOT add an index to an already-existing table (2026-08-14
+S6 fact), so this needs explicit `CREATE INDEX IF NOT EXISTS` DDL in `init_db()`
+or existing user DBs keep the old plan.
+
+**Drafted acceptance criteria:** A `(cluster_id, org_id)` composite index exists
+on both tables and is created for pre-existing databases, the query plan for
+both aggregates binds it instead of `ix_*_cluster_id`, and the measured cost of
+the dashboard aggregate on a 100k-row DB is bounded (single-digit ms) rather
+than scaling with table size.
+
+**Status:** unpromoted
