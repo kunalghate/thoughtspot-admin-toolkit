@@ -137,10 +137,20 @@ independent items, use worktree-isolated implementers (one each).
 
 ### 4. REVIEW ∥ QA
 In ONE message, launch the **Review Board** (`reviewer` per lens —
-correctness / security / regression / performance, each told to REFUTE) **and**
-`qa-verifier` together. Also run `/code-review` and `/security-review` on the diff.
-Fix every **CONFIRMED** finding (re-dispatch `implementer`), then **re-run QA** — a
-diff that changed after verification is unverified.
+correctness / security / regression / performance / **simplicity**, each told to
+REFUTE) **and** `qa-verifier` together. Also run `/code-review`,
+`/security-review` and `/ponytail-review` on the diff. Fix every **CONFIRMED**
+finding (re-dispatch `implementer`), then **re-run QA** — a diff that changed
+after verification is unverified.
+
+- **Simplicity findings never block the PR.** A correctness/security/regression
+  CONFIRMED finding stops the ship; a simplicity one does not. Apply the ones
+  that are a smaller diff than the argument about them (delete the one-caller
+  abstraction, swap the hand-rolled helper for the existing one), and file the
+  rest as `R` rows. The org's failure mode is diff bloat that every other gate
+  passes: five lenses green on code that should not have been written is still a
+  bad cycle. Do not let this lens re-open a design the architect already settled —
+  it cuts what the diff added, it does not redesign the item.
 
 - **Isolation is the default, not an improvisation (M8):** every review lens and
   QA run in their own detached worktree — `git worktree add --detach <path>
@@ -168,6 +178,14 @@ Confirm the full bar is green, in order: `ruff check` + `ruff format --check` �
 --noEmit` → `cd frontend && npm run build` → the feature-specific check (via
 `/test`). **Do not open a PR on red.**
 
+The `PostToolUse` hook (`.claude/hooks/gate_evidence.py`) has been appending every
+gate command, exit code and output tail to `.claude/evidence/<branch>.log`
+(gitignored) as it actually ran. Read that file when you write the PR evidence
+section, and quote it rather than an agent's recollection of its own run — the
+board is already told not to trust an implementer's self-reported kill table, and
+the same applies to self-reported green gates. A gate you cannot find in the log
+did not run in this cycle.
+
 ### 6. RECORDS (before shipping, on the same branch)
 - Update the `BACKLOG.md` row Status and commit it.
 - **If the item is now `done` (completed/resolved): MOVE its index line and its
@@ -183,6 +201,9 @@ Confirm the full bar is green, in order: `ruff check` + `ruff format --check` �
   assumptions (S27's own criteria named a mutation that exists only on the
   rejected S7 branch). If that's unavoidable, mark them provisional.
 - Append a one-line micro-retro to `docs/org-memory/retros.md`.
+- If the diff left any `ponytail:` marker, name it in the PR body (the shortcut and
+  its ceiling). `/ponytail-debt` harvests them repo-wide; a marker whose ceiling is
+  now being hit is a finding for `docs/org-memory/findings.md`, not a silent TODO.
 - **Append a row to the Flow ledger** at the top of `BACKLOG.md`: cycle,
   closed, filed, open-after (`N open / N in-review / N feedback`). B3's cap is
   read from this table, so a cycle that skips it breaks the next discovery run's
