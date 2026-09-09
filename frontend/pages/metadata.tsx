@@ -7,12 +7,12 @@ import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
 import { TransferOwnershipModal } from "@/components/Users/TransferOwnershipModal";
-import { metadataApi } from "@/lib/api";
+import { connectionsApi, metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
 import { intersectTypes, serializeFilterModel } from "@/lib/agGridFilters";
 import { metadataEmptyMessage, noRowsOverlay, withHiddenSuffix } from "@/lib/gridEmptyState";
-import type { MetadataObject } from "@/lib/types";
+import type { DataConnection, MetadataObject } from "@/lib/types";
 import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 import { OBJECT_TYPES, TYPE_LABELS } from "@/lib/objectTypes";
@@ -36,7 +36,8 @@ export default function MetadataPage() {
 function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const { activeCluster, activeOrg } = useShell();
   const router = useRouter();
-  // Deep link from the Connections page: /metadata?connection_guid=…
+  // The connection filter lives in the URL, so it survives a reload and stays
+  // linkable — the Lineage graph deep-links here with connection_guid set.
   const connectionGuid = typeof router.query.connection_guid === "string" ? router.query.connection_guid : undefined;
   const gridRef = useRef<AgGridReact>(null);
   // Generation counter for the active datasource — see the same guard on the
@@ -54,6 +55,34 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const [colFilters, setColFilters]   = useState<Record<string, any>>({});
   const [selected, setSelected]       = useState<MetadataObject[]>([]);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [connections, setConnections] = useState<DataConnection[] | null>(null);
+
+  // The connection list backs the toolbar picker. Loaded once per cluster/org
+  // (and after a sync), not per keystroke: a cluster has hundreds of
+  // connections, not hundreds of thousands. Connections with nothing cached on
+  // them are dropped — selecting one could only ever return an empty grid.
+  useEffect(() => {
+    if (!activeCluster?.id || activeOrg?.org_id == null) return;
+    let stale = false;
+    connectionsApi
+      .list({ cluster_id: activeCluster.id, org_id: activeOrg.org_id, sort_field: "name", sort_order: "asc" })
+      .then((res) => {
+        if (!stale) setConnections(res.items.filter((c) => c.object_count > 0));
+      })
+      .catch(() => {
+        // A missing connection list costs the picker, not the grid. The
+        // Connection column still renders from the row data.
+        if (!stale) setConnections([]);
+      });
+    return () => { stale = true; };
+  }, [activeCluster?.id, activeOrg?.org_id, syncVersion]);
+
+  const setConnectionFilter = useCallback((guid: string) => {
+    const query = { ...router.query };
+    if (guid) query.connection_guid = guid;
+    else delete query.connection_guid;
+    void router.replace({ pathname: "/metadata", query }, undefined, { shallow: true });
+  }, [router]);
 
   // Debounce search input → search state
   useEffect(() => {
@@ -134,9 +163,10 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   useEffect(() => { reloadGrid(); }, [reloadGrid, syncVersion]);
 
   const exportCsv = () => gridRef.current?.api.exportDataAsCsv({ fileName: "metadata.csv" });
-  const clearFilters = () => { setSearchInput(""); setSearch(""); setTypes([]); };
-  const hasFilters = searchInput || selectedTypes.length > 0;
-  const isFiltered = Boolean(search) || selectedTypes.length > 0 || Object.keys(colFilters).length > 0;
+  const clearFilters = () => { setSearchInput(""); setSearch(""); setTypes([]); setConnectionFilter(""); };
+  const hasFilters = Boolean(searchInput) || selectedTypes.length > 0 || Boolean(connectionGuid);
+  const isFiltered =
+    Boolean(search) || selectedTypes.length > 0 || Boolean(connectionGuid) || Object.keys(colFilters).length > 0;
 
   const displayCount = useMemo(() => {
     if (total === null) return "Loading…";
@@ -209,25 +239,36 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           })}
         </div>
 
-        {/* A deep-linked connection filter is invisible in the toolbar chips, so
-            it gets its own removable pill — a filter the admin cannot see or
-            clear is one they will read as a broken object count. */}
-        {connectionGuid && (
-          <button
-            data-testid="connection-filter-chip"
-            onClick={() => router.push("/metadata")}
-            title="Showing only objects on this connection — click to clear"
-            style={{
-              display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
-              borderRadius: 14, border: `1px solid ${theme.color.accent}`,
-              background: theme.color.accentSoft, color: theme.color.accent2,
-              fontSize: 11.5, fontWeight: 500, cursor: "pointer", fontFamily: theme.font.sans,
-              whiteSpace: "nowrap",
-            }}
-          >
-            Connection filter <X size={11} />
-          </button>
-        )}
+        {/* Connection filter. This is where "which objects sit on this
+            connection" is answered — the question a separate Connections page
+            used to own. A deep link that named a connection no longer in the
+            list still shows as selected, so an incoming link never reads as
+            "no filter applied" while the grid is filtered. */}
+        <select
+          data-testid="connection-filter"
+          value={connectionGuid ?? ""}
+          onChange={(e) => setConnectionFilter(e.target.value)}
+          title="Show only objects sitting on one data connection"
+          style={{
+            height: 34, maxWidth: 220, padding: "0 8px", borderRadius: 6,
+            border: `1px solid ${connectionGuid ? theme.color.accent : theme.color.border}`,
+            background: connectionGuid ? theme.color.accentSoft : theme.color.surface,
+            color: connectionGuid ? theme.color.accent2 : theme.color.textPrimary,
+            fontSize: 12, fontFamily: theme.font.sans, cursor: "pointer", outline: "none",
+          }}
+        >
+          <option value="">
+            {connections === null ? "Connections…" : `All connections (${connections.length.toLocaleString()})`}
+          </option>
+          {connectionGuid && !(connections ?? []).some((c) => c.ts_guid === connectionGuid) && (
+            <option value={connectionGuid}>Selected connection</option>
+          )}
+          {(connections ?? []).map((c) => (
+            <option key={c.ts_guid} value={c.ts_guid}>
+              {c.name} ({c.object_count.toLocaleString()})
+            </option>
+          ))}
+        </select>
 
         {/* Clear filters */}
         {hasFilters && (

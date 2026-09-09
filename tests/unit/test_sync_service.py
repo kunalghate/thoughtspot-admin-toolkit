@@ -541,6 +541,8 @@ def _install_metadata_client(
     exc: BaseException | None = None,
     release_version: str | None = "26.8.0.cl",
     probe_exc: BaseException | None = None,
+    connections: list | None = None,
+    connections_exc: BaseException | None = None,
 ) -> dict:
     """Fake ThoughtSpotClient whose search_metadata yields `pages`, optionally
     raising `exc` after `raise_after` pages to simulate an interrupted crawl.
@@ -549,8 +551,13 @@ def _install_metadata_client(
     cluster's release version to decide which subtypes it may ask for; pass
     `probe_exc` to make that probe fail. Returns a dict the caller can read the
     recorded probe/crawl arguments back out of.
+
+    `search_connections` is part of the fake because `_sync_metadata` refreshes
+    the connection cache inside its own crawl — the Connection column resolves
+    a GUID against `ts_connections`. Pass `connections_exc` to make that leg
+    fail.
     """
-    recorded: dict = {"release_version_passed": "<not called>", "probes": 0}
+    recorded: dict = {"release_version_passed": "<not called>", "probes": 0, "connection_calls": 0}
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -567,6 +574,12 @@ def _install_metadata_client(
             if probe_exc is not None:
                 raise probe_exc
             return {"release_version": release_version or "unknown", "url": "https://prod.thoughtspot.cloud"}
+
+        async def search_connections(self):
+            recorded["connection_calls"] += 1
+            if connections_exc is not None:
+                raise connections_exc
+            return list(connections or [])
 
         async def search_metadata(self, *, release_version=None):
             recorded["release_version_passed"] = release_version
@@ -1363,6 +1376,9 @@ async def test_cancelled_metadata_sync_does_not_end_complete(monkeypatch, in_mem
         async def test_connection(self):
             return {"release_version": "26.8.0.cl", "url": "https://prod.thoughtspot.cloud"}
 
+        async def search_connections(self):
+            return []
+
         async def search_metadata(self, *, release_version=None):
             nonlocal pages_fetched
             for guid in ("a", "b", "c"):
@@ -1524,6 +1540,9 @@ def _install_live_metadata_cluster(
         return_value=httpx.Response(200, json={"release_version": release_version, "name": "prod"})
     )
     respx.post(f"{PROD_URL}/api/rest/2.0/metadata/search").mock(side_effect=handler)
+    # `_sync_metadata` refreshes the connection cache as part of its crawl, so
+    # this route is not optional even for tests that only care about specs.
+    respx.post(f"{PROD_URL}/api/rest/2.0/connection/search").mock(return_value=httpx.Response(200, json=[]))
     monkeypatch.setattr(
         "ts_admin.config.ClusterConfig.build_auth_strategy",
         lambda self, org_id=None: BearerTokenAuth(token="t"),
@@ -2054,3 +2073,73 @@ async def test_metadata_sync_stores_the_connection_linkage(monkeypatch, in_memor
         row = session.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == "t-1")).one()
     assert row.connection_guid == "conn-1"
     assert (row.db_name, row.db_schema, row.db_table) == ("DATA_CHALLENGE", "PUBLIC", "SALES")
+
+
+# ── The metadata sync refreshes the connection cache ───────────────────────────
+#
+# The Metadata grid's Connection column stores only `connection_guid` on the row
+# and resolves the display name against `ts_connections` at read time. Before
+# this, that table was filled only by a separately-triggered "connections" sync,
+# so the ordinary path — sync metadata, open Metadata — showed every table on an
+# unresolved connection, which reads as missing data. The lineage build already
+# resolves connection names inside its own run; these tests hold the metadata
+# sync to the same contract.
+
+
+def _conn(guid: str, name: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=guid, name=name, description="", data_warehouse_type="SNOWFLAKE")
+
+
+@pytest.mark.anyio
+async def test_metadata_sync_caches_the_connections_its_rows_point_at(monkeypatch, in_memory_db, patched_config):
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_connection import CachedConnection
+    from ts_admin.services.sync_service import run_sync
+
+    _install_metadata_client(
+        monkeypatch,
+        [[_meta_obj("t1", "ONE_TO_ONE_LOGICAL", connection_guid="conn-1")]],
+        connections=[_conn("conn-1", "Snowflake Prod")],
+    )
+
+    await run_sync(entity_type="metadata", org_id=0, job_id=_make_job("metadata"))
+
+    with get_session() as session:
+        cached = session.exec(select(CachedConnection).where(CachedConnection.cluster_id == "c1")).all()
+    assert [(c.ts_guid, c.name) for c in cached] == [("conn-1", "Snowflake Prod")], (
+        "a metadata sync must leave the connection names its rows point at resolvable"
+    )
+
+
+@pytest.mark.anyio
+async def test_metadata_sync_survives_a_connection_refresh_the_admin_cannot_make(
+    monkeypatch, in_memory_db, patched_config
+):
+    """`/connection/search` needs DATAMANAGEMENT. An admin without it must still
+    get their metadata — the Connection column degrades, the sync does not."""
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services.sync_service import run_sync
+    from ts_admin.ts_client.exceptions import TSInsufficientPrivilegesError
+
+    _install_metadata_client(
+        monkeypatch,
+        [[_meta_obj("t1", "ONE_TO_ONE_LOGICAL", connection_guid="conn-1")]],
+        connections_exc=TSInsufficientPrivilegesError("DATAMANAGEMENT required"),
+    )
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE", "a connection refresh the admin cannot make must not fail the sync"
+    with get_session() as session:
+        rows = session.exec(select(CachedMetadata).where(CachedMetadata.cluster_id == "c1")).all()
+    assert len(rows) == 1
+    assert _sync_log_status("metadata") == "SUCCESS"

@@ -402,7 +402,7 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
 
     from ts_admin.models.cache.ts_metadata import CachedMetadata
     from ts_admin.ts_client import ThoughtSpotClient
-    from ts_admin.ts_client.exceptions import TSPartialSuccessError
+    from ts_admin.ts_client.exceptions import TSAdminError, TSPartialSuccessError
 
     cluster = _resolve_cluster(target_cluster_id)
     cluster_id = cluster.id
@@ -449,6 +449,39 @@ async def _sync_metadata(*, org_id: int, job_id: str, target_cluster_id: str | N
 
     async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
         release_version = await _probe_release_version(client)
+
+        # Refresh the connection cache as part of this crawl. The rows written
+        # below store only `connection_guid`; the Metadata grid's Connection
+        # column resolves that GUID against `ts_connections`, so a metadata
+        # sync newer than the connection cache shows every table as sitting on
+        # an unresolved connection — which reads as missing data rather than as
+        # "run a second, differently-named sync first". Cheap next to the
+        # metadata crawl itself (one request, ~1,300 rows on se-demo).
+        #
+        # Advisory, not fatal: `/connection/search` needs DATAMANAGEMENT, and an
+        # admin without it should still get their metadata. A failure here
+        # leaves the previous connection cache in place and is logged.
+        connection_start = datetime.now(timezone.utc)
+        try:
+            connection_count = await _cache_connections(client, cluster_id=cluster_id, org_id=org_id)
+        except TSAdminError as exc:
+            logger.warning(
+                "Metadata sync for cluster=%s org=%s could not refresh the connection cache (%s); "
+                "the Connection column may show unresolved connections",
+                cluster_id,
+                org_id,
+                exc,
+            )
+        else:
+            _write_sync_log(
+                "connections",
+                org_id,
+                status="SUCCESS",
+                record_count=connection_count,
+                duration_ms=int((datetime.now(timezone.utc) - connection_start).total_seconds() * 1000),
+                cluster_id=cluster_id,
+            )
+
         try:
             async for page in client.search_metadata(release_version=release_version):
                 if is_cancelled(job_id):
@@ -612,27 +645,25 @@ async def _sync_tags(*, org_id: int, job_id: str, target_cluster_id: str | None 
     mark_complete(job_id, {"entity_type": "tags", "record_count": count})
 
 
-async def _sync_connections(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
-    """Cache the cluster's data connections. Same shape as `_sync_tags`.
+async def _cache_connections(client, *, cluster_id: str, org_id: int) -> int:
+    """Fetch the org's data connections and upsert them into `ts_connections`.
 
-    Needs DATAMANAGEMENT or ADMINISTRATION on the cluster; without it
-    `/connection/search` 403s and `run_sync` marks the job FAILED with the
-    privilege message, which is the honest outcome.
+    Split out of `_sync_connections` so the metadata sync can refresh the
+    connection cache as part of its own crawl — the Metadata grid's Connection
+    column resolves a GUID through this table, so a metadata cache newer than
+    the connection cache renders every connection as unresolved. The lineage
+    build already resolves connection names inside its own run rather than
+    leaning on a separately-triggered sync; this is the same idea.
+
+    Does no job or sync_log bookkeeping — the caller owns that. Returns the
+    number of connections cached.
     """
     from sqlmodel import col, select
     from sqlmodel import delete as sql_delete
 
     from ts_admin.models.cache.ts_connection import CachedConnection
-    from ts_admin.ts_client import ThoughtSpotClient
 
-    cluster = _resolve_cluster(target_cluster_id)
-    cluster_id = cluster.id
-    start = datetime.now(timezone.utc)
-
-    mark_running(job_id, total=0)
-
-    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
-        connections = await client.search_connections()
+    connections = await client.search_connections()
 
     with get_session() as session:
         for conn in connections:
@@ -687,7 +718,27 @@ async def _sync_connections(*, org_id: int, job_id: str, target_cluster_id: str 
             )
             session.commit()
 
-    count = len(connections)
+    return len(connections)
+
+
+async def _sync_connections(*, org_id: int, job_id: str, target_cluster_id: str | None = None) -> None:
+    """Cache the cluster's data connections. Same shape as `_sync_tags`.
+
+    Needs DATAMANAGEMENT or ADMINISTRATION on the cluster; without it
+    `/connection/search` 403s and `run_sync` marks the job FAILED with the
+    privilege message, which is the honest outcome.
+    """
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    cluster = _resolve_cluster(target_cluster_id)
+    cluster_id = cluster.id
+    start = datetime.now(timezone.utc)
+
+    mark_running(job_id, total=0)
+
+    async with ThoughtSpotClient(url=cluster.url, auth=cluster.build_auth_strategy(org_id=org_id)) as client:
+        count = await _cache_connections(client, cluster_id=cluster_id, org_id=org_id)
+
     duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
     _write_sync_log(
         "connections", org_id, status="SUCCESS", record_count=count, duration_ms=duration_ms, cluster_id=cluster_id
