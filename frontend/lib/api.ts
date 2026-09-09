@@ -212,6 +212,40 @@ export const metadataApi = {
 
   permissions: (guid: string, clusterId: string, orgId: number) =>
     request<PermissionsResponse>(`/metadata/${guid}/permissions?cluster_id=${clusterId}&org_id=${orgId}`),
+
+  // Ownership transfer keyed on an explicit selection rather than a source
+  // user — the selection can span owners. Same service, same job machinery as
+  // usersApi.transfer*; only the entry point differs.
+  transferPreview: (body: {
+    cluster_id: string;
+    org_id: number;
+    object_ids: string[];
+  }) =>
+    request<TransferPreviewResponse>("/metadata/transfer/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  // Live pre-flight: verifies the recipient and the objects against
+  // ThoughtSpot before anything moves. Changes nothing.
+  transferDryrun: (body: {
+    cluster_id: string;
+    org_id: number;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/metadata/transfer/dryrun", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  transferExecute: (body: {
+    cluster_id: string;
+    org_id: number;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/metadata/transfer/execute", {
+      method: "POST", body: JSON.stringify(body),
+    }),
 };
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────
@@ -581,6 +615,19 @@ export const usersApi = {
     explicit_guids?: string[];
   }) =>
     request<TransferPreviewResponse>("/users/transfer/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  // Live pre-flight — present on both transfer flows because they share one
+  // confirmation modal.
+  transferDryrun: (body: {
+    cluster_id: string;
+    org_id: number;
+    from_user_guid: string;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/users/transfer/dryrun", {
       method: "POST", body: JSON.stringify(body),
     }),
 

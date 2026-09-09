@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { GridReadyEvent, RowClickedEvent, SortChangedEvent } from "ag-grid-community";
-import { Download, Search, X } from "lucide-react";
+import { ArrowRightLeft, Download, Search, X } from "lucide-react";
 import AppShell, { useShell } from "@/components/Shell";
 import { METADATA_COLUMNS } from "@/components/MetadataGrid/columns";
 import PermissionDrawer from "@/components/MetadataGrid/PermissionDrawer";
+import { TransferOwnershipModal } from "@/components/Users/TransferOwnershipModal";
 import { metadataApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
@@ -47,6 +48,8 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const [sortField, setSortField]     = useState("modified_at");
   const [sortOrder, setSortOrder]     = useState<"asc" | "desc">("desc");
   const [colFilters, setColFilters]   = useState<Record<string, any>>({});
+  const [selected, setSelected]       = useState<MetadataObject[]>([]);
+  const [transferOpen, setTransferOpen] = useState(false);
 
   // Debounce search input → search state
   useEffect(() => {
@@ -227,6 +230,48 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
         </button>
       </div>
 
+      {/* ── Selection bar (shown when rows are checked) ──────────────────── */}
+      {selected.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+          background: theme.color.violetSoft, border: `1px solid ${theme.color.violetBorder}`,
+          borderRadius: 6, flexShrink: 0, flexWrap: "wrap",
+        }}>
+          <span style={{
+            fontSize: 13, color: theme.color.accent2, fontWeight: 500,
+            fontFamily: theme.font.sans, whiteSpace: "nowrap",
+          }}>
+            {selected.length.toLocaleString()} selected
+          </span>
+
+          <div style={{ flex: 1 }} />
+
+          <button
+            data-testid="transfer-ownership"
+            onClick={() => setTransferOpen(true)}
+            style={{
+              display: "flex", alignItems: "center", gap: 5, padding: "5px 11px",
+              borderRadius: 6, border: `1px solid ${theme.color.border}`, background: theme.color.surface,
+              fontSize: 12, fontWeight: 500, color: theme.color.textPrimary, cursor: "pointer",
+              fontFamily: theme.font.sans, whiteSpace: "nowrap",
+            }}
+          >
+            <ArrowRightLeft size={12} /> Transfer ownership…
+          </button>
+
+          <button
+            onClick={() => gridRef.current?.api?.deselectAll()}
+            style={{
+              display: "flex", alignItems: "center", gap: 4, padding: "4px 8px",
+              borderRadius: 4, border: `1px solid ${theme.color.border}`, background: "transparent",
+              fontSize: 12, color: theme.color.textMuted, cursor: "pointer", fontFamily: theme.font.sans,
+            }}
+          >
+            <X size={11} /> Clear
+          </button>
+        </div>
+      )}
+
       {/* AG Grid — Infinite Row Model */}
       <div className="ag-theme-alpine" style={{ flex: 1, minHeight: 0, height: "100%", width: "100%" }}>
         <AgGridReact
@@ -240,7 +285,11 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           onGridReady={handleGridReady}
           onSortChanged={handleSortChanged}
           onFilterChanged={handleFilterChanged}
-          rowSelection="single"
+          rowSelection="multiple"
+          // Checkbox-only selection: a row click still opens the drawer and
+          // cannot arm the transfer action by accident.
+          suppressRowClickSelection
+          onSelectionChanged={() => setSelected(gridRef.current?.api?.getSelectedRows() ?? [])}
           rowStyle={{ cursor: "pointer" }}
           onRowClicked={(e: RowClickedEvent<MetadataObject>) => {
             if (e.data) setDrawerObject(e.data);
@@ -254,9 +303,26 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
           object={drawerObject}
           clusterId={activeCluster.id}
           orgId={activeOrg.org_id}
-          onClose={() => {
-            setDrawerObject(null);
-            gridRef.current?.api?.deselectAll();
+          // Deliberately does NOT deselectAll: selection is now the admin's
+          // pending transfer set, not a side effect of opening this drawer.
+          onClose={() => setDrawerObject(null)}
+        />
+      )}
+
+      {/* Ownership transfer for the checked objects. Same modal the Users page
+          uses — one confirmation flow, not two that can drift. */}
+      {transferOpen && activeCluster && activeOrg != null && (
+        <TransferOwnershipModal
+          clusterId={activeCluster.id}
+          orgId={activeOrg.org_id}
+          source={{ kind: "objects", objectIds: selected.map((o) => o.ts_guid) }}
+          onClose={(reloadNeeded) => {
+            setTransferOpen(false);
+            if (reloadNeeded) {
+              gridRef.current?.api?.deselectAll();
+              setSelected([]);
+              reloadGrid();
+            }
           }}
         />
       )}

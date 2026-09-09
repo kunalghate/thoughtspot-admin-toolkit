@@ -358,10 +358,18 @@ export interface TransferObjectItem {
   tags: string[];
 }
 
+export interface TransferOwnerSummary {
+  owner_guid: string;
+  owner_name: string;
+  count: number;
+}
+
 export interface TransferPreviewResponse {
   items: TransferObjectItem[];
   total: number;
   by_type: Record<string, number>;
+  /** Who owns the selection now. One entry from /users, possibly many from /metadata. */
+  owners: TransferOwnerSummary[];
 }
 
 export interface SharingPermissionItem {

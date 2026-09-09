@@ -24,6 +24,7 @@ from sqlmodel import Session, create_engine, select
 
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
+from ts_admin.models.sync_log import SyncLog
 
 # ── Registry: every (endpoint, payload, expected_job_type_suffix) ──────────────
 #
@@ -47,6 +48,29 @@ DRYRUN_ENDPOINTS = [
         {"cluster_id": "c1", "org_id": 0, "user_guids": ["u1"]},
         "_dryrun",
         id="users-delete-dryrun",
+    ),
+    pytest.param(
+        "/api/v1/users/transfer/dryrun",
+        {
+            "cluster_id": "c1",
+            "org_id": 0,
+            "from_user_guid": "u1",
+            "to_user_identifier": "bob",
+            "object_ids": ["lb-1"],
+        },
+        "_dryrun",
+        id="users-transfer-dryrun",
+    ),
+    pytest.param(
+        "/api/v1/metadata/transfer/dryrun",
+        {
+            "cluster_id": "c1",
+            "org_id": 0,
+            "to_user_identifier": "bob",
+            "object_ids": ["lb-1"],
+        },
+        "_dryrun",
+        id="metadata-transfer-dryrun",
     ),
     pytest.param(
         "/api/v1/sharing/dryrun",
@@ -91,7 +115,13 @@ def client(in_memory_db):
 
 @pytest.fixture
 def seeded(in_memory_db):
-    """One cluster + one cached object so the resolve calls succeed."""
+    """One cluster + one cached object so the resolve calls succeed.
+
+    Also certifies the metadata cache as fully synced: the transfer endpoints
+    refuse with 409 on a truncated cache (by design — see
+    `require_authoritative_metadata`), so without this their dry-runs could
+    never reach the 202 this suite asserts.
+    """
     with Session(in_memory_db) as session:
         session.add(
             Cluster(
@@ -115,6 +145,7 @@ def seeded(in_memory_db):
                 synced_at=datetime.now(tz=timezone.utc),
             )
         )
+        session.add(SyncLog(cluster_id="c1", org_id=0, entity_type="metadata", status="SUCCESS", record_count=1))
         session.commit()
 
 
@@ -139,6 +170,7 @@ def trip_wires(monkeypatch):
     monkeypatch.setattr(archiver_service, "execute", _fail_if_called)
     monkeypatch.setattr(archiver_service, "restore", _fail_if_called)
     monkeypatch.setattr(user_management_service, "execute_delete", _fail_if_called)
+    monkeypatch.setattr(user_management_service, "execute_transfer", _fail_if_called)
     monkeypatch.setattr(bulk_sharing_service, "execute_share", _fail_if_called)
 
 

@@ -89,7 +89,7 @@ export function TransferSharingModal({
 
   return (
     <Modal onClose={onClose} title="Transfer sharing">
-      <FromToBar fromUser={fromUser} target={target} />
+      <FromToBar source={{ kind: "user", fromUser }} target={target} />
 
       {error && <ErrorBox>{error}</ErrorBox>}
 
