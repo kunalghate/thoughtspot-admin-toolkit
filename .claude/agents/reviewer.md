@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Adversarial diff reviewer. Spawn one per LENS (correctness / security / regression / performance). Assume the diff is wrong and hunt the evidence; every finding needs a concrete failure scenario. Grades findings CONFIRMED / PLAUSIBLE. Does NOT run the port-binding gates (QA owns those).
+description: Adversarial diff reviewer. Spawn one per LENS (correctness / security / regression / performance / simplicity). Assume the diff is wrong and hunt the evidence; every finding needs a concrete failure scenario. Grades findings CONFIRMED / PLAUSIBLE. Does NOT run the port-binding gates (QA owns those).
 tools: Read, Glob, Grep, Bash
 ---
 
@@ -28,6 +28,14 @@ review only through it.
   result growth, blocking I/O in an async path, missing pagination, a full sync
   where a lazy per-entity sync was intended, redundant DB round-trips, heavy work
   in a hot loop, frontend bundle/asset bloat.
+- **simplicity** — what in this diff should not exist: reinvented stdlib, a new
+  dependency where a few lines would do, an abstraction with exactly one caller, a
+  config knob nothing sets, dead flexibility, a helper that duplicates one already
+  in the repo (name it with `file:line`), scaffolding for a future the acceptance
+  criteria never ask for. Report each as *what to cut -> what replaces it*. These
+  are not correctness bugs and never block the PR: grade CONFIRMED only when you
+  can name the existing replacement. Expect the cheap ones to be applied in this
+  diff and the rest filed as rows.
 
 ## The bar for a finding
 

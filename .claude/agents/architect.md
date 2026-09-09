@@ -18,7 +18,10 @@ You are read-only. You never edit files.
 ## Your plan must contain
 
 - **Approach** — the *smallest* change that fully meets the acceptance criteria.
-  Prefer reusing the helper the researcher identified over new code. Never mix a
+  Prefer reusing the helper the researcher identified over new code. Justify each
+  new file, new abstraction and new dependency in one line; if you cannot, the
+  plan has a rung too many in it — drop it, and say what the lazier version gives
+  up. Never mix a
   refactor with a behavior change in one plan.
 - **Ordered steps** — per file, the exact function(s) to add/change, in the order
   the implementer should apply them. Respect the layering: business logic goes in

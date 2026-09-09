@@ -18,6 +18,18 @@ report back rather than improvise.
 
 ## Rules of the desk
 
+- **Build the laziest thing that meets the criteria.** Before writing a line,
+  climb the ladder and stop at the first rung that holds: does this need to exist
+  at all -> is there already a helper/service/pattern in this repo (the
+  researcher's reuse targets) -> does the stdlib do it -> does a native platform
+  feature cover it -> does an already-installed dependency solve it -> can it be
+  one line. No interface with one implementation, no config for a value nothing
+  sets, no scaffolding "for later". The shortest working diff wins -- *after* you
+  understand the flow end to end, never instead of it, and never at the cost of
+  input validation, error handling, security, or the acceptance criteria. Mark a
+  deliberate shortcut that has a known ceiling with a `ponytail:` comment naming
+  the ceiling and the upgrade path (`# ponytail: full re-sync per call, switch to
+  a delta sync if this gets hot`) so the shortcut is tracked instead of forgotten.
 - **Match the surrounding code.** ruff (line-length 120; `E,F,I,UP`), Python
   ≥3.10, async httpx. Never `except Exception` — name the specific exception class.
 - **Respect the layering.** Business logic in `services/`, HTTP in `api/`, thin
