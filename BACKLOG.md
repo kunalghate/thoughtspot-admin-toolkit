@@ -28,6 +28,7 @@ only when a human promotes them.
 | 2026-09-08 · S31 (fix cycle) | 0 | 1 | 42 open · 1 in-review · 7 feedback |
 | 2026-09-08 · reconcile (B1) | 6 | 1 | 43 open · 0 in-review · 2 feedback |
 | 2026-09-09 · M14 (fix cycle) | 0 | 1 | 43 open · 1 in-review · 2 feedback |
+| 2026-09-09 · craft pass (human-directed) | 0 | 2 | 45 open · 1 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -55,7 +56,7 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (43)
+### Open (45)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -97,6 +98,8 @@ an item reaches `done`, move its index line and detail entry to
 | S41 | P3 | Grid selection silently lost past ~2,000 rows | — |
 | S43 | P3 | org_id=None basic-auth lands in a nondeterministic org | yes (`ts_admin/config.py`, `ts_admin/ts_client/auth.py`) |
 | S45 | P3 | COLLECTION objects are never synced | — |
+| S47 | P3 | Overlays animate in and hard-cut out | — |
+| S48 | P3 | Hardcoded px type ignores the browser text-size setting | — |
 | W1 | P3 | Add mypy to CI | yes (`.github/workflows/*`) |
 | W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
@@ -566,6 +569,22 @@ Wire frontend `vitest` into the suite
 **Acceptance criteria:** `cd frontend && npm test` runs at least one real component test and passes; CI `frontend` job runs it; [docs/dev/TESTING.md](docs/dev/TESTING.md) updated to drop "not yet wired"
 
 **Reopened 2026-08-24 (reconcile).** The frontend half shipped (vitest config, setup, and real component tests are on `main`), but the criterion that CI runs `npm test` is unmet — `.github/workflows/ci.yml` has no such step and [docs/dev/TESTING.md](docs/dev/TESTING.md) still reads "when wired". Same gap as **M12**; whichever ships first should close the other. Status returned to `open` rather than left in a `in-review` state with no open PR.
+
+### S47 — Overlays animate in and hard-cut out
+
+`P3` · **open** · protected: no
+
+Every drawer and modal now enters with motion (`.scrim` / `.drawer-panel` / `.modal-panel` in `frontend/styles/theme.css`) but leaves by an instant unmount. Enter and exit should travel the same path — a panel that slides in from the right edge and then blinks out of existence tells the admin nothing about where it went, which is the point of animating the entrance in the first place. The 12 overlay sites all unmount on a parent's conditional render (`{open && <Drawer/>}`), so an exit needs a small shared hold-then-unmount hook; `frontend/components/Toast.tsx` now does exactly this for toasts (`EXIT_MS` + an `exiting` list) and is the reference implementation. See `docs/dev/DESIGN.md` → "Motion and accessibility"
+
+**Acceptance criteria:** A shared hook (or wrapper component) holds an overlay mounted for the length of its exit animation and is used by all 12 scrim sites; each panel exits along the axis it entered by (drawer to the right, modal down and back); the exit is suppressed under `prefers-reduced-motion: reduce`; a Playwright assertion shows the panel still in the DOM one frame after the close click and gone after the animation
+
+### S48 — Hardcoded px type ignores the browser text-size setting
+
+`P3` · **open** · protected: no
+
+Every font size in `frontend/` is a hardcoded px integer and `body` in `frontend/styles/theme.css` sets no `font-size`, so a user who raises their browser or OS text size sees no change anywhere in the app. Spacing is px throughout too, so simply switching the type ladder to `rem` would overflow fixed-height rows (34px controls, 52px topbar, the AG Grid row height) rather than scaling with the text. This is the "respect the user's text-size setting" rule in `.claude/skills/apple-design/` §15 and the one part of it this app does not meet. It is a real refactor, not a token swap — filed rather than folded into the craft pass that found it
+
+**Acceptance criteria:** The type ladder resolves through `rem` off a `:root` font-size that inherits the browser default; control heights and shell dimensions that must track the text scale with it (`em`/`rem`), and the ones that must not (grid row height, icon sizes) are explicitly documented as fixed in `docs/dev/DESIGN.md`; the app is legible and un-clipped at a 125% browser text setting in both themes, shown with a screenshot
 
 ## In review
 

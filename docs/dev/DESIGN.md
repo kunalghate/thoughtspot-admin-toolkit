@@ -58,7 +58,7 @@ text). UI sizes 11–15px; grid body 13px; page titles 15px/600; micro labels
 
 **Motion:** 100–200ms ease transitions on hover/open only. Indeterminate
 progress and status pulses are the only looping animations. Nothing moves for
-decoration.
+decoration. Full rules in "Motion and accessibility" below.
 
 ### Spacing and shape
 
@@ -72,6 +72,63 @@ decoration.
 
 Radius ladder (tokens exist): cards 9px, controls 6–8px, pills 999px.
 Shell dimensions: sidebar 220px fixed; topbar 52px.
+
+## Motion and accessibility
+
+The reference for this section is the `apple-design` skill
+(`.claude/skills/apple-design/`) — read its "How THIS repo applies it"
+preamble, which records which of its sections this app adopts and which it
+overrides. The rules here are the binding ones. All of them are implemented in
+`frontend/styles/theme.css`; a new surface inherits them by using the classes,
+not by re-deriving the values.
+
+**Focus is always visible.** `--accent` is the focus colour (see "One primary,
+one accent"). A global `:focus-visible` rule in `theme.css` puts a 2px accent
+outline on every input, select, textarea, button and link, with `!important` so
+it survives the inline `outline: "none"` that most controls in this app carry.
+`:focus-visible`, not `:focus` — a mouse click stays quiet, a Tab does not.
+**Never** add an inline focus `box-shadow` that competes with it, and never
+suppress the rule.
+
+**Overlays enter along the axis they leave by.** A drawer is pinned to the
+right edge and slides from the right (`.drawer-panel`); a modal is centred and
+rises into place (`.modal-panel`, or `.modal-panel-fixed` when the panel is
+centred with an inline `transform: translate(-50%, -50%)` — the plain keyframe
+would replace that transform and throw the panel off-centre). Scrims fade
+(`.scrim`). Exit is currently an instant unmount; making it symmetric is
+tracked as **S47**.
+
+**Feedback lands on the press.** Buttons take a 1px nudge on `:active`, applied
+globally. Waiting for the click to complete before acknowledging it reads as a
+dead control. AG Grid opts out of the global rule (its header icons are 16px
+targets where a 1px shift reads as jitter) and ships its own.
+
+**Hover-only affordances need a no-hover fallback.** Anything at `opacity: 0`
+until `:hover` — the dashboard's per-entity sync button, the attention-row
+chevron — is invisible and unreachable on a touch device. Pair every one with a
+`@media (hover: none)` rule that reveals it, and with `:focus-visible` so the
+keyboard reaches it too.
+
+**Three OS preferences, answered independently.** Checking both themes is no
+longer the whole visual matrix. Emulate each in DevTools → Rendering before
+shipping a surface that moves:
+
+| Preference | What the app does |
+|---|---|
+| `prefers-reduced-motion: reduce` | Transitions collapse to 1ms; panel/scrim entrances and the press nudge are dropped. The two decorative loops stop: the connecting dot goes solid (colour already carries the state) and the indeterminate sync bar widens to the full track at reduced opacity — frozen at 40% it would read as a determinate percentage. Spinners keep turning: they are the only signal that work is in flight, and a small localised rotation is not the vestibular motion this preference targets. |
+| `prefers-reduced-transparency: reduce` | `--overlay` goes near-opaque in both themes. (No `backdrop-filter` in this app — the scrims are the only translucent surface.) |
+| `prefers-contrast: more` | `--border` resolves to `--border-light` and `--text-muted` to `--text-secondary`, so hairlines become defined and muted text stops being muted. Token-level, so it follows the active theme. |
+
+Reduced motion does **not** mean no feedback — it means a gentler equivalent.
+A new `animation:` that has no answer here is an incomplete change; the blanket
+rule in `theme.css` covers `transition:`, not `animation:`.
+
+**Type scales in both directions.** Tracking is size-specific (see "Type"):
+large numerals take negative tracking (`-0.02em` on the dashboard tiles and
+dry-run counts), small uppercase labels take positive. A single
+`letter-spacing` across the ladder is wrong at one end. Sizes are still px
+throughout, so the browser's text-size setting has no effect — tracked as
+**S48**.
 
 ## Interaction patterns (the app's grammar)
 
@@ -157,6 +214,11 @@ links to the page where the admin acts on it. No live cluster calls.
 - AG Grid selection uses the deprecated v32 string API (works, warns).
   Migrate all grids to the object `rowSelection` API in one pass.
 - Groups is a "coming soon" placeholder.
+- Overlay **exit** is an instant unmount — enter is animated, exit is not (S47).
+- Every font size is a hardcoded px integer, so the browser/OS text-size
+  setting does nothing (S48).
 
 Resolved: Settings tabs unified to underline style; fonts self-hosted via
-@fontsource (no CDN); Dashboard built.
+@fontsource (no CDN); Dashboard built; keyboard focus rings restored globally;
+overlay entrances, press feedback, and the three accessibility preferences
+implemented.
