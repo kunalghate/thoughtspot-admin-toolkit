@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlmodel import Session, create_engine, select
@@ -42,6 +43,8 @@ class _FakeClient:
     users_pages: list[list] = []  # pages of objects with .id and .name (for search_users)
     assign_should_fail: Exception | None = None
     assign_fail_guids: set = set()
+    live_user: object = None
+    live_guids: set | None = None
     share_should_fail: Exception | None = None
 
     def __init__(self, *args, **kwargs):
@@ -52,6 +55,16 @@ class _FakeClient:
 
     async def __aexit__(self, *_):
         return None
+
+    # ── live pre-flight lookups ──────────────────────────────────────────
+    # `live_guids = None` means "TS still has everything we ask about".
+    async def find_user(self, *, identifier):
+        return _FakeClient.live_user
+
+    async def verify_metadata_exists(self, *, object_ids):
+        if _FakeClient.live_guids is None:
+            return set(object_ids)
+        return {g for g in object_ids if g in _FakeClient.live_guids}
 
     async def assign_metadata_owner(self, *, object_ids, new_owner_identifier):
         _FakeClient.assign_calls.append((list(object_ids), new_owner_identifier))
@@ -100,6 +113,8 @@ def reset_fake():
     _FakeClient.users_pages = []
     _FakeClient.assign_should_fail = None
     _FakeClient.assign_fail_guids = set()
+    _FakeClient.live_user = SimpleNamespace(name="bob", display_name="Bob")
+    _FakeClient.live_guids = None
     _FakeClient.share_should_fail = None
 
 
@@ -1359,3 +1374,113 @@ class TestMultiOwnerTransfer:
         assert records["u-alice"].items_succeeded == 2
         assert records["u-bob"].status == "FAILED", "bob's object did not move"
         assert records["u-bob"].items_succeeded == 0
+
+
+class TestTransferPreflight:
+    """
+    The live pre-flight — the thing the cache preview cannot do.
+
+    Its whole justification is that `assign_metadata_owner` sends 50 ids per
+    call and the executor buckets the WHOLE chunk on failure, with no bisection
+    on this path. So one GUID deleted upstream since the last sync would cost
+    49 healthy transfers. The pre-flight is what turns that into a warning
+    before anything moves.
+    """
+
+    def _run(self, **kwargs) -> str:
+        from ts_admin.services.user_management_service import dryrun_transfer
+
+        job_id = _create_job("metadata_transfer_dryrun", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            dryrun_transfer(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                to_user_identifier=kwargs.pop("to", "bob"),
+                object_ids=kwargs.pop("object_ids", ["lb-1", "ans-1"]),
+                **kwargs,
+            )
+        )
+        return job_id
+
+    def _result(self, engine, job_id) -> dict:
+        with Session(engine) as s:
+            return s.get(Job, job_id).get_result()
+
+    def test_all_clear(self, in_memory_db, patched_env, seeded):
+        job_id = self._run()
+        r = self._result(in_memory_db, job_id)
+        assert r["target_found"] is True
+        assert r["missing_count"] == 0
+        assert r["transferable"] == 2
+        assert r["target_name"] == "Bob"
+
+    def test_flags_objects_deleted_upstream(self, in_memory_db, patched_env, seeded):
+        """The poison-GUID case: TS no longer has ans-1."""
+        _FakeClient.live_guids = {"lb-1"}
+
+        job_id = self._run()
+        r = self._result(in_memory_db, job_id)
+        assert r["missing_count"] == 1
+        assert r["missing_guids"] == ["ans-1"]
+        assert r["transferable"] == 1
+        assert r["requested"] == 2
+
+    def test_flags_a_recipient_thoughtspot_does_not_know(self, in_memory_db, patched_env, seeded):
+        """A user deactivated upstream still looks fine in the cache."""
+        _FakeClient.live_user = None
+
+        job_id = self._run()
+        r = self._result(in_memory_db, job_id)
+        assert r["target_found"] is False
+
+    def test_changes_nothing(self, in_memory_db, patched_env, seeded):
+        """It is a dry run: no ownership moves, no audit row, no action record."""
+        _FakeClient.live_guids = {"lb-1"}
+        self._run()
+
+        with Session(in_memory_db) as s:
+            owners = {
+                m.ts_guid: m.owner_guid
+                for m in s.exec(select(CachedMetadata).where(CachedMetadata.cluster_id == "c1")).all()
+            }
+            assert list(s.exec(select(AuditLog))) == []
+            assert list(s.exec(select(UserActionRecord))) == []
+        assert owners == {"lb-1": "u-alice", "ans-1": "u-alice"}
+        assert _FakeClient.assign_calls == [], "a dry run must never call assign_metadata_owner"
+
+    def test_reports_owners_for_a_multi_owner_selection(self, in_memory_db, patched_env, seeded):
+        with Session(in_memory_db) as session:
+            session.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=0,
+                    ts_guid="lb-2",
+                    name="Bob's Board",
+                    object_type="LIVEBOARD",
+                    owner_guid="u-bob",
+                    owner_name="Bob",
+                    tag_names=json.dumps([]),
+                    synced_at=datetime.now(tz=timezone.utc),
+                )
+            )
+            session.commit()
+
+        job_id = self._run(object_ids=["lb-1", "ans-1", "lb-2"])
+        r = self._result(in_memory_db, job_id)
+        owners = {o["owner_guid"]: o["count"] for o in r["owners"]}
+        assert owners == {"u-alice": 2, "u-bob": 1}
+
+    def test_fails_closed_on_a_truncated_cache(self, in_memory_db, patched_env, seeded):
+        """Same guard as the executor — the selection came from that cache."""
+        from sqlmodel import delete as sql_delete
+
+        from ts_admin.models.sync_log import SyncLog
+
+        with Session(in_memory_db) as s:
+            s.exec(sql_delete(SyncLog).where(SyncLog.entity_type == "metadata"))
+            s.commit()
+
+        job_id = self._run()
+        with Session(in_memory_db) as s:
+            assert s.get(Job, job_id).status == "FAILED"

@@ -421,6 +421,100 @@ def preview_transfer(
         }
 
 
+async def dryrun_transfer(
+    job_id: str,
+    cluster_id: str,
+    org_id: int,
+    to_user_identifier: str,
+    object_ids: list[str],
+    *,
+    from_user_guid: str | None = None,
+) -> None:
+    """
+    Pre-flight a transfer against ThoughtSpot LIVE. Changes nothing.
+
+    The preview that precedes this is a cache query, and the cache is exactly
+    what goes stale between a sync and a transfer. Two failure modes only a
+    live check can see:
+
+      - **The recipient is gone.** A user deactivated or renamed upstream still
+        looks fine locally, and the transfer would discover it only after every
+        chunk had failed.
+      - **A poison GUID.** `assign_metadata_owner` takes 50 ids per call and the
+        executor buckets the whole chunk on failure, so one object deleted
+        upstream fails 49 healthy transfers alongside it. There is no bisection
+        on this path (unlike the TML export), so the pre-flight is what keeps
+        one stale row from costing an admin the other 49.
+
+    Result shape mirrors the deleter's dry-run: counts, plus the specific GUIDs
+    that would fail, so the modal can name them rather than warning in general.
+    """
+    from ts_admin.services.job_service import mark_complete, mark_failed, mark_running
+    from ts_admin.services.sync_status import require_authoritative_metadata
+    from ts_admin.ts_client import ThoughtSpotClient
+
+    # Same fail-closed guard as the executor, for the same reason, and it must
+    # not raise out of a background task.
+    try:
+        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+    except StaleCacheError as exc:
+        mark_failed(job_id, exc)
+        return
+
+    total = len(object_ids)
+    mark_running(job_id, total)
+
+    try:
+        # Cache side: what we believe we are about to move, and from whom.
+        preview = preview_transfer(
+            cluster_id=cluster_id,
+            org_id=org_id,
+            from_user_guid=from_user_guid,
+            explicit_guids=None if from_user_guid else object_ids,
+        )
+        known = {i["ts_guid"] for i in preview["items"]}
+
+        cluster = _get_cluster(cluster_id)
+        async with ThoughtSpotClient(
+            url=cluster.url,
+            auth=cluster.build_auth_strategy(org_id=org_id),
+        ) as client:
+            target = await client.find_user(identifier=to_user_identifier)
+            live_guids = await client.verify_metadata_exists(object_ids=object_ids)
+
+        missing = [guid for guid in object_ids if guid not in live_guids]
+        # Objects the cache does not know either — selected from a stale grid.
+        uncached = [guid for guid in object_ids if guid not in known]
+
+        result = {
+            "requested": total,
+            "transferable": total - len(missing),
+            "missing_count": len(missing),
+            # Capped like every other job result; the counts above are exact.
+            "missing_guids": missing[:200],
+            "uncached_guids": uncached[:200],
+            "target_found": target is not None,
+            "target_name": (target.display_name or target.name) if target else "",
+            "target_identifier": to_user_identifier,
+            "by_type": preview["by_type"],
+            "owners": preview["owners"],
+        }
+        mark_complete(job_id, result)
+        logger.info(
+            "transfer dryrun job=%s cluster=%s requested=%d missing=%d target_found=%s",
+            job_id,
+            cluster_id,
+            total,
+            len(missing),
+            target is not None,
+        )
+    # Background task: an escaping exception is invisible to the caller and
+    # would strand the job at RUNNING. Logged with a traceback, reported FAILED.
+    except Exception as exc:
+        logger.exception("dryrun_transfer job %s failed: %s", job_id, exc)
+        mark_failed(job_id, exc)
+
+
 async def execute_transfer(
     job_id: str,
     cluster_id: str,

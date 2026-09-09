@@ -225,6 +225,18 @@ export const metadataApi = {
       method: "POST", body: JSON.stringify(body),
     }),
 
+  // Live pre-flight: verifies the recipient and the objects against
+  // ThoughtSpot before anything moves. Changes nothing.
+  transferDryrun: (body: {
+    cluster_id: string;
+    org_id: number;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/metadata/transfer/dryrun", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
   transferExecute: (body: {
     cluster_id: string;
     org_id: number;
@@ -603,6 +615,19 @@ export const usersApi = {
     explicit_guids?: string[];
   }) =>
     request<TransferPreviewResponse>("/users/transfer/preview", {
+      method: "POST", body: JSON.stringify(body),
+    }),
+
+  // Live pre-flight — present on both transfer flows because they share one
+  // confirmation modal.
+  transferDryrun: (body: {
+    cluster_id: string;
+    org_id: number;
+    from_user_guid: string;
+    to_user_identifier: string;
+    object_ids: string[];
+  }) =>
+    request<{ job_id: string; total: number }>("/users/transfer/dryrun", {
       method: "POST", body: JSON.stringify(body),
     }),
 

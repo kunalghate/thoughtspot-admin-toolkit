@@ -10,6 +10,7 @@ Endpoints:
   GET  /api/v1/metadata/{guid}                   single object detail
   GET  /api/v1/metadata/{guid}/permissions       live permissions from ThoughtSpot
   POST /api/v1/metadata/transfer/preview         objects + current owners
+  POST /api/v1/metadata/transfer/dryrun          live pre-flight; changes nothing
   POST /api/v1/metadata/transfer/execute         kick reassign-ownership job
 
 The transfer pair mirrors /users/transfer/*, but keyed on an explicit object
@@ -242,6 +243,51 @@ def metadata_transfer_preview(body: MetadataTransferPreviewRequest) -> TransferP
         by_type=result["by_type"],
         owners=[TransferOwnerSummary(**o) for o in result["owners"]],
     )
+
+
+@router.post("/transfer/dryrun", response_model=JobAcceptedResponse, status_code=202)
+async def metadata_transfer_dryrun(
+    body: MetadataTransferExecuteRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAcceptedResponse:
+    """
+    Pre-flight the transfer against ThoughtSpot live. Changes nothing.
+
+    The preview before it is a cache query; this is the check that catches a
+    recipient deactivated upstream, or a GUID deleted since the last sync that
+    would otherwise fail its whole 50-object chunk.
+    """
+    if not body.object_ids:
+        raise HTTPException(status_code=422, detail="object_ids must not be empty")
+    if not body.to_user_identifier:
+        raise HTTPException(status_code=422, detail="to_user_identifier is required")
+
+    cluster_id = _resolve_cluster_id(body.cluster_id)
+
+    from ts_admin.services.sync_status import require_authoritative_metadata
+
+    require_authoritative_metadata(cluster_id=cluster_id, org_id=body.org_id)
+
+    from ts_admin.services.job_service import create_job
+
+    job_id = create_job(
+        job_type="metadata_transfer_dryrun",
+        parameters={
+            "cluster_id": cluster_id,
+            "org_id": body.org_id,
+            "to_user_identifier": body.to_user_identifier,
+            "object_ids": body.object_ids,
+        },
+    )
+    background_tasks.add_task(
+        user_svc.dryrun_transfer,
+        job_id=job_id,
+        cluster_id=cluster_id,
+        org_id=body.org_id,
+        to_user_identifier=body.to_user_identifier,
+        object_ids=body.object_ids,
+    )
+    return JobAcceptedResponse(job_id=job_id, total=len(body.object_ids))
 
 
 @router.post("/transfer/execute", response_model=JobAcceptedResponse, status_code=202)

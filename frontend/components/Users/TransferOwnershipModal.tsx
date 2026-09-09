@@ -20,7 +20,7 @@ import { useCallback, useEffect, useState } from "react";
 import { X, ArrowRight } from "lucide-react";
 
 import { UserPicker } from "@/components/Users/UserPicker";
-import { metadataApi, usersApi } from "@/lib/api";
+import { jobsApi, metadataApi, usersApi } from "@/lib/api";
 import { theme } from "@/lib/theme";
 import type { UserListItem, TransferObjectItem, TransferOwnerSummary } from "@/lib/types";
 
@@ -30,7 +30,17 @@ const TYPE_LABELS: Record<string, string> = {
   USER_DEFINED: "Custom",
 };
 
-type Step = "pick-target" | "preview" | "confirming" | "submitting";
+type Step = "pick-target" | "preview" | "checking" | "confirming" | "submitting";
+
+/** What the live pre-flight found. */
+interface Preflight {
+  requested: number;
+  transferable: number;
+  missing_count: number;
+  missing_guids: string[];
+  target_found: boolean;
+  target_name: string;
+}
 
 /** Where the objects to transfer come from. */
 export type TransferSource =
@@ -57,6 +67,7 @@ export function TransferOwnershipModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
+  const [preflight, setPreflight] = useState<Preflight | null>(null);
 
   const objectIds = source.kind === "objects" ? source.objectIds : null;
   const fromGuid = source.kind === "user" ? source.fromUser.ts_guid : null;
@@ -93,27 +104,89 @@ export function TransferOwnershipModal({
   }, [clusterId, orgId, fromGuid, typeFilter, objectIds?.join(",")]);
 
   useEffect(() => {
-    if (step === "preview" || step === "confirming") void loadPreview();
+    if (step === "preview") void loadPreview();
   }, [step, loadPreview]);
+
+  /**
+   * Ask ThoughtSpot — not the cache — whether this transfer can actually run.
+   *
+   * The preview above is a SQLite query, and the cache is exactly what goes
+   * stale between a sync and a transfer. This catches a recipient deactivated
+   * upstream, and objects deleted since the last sync: those are dropped from
+   * the submission rather than being sent in a 50-object chunk that would fail
+   * as a whole and take 49 healthy transfers with it.
+   */
+  async function runPreflight() {
+    if (!target) return;
+    setStep("checking");
+    setError(null);
+    setPreflight(null);
+    try {
+      const body = {
+        cluster_id: clusterId,
+        org_id: orgId,
+        to_user_identifier: target.username,
+        object_ids: items.map((i) => i.ts_guid),
+      };
+      const { job_id } = objectIds
+        ? await metadataApi.transferDryrun(body)
+        : await usersApi.transferDryrun({ ...body, from_user_guid: fromGuid! });
+
+      // Poll to a terminal state. A failing tick is tolerated a few times —
+      // the check is advisory, but a silent hang is not acceptable before a
+      // write.
+      let errors = 0;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          const job = await jobsApi.get(job_id);
+          errors = 0;
+          if (job.status === "COMPLETE") {
+            setPreflight((job as any).result as Preflight);
+            setStep("confirming");
+            return;
+          }
+          if (job.status === "FAILED" || job.status === "PARTIAL") {
+            setError((job as any).error || "The pre-flight check failed.");
+            setStep("preview");
+            return;
+          }
+        } catch (e) {
+          if (++errors >= 5) throw e;
+        }
+      }
+      setError("The pre-flight check timed out — try again.");
+      setStep("preview");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStep("preview");
+    }
+  }
 
   async function handleSubmit() {
     if (!target) return;
     setStep("submitting");
     setError(null);
     try {
+      // Drop anything the pre-flight found missing upstream. Sending a dead
+      // GUID would fail its whole 50-object chunk, so excluding it here is
+      // what protects the other 49.
+      const dead = new Set(preflight?.missing_guids ?? []);
+      const objectIdsToSend = items.map((i) => i.ts_guid).filter((g) => !dead.has(g));
+
       const res = objectIds
         ? await metadataApi.transferExecute({
             cluster_id: clusterId,
             org_id: orgId,
             to_user_identifier: target.username,
-            object_ids: items.map((i) => i.ts_guid),
+            object_ids: objectIdsToSend,
           })
         : await usersApi.transferExecute({
             cluster_id: clusterId,
             org_id: orgId,
             from_user_guid: fromGuid!,
             to_user_identifier: target.username,
-            object_ids: items.map((i) => i.ts_guid),
+            object_ids: objectIdsToSend,
           });
       onClose(true);
       window.location.href = `/jobs?highlight=${res.job_id}`;
@@ -148,7 +221,7 @@ export function TransferOwnershipModal({
         </>
       )}
 
-      {(step === "preview" || step === "confirming" || step === "submitting") && (
+      {(step === "preview" || step === "checking" || step === "confirming" || step === "submitting") && (
         <>
           <Label>Objects that will move</Label>
           {loading && <div style={hintStyle}>Loading preview…</div>}
@@ -214,6 +287,36 @@ export function TransferOwnershipModal({
                 <strong>{target?.display_name || target?.username}</strong>.
               </div>
 
+              {step === "checking" && (
+                <div style={{ ...hintStyle, marginTop: 10 }}>
+                  Checking with ThoughtSpot that the recipient and these objects still exist…
+                </div>
+              )}
+
+              {step === "confirming" && preflight && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {!preflight.target_found && (
+                    <PreflightBox tone="danger">
+                      ThoughtSpot does not recognise <strong>{preflight.target_name || target?.username}</strong>.
+                      They may have been deleted or deactivated since the last sync — pick another recipient.
+                    </PreflightBox>
+                  )}
+                  {preflight.missing_count > 0 && (
+                    <PreflightBox tone="warn">
+                      <strong>{preflight.missing_count}</strong> of {preflight.requested} selected
+                      object{preflight.missing_count === 1 ? "" : "s"} no longer exist{preflight.missing_count === 1 ? "s" : ""} in
+                      ThoughtSpot and will be skipped. <strong>{preflight.transferable}</strong> will transfer.
+                    </PreflightBox>
+                  )}
+                  {preflight.target_found && preflight.missing_count === 0 && (
+                    <PreflightBox tone="ok">
+                      Checked live: all {preflight.requested} object{preflight.requested === 1 ? "" : "s"} still
+                      exist and {preflight.target_name} is an active recipient.
+                    </PreflightBox>
+                  )}
+                </div>
+              )}
+
               {step === "confirming" && (
                 <div style={{ marginTop: 12 }}>
                   <Label>Type <code style={codeStyle}>TRANSFER</code> to confirm</Label>
@@ -239,14 +342,21 @@ export function TransferOwnershipModal({
             {step === "preview" && (
               <PrimaryButton
                 disabled={items.length === 0}
-                onClick={() => setStep("confirming")}
+                onClick={runPreflight}
               >
                 Continue
               </PrimaryButton>
             )}
+            {step === "checking" && <PrimaryButton disabled onClick={() => {}}>Checking…</PrimaryButton>}
             {step === "confirming" && (
               <PrimaryButton
-                disabled={confirmText !== "TRANSFER" || items.length === 0}
+                disabled={
+                  confirmText !== "TRANSFER" ||
+                  items.length === 0 ||
+                  // A recipient ThoughtSpot cannot see would fail every chunk.
+                  preflight?.target_found === false ||
+                  preflight?.transferable === 0
+                }
                 onClick={handleSubmit}
               >
                 Transfer {items.length} object{items.length === 1 ? "" : "s"}
@@ -461,3 +571,22 @@ const codeStyle: React.CSSProperties = {
   padding: "1px 6px", background: theme.color.surface3, borderRadius: 3,
   fontFamily: theme.font.mono, fontSize: 11,
 };
+
+
+/** One pre-flight verdict line. */
+function PreflightBox({ tone, children }: { tone: "ok" | "warn" | "danger"; children: React.ReactNode }) {
+  const palette = {
+    ok: { bg: theme.color.successSoft, border: theme.color.successBorder, fg: theme.color.textPrimary },
+    warn: { bg: theme.color.warnSoft ?? theme.color.surface, border: theme.color.border, fg: theme.color.textPrimary },
+    danger: { bg: theme.color.dangerSoft, border: theme.color.dangerBorder, fg: theme.color.danger },
+  }[tone];
+  return (
+    <div style={{
+      padding: "8px 12px", borderRadius: 6, fontSize: 12, lineHeight: 1.5,
+      background: palette.bg, border: `1px solid ${palette.border}`, color: palette.fg,
+      fontFamily: theme.font.sans,
+    }}>
+      {children}
+    </div>
+  );
+}

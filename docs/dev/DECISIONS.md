@@ -258,29 +258,42 @@ is disabled. No periodic polling. Admin refreshes the page when the cluster is b
 
 ---
 
-## ADR-014: Ownership transfer confirms with a preview, not a dry-run job
+## ADR-014: Ownership transfer pre-flights against ThoughtSpot, live
 
-**Decision:** Ownership transfer — from the Users page or the Metadata page — gates
-on `POST .../transfer/preview` plus a typed `TRANSFER` confirmation, not on a
-`*_dryrun` job of the kind ADR-009 requires for archive/delete/share.
+**Superseded an earlier draft of this ADR** which argued transfer needed no dry-run
+because its preview was already the impact report ADR-009 asks for. That was wrong
+in one specific way: the preview is a SQLite query, and the cache is exactly what
+goes stale between a sync and a transfer. ADR-009's sibling rule — "verify live
+before executing" — was not being met.
+
+**Decision:** `POST .../transfer/dryrun` (on both the Users and Metadata entry
+points) checks the transfer against ThoughtSpot **live** before the typed
+`TRANSFER` confirmation. It verifies:
+
+- the **recipient** still exists upstream (`users/search` by identifier), and
+- which of the **selected objects** ThoughtSpot still has (`metadata/search` over
+  the GUIDs).
+
+Objects it reports as gone are excluded from the submission, not merely flagged.
 
 **Rationale:**
-- ADR-009 exists because those operations destroy or expose things: a delete cannot
-  be undone, and a bad share hands data to people who should not have it. A transfer
-  does neither. Every object still exists, with the same content and the same
-  permissions; only `owner_guid` changes, and a second transfer puts it back.
-- The preview is already the impact report ADR-009 asks for: it returns the exact
-  object list, counts by type, and (for a Metadata-page selection) every current
-  owner. There is no estimate anywhere in the flow.
-- A `transfer_dryrun` job would restate what the preview just returned, from the
-  same cache query, with no live call to disagree with it.
-- This matches the shape the Users-page transfer has always had. Adding a dry-run to
-  only the new entry point would make the two disagree.
+- `assign_metadata_owner` takes 50 ids per call and `execute_transfer` buckets the
+  **whole chunk** as failed when a call raises. There is no bisection on this path
+  (unlike `_export_tml_resilient` on the TML backup path), so a single GUID deleted
+  upstream since the last sync costs 49 healthy transfers. Excluding it up front is
+  what makes that a warning instead of a failed batch.
+- A recipient deactivated or renamed upstream still looks fine in the cache. Without
+  the live check that is discovered only after every chunk has failed.
+- Neither condition is visible to a cache-only preview, so this is not a dry-run
+  that restates what the preview already said — the objection that sank the first
+  draft of this ADR.
 
-**What this does NOT relax:** both entry points still fail closed on a truncated
-metadata cache (`require_authoritative_metadata`, refused in the router before any
-Job row exists), still write a `UserActionRecord` per source owner, and still write
-an `AuditLog` row. `DRYRUN_ENDPOINTS` is unchanged — transfer was never in it.
+**Why it lives on both entry points:** the two flows share one confirmation modal.
+A pre-flight step that ran on only one of them would read as a bug.
+
+**Registered** in `DRYRUN_ENDPOINTS` (`tests/integration/test_dryrun_safety.py`), so
+the standing invariant — a dry-run endpoint never reaches a destructive write path —
+now covers transfer too. That suite gained a trip wire on `execute_transfer`.
 
 ---
 
