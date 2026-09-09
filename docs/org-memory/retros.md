@@ -230,3 +230,16 @@ One line per cycle on process friction. Format:
   unprotected file and is therefore the one route by which a protected rule can
   soften without a human-approved PR. Rewritten mid-cycle to escalate rather than
   grant. Agent briefs must never grant a carve-out the constitution withholds.
+
+- **2026-09-09 · B1 close (post-merge).** M14 merged and the row was closed in the
+  same session rather than waiting for the next cycle's reconcile — because the
+  state B1 forbids ("a row may not sit in `in-review` with no open PR") is created
+  *by the merge itself*, and the merge happens outside the cycle. Worth recording
+  how cheap the re-verification was: the squash-merged tree hashed **identical** to
+  the tree QA had already verified, so the acceptance evidence carried over as
+  proof rather than assumption, and no gate needed re-running. **Generalisable:
+  compare `git rev-parse <branch>^{tree}` against `main^{tree}` before re-verifying
+  a just-merged row** — a squash merge of a rebased branch usually produces the
+  identical tree, which turns a full re-verification into a one-line check. If the
+  trees differ (a merge commit, or edits made in the GitHub UI), the criteria must
+  be re-driven properly.

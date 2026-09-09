@@ -29,6 +29,7 @@ only when a human promotes them.
 | 2026-09-08 · reconcile (B1) | 6 | 1 | 43 open · 0 in-review · 2 feedback |
 | 2026-09-09 · M14 (fix cycle) | 0 | 1 | 43 open · 1 in-review · 2 feedback |
 | 2026-09-09 · craft pass (human-directed) | 0 | 2 | 45 open · 1 in-review · 2 feedback |
+| 2026-09-09 · reconcile (B1, post-merge) | 1 | 0 | 45 open · 0 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -106,11 +107,9 @@ an item reaches `done`, move its index line and detail entry to
 | M16 | P3 | Blanket except Exception survives the BLE gate: keyring residue + column-map site | yes (`ts_admin/config.py`, `ts_admin/main.py`) |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (1)
+### In review (0)
 
-| ID | P | Item | Protected |
-|----|---|------|-----------|
-| M14 | P2 | Blanket except in batch loops: total failure reports PARTIAL | — |
+_Nothing in review._
 
 ### Done
 
@@ -178,70 +177,6 @@ Two bug-hunt passes graded the three grid pages' stale-response guards "clean" w
 
 **Acceptance criteria:** The `bug-hunter` and `reviewer` briefs require checking the third-party contract whenever our code short-circuits inside a library-supplied callback (done in this cycle — verify it stays), AND the org gains at least one automated interaction check that would have caught it: a Playwright (or vitest + AG Grid) test that sorts a grid twice and asserts rows are still rendered, running in a gate rather than by hand
 
-### M14 — Blanket except in batch loops: total failure reports PARTIAL
-
-`P2` · **in-review** · protected: no
-
-A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete
-
-**Acceptance criteria:** A job in which zero items succeeded reports FAILED, never PARTIAL — the `succeeded == 0` branch is evaluated first at every such site, with a test per site. Separately, the org's review checklist requires that a blanket `except Exception` wrapping a batch loop is either narrowed to named exception classes or justified in a comment naming what it is allowed to swallow; CLAUDE.md already forbids bare `except Exception`, so the ~20 pre-existing sites are inventoried and tracked rather than left implicit
-
-
-**2026-09-09 (cycle).** Implemented across four review rounds; PR pending human
-review. **AC(1) discharged at ten sites, not eight.** The eight service-level
-`succeeded == 0` sites were already correct on `main` (shipped in `c586ffc`, the
-same cycle that filed this row) — an independent QA mutation harness
-(`if succeeded == 0:` → `if False:`, one site at a time) confirmed every one is
-killed by a named test. The two genuinely unfixed instances were in the Dashboard
-activity feed, where `"PARTIAL" if failed else "SUCCESS"` could not emit FAILED at
-all.
-
-Fixing those two expressions turned out to require rewriting both feeds. The
-review board found the naive fix wrong three times in a row, each time in the
-branch that round had just added, each time through a fully green five-gate bar:
-(1) `_collapse` merged statuses on a two-level ladder, so the new FAILED was
-downgraded back to PARTIAL whenever two same-label sessions were adjacent —
-the fix did not survive the path every response takes; (2) `succeeded` was
-`count - failed` over `tml_export_status`, which is not a delete outcome and is
-tri-valued, so a job that exported everything and deleted nothing rendered green,
-and stranded PENDING rows counted as successes; (3) the truncated 300-row scan
-let a session make a terminal claim from an arbitrary sample of its own rows —
-measured, a 400-object delete reported "nothing deleted" while 100 objects were
-permanently gone; (4) the export branch added in round 2 keyed success on
-`failed == 0` rather than `exported == total`, reproducing this row's own defect;
-(5) the share half added in round 3 selected `Job.status` and consulted it only
-for the in-flight limb, so a job `_verify_share` had proven failed rendered green
-because `ShareRecord.status` is written optimistically per chunk and never
-rewritten.
-
-Both feeds are now per-session SQL aggregates (`GROUP BY job_id`, newest N
-**sessions** rather than newest 300 **rows**), `deleted_confirmed_at` is the
-success predicate, job intent comes from a LEFT OUTER join to `jobs`, and
-`_collapse` ranks by explicit severity. Export-only runs (F9) stop rendering as
-deletions — a pre-existing defect this row's expression made visible.
-
-Rounds 5 and 6 were about the *sentences*, not the verdicts. Once the share
-ladder was correct in every reachable cell, two labels still lied in opposite
-directions: a job marked FAILED by `_recover_stuck_jobs` after a restart, or by
-the last-resort handler, leaves already-committed SUCCESS rows describing grants
-that are **live in ThoughtSpot** — yet the label asserted the update had failed;
-and the PARTIAL limb emitted the SUCCESS f-string byte-for-byte, over-counting by
-exactly the failed rows. This matters more than copy: `dashboard.tsx:732-762`
-renders a 6px colour dot plus the label with no status chip text, so the sentence
-is the entire message. `Job.status == "FAILED"` has three writers with
-contradictory ground truth that are indistinguishable from
-`(succeeded, failed, status)`, so the status stays conservative (FAILED) while
-the label is now non-affirming.
-
-**AC(2)** met via ruff `BLE` in `select` plus the `reviewer.md` checklist, which
-was strengthened mid-cycle: an earlier draft blessed a blanket handler that
-"carries a comment naming what it swallows", which `CLAUDE.md` does not grant, so
-it now reads CONFIRMED-always with an escalation route. **Caveat for the human:**
-enabling BLE buys less than it looks — ruff exempts any handler that re-raises or
-calls `logger.exception`, so ~10 blanket handlers in `ts_admin/` remain silent
-under the new gate. They are inventoried and tracked on **M16**, not left
-implicit, which is what the criterion asks; but a green BLE run is not evidence
-that blanket handlers were removed.
 
 ### M15 — READ_ENDPOINTS cannot register a non-JSON (CSV) read endpoint
 

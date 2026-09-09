@@ -9,7 +9,7 @@ detail entry here.
 
 ## Index
 
-### Done items (34)
+### Done items (35)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -47,6 +47,7 @@ detail entry here.
 | F8 | P4 | CSV export for Users and Groups | — |
 | F9 | P3 | Export tagged content to TML without deleting | — |
 | F10 | P3 | Transfer ownership of selected objects from the Metadata screen | yes (`tests/integration/test_dryrun_safety.py`) |
+| M14 | P2 | Blanket except in batch loops: total failure reports PARTIAL | — |
 
 ## Completed items
 
@@ -405,3 +406,86 @@ implementation, all fixed. PR pending human review.
 **Triage + acceptance criteria:** NOT DONE, but the client call is object-scoped already: `assign_metadata_owner` (`client.py:943`) takes `object_ids`, and `execute_transfer` chunks it — only the preview/record path is user-shaped. Criteria: metadata grid gains multi-select + a Transfer action (reusing `UserPicker`/the transfer modal); new `POST /metadata/transfer-owner` follows the full write pattern — verify live, dry-run first, audit log after — and is registered in `DRYRUN_ENDPOINTS`
 
 **2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PR #42) — all four sub-criteria. Shipped as `POST /metadata/transfer/{preview,dryrun,execute}` rather than the criteria's `POST /metadata/transfer-owner`: a deliberate mirror of `/users/transfer/*` that reuses `user_management_service` instead of standing up a parallel path. Grid multi-select and Transfer action reuse the existing modal (`frontend/pages/metadata.tsx:313`, `:317`, toolbar `:259-284`, `TransferOwnershipModal` `:340-343`). Verify live: `user_management_service.py:501` `verify_metadata_exists`, with `missing`/`uncached` diffs `:503-505`. Dry-run first: `api/metadata.py:277` → `dryrun_transfer` (`user_management_service.py:442`). Audit log after: `:751-770`, plus one `UserActionRecord` per distinct source owner (`:640`, grouping `:596-618`). Registered in `DRYRUN_ENDPOINTS` as `metadata-transfer-dryrun` (`tests/integration/test_dryrun_safety.py:64-74`). Covered by `tests/integration/test_metadata_api.py:367-456`.
+
+### M14 — Blanket except in batch loops: total failure reports PARTIAL
+
+`P2` · **done** · protected: no
+
+A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete
+
+**Acceptance criteria:** A job in which zero items succeeded reports FAILED, never PARTIAL — the `succeeded == 0` branch is evaluated first at every such site, with a test per site. Separately, the org's review checklist requires that a blanket `except Exception` wrapping a batch loop is either narrowed to named exception classes or justified in a comment naming what it is allowed to swallow; CLAUDE.md already forbids bare `except Exception`, so the ~20 pre-existing sites are inventoried and tracked rather than left implicit
+
+
+**2026-09-09 (cycle).** Implemented across four review rounds; PR pending human
+review. **AC(1) discharged at ten sites, not eight.** The eight service-level
+`succeeded == 0` sites were already correct on `main` (shipped in `c586ffc`, the
+same cycle that filed this row) — an independent QA mutation harness
+(`if succeeded == 0:` → `if False:`, one site at a time) confirmed every one is
+killed by a named test. The two genuinely unfixed instances were in the Dashboard
+activity feed, where `"PARTIAL" if failed else "SUCCESS"` could not emit FAILED at
+all.
+
+Fixing those two expressions turned out to require rewriting both feeds. The
+review board found the naive fix wrong three times in a row, each time in the
+branch that round had just added, each time through a fully green five-gate bar:
+(1) `_collapse` merged statuses on a two-level ladder, so the new FAILED was
+downgraded back to PARTIAL whenever two same-label sessions were adjacent —
+the fix did not survive the path every response takes; (2) `succeeded` was
+`count - failed` over `tml_export_status`, which is not a delete outcome and is
+tri-valued, so a job that exported everything and deleted nothing rendered green,
+and stranded PENDING rows counted as successes; (3) the truncated 300-row scan
+let a session make a terminal claim from an arbitrary sample of its own rows —
+measured, a 400-object delete reported "nothing deleted" while 100 objects were
+permanently gone; (4) the export branch added in round 2 keyed success on
+`failed == 0` rather than `exported == total`, reproducing this row's own defect;
+(5) the share half added in round 3 selected `Job.status` and consulted it only
+for the in-flight limb, so a job `_verify_share` had proven failed rendered green
+because `ShareRecord.status` is written optimistically per chunk and never
+rewritten.
+
+Both feeds are now per-session SQL aggregates (`GROUP BY job_id`, newest N
+**sessions** rather than newest 300 **rows**), `deleted_confirmed_at` is the
+success predicate, job intent comes from a LEFT OUTER join to `jobs`, and
+`_collapse` ranks by explicit severity. Export-only runs (F9) stop rendering as
+deletions — a pre-existing defect this row's expression made visible.
+
+Rounds 5 and 6 were about the *sentences*, not the verdicts. Once the share
+ladder was correct in every reachable cell, two labels still lied in opposite
+directions: a job marked FAILED by `_recover_stuck_jobs` after a restart, or by
+the last-resort handler, leaves already-committed SUCCESS rows describing grants
+that are **live in ThoughtSpot** — yet the label asserted the update had failed;
+and the PARTIAL limb emitted the SUCCESS f-string byte-for-byte, over-counting by
+exactly the failed rows. This matters more than copy: `dashboard.tsx:732-762`
+renders a 6px colour dot plus the label with no status chip text, so the sentence
+is the entire message. `Job.status == "FAILED"` has three writers with
+contradictory ground truth that are indistinguishable from
+`(succeeded, failed, status)`, so the status stays conservative (FAILED) while
+the label is now non-affirming.
+
+**AC(2)** met via ruff `BLE` in `select` plus the `reviewer.md` checklist, which
+was strengthened mid-cycle: an earlier draft blessed a blanket handler that
+"carries a comment naming what it swallows", which `CLAUDE.md` does not grant, so
+it now reads CONFIRMED-always with an escalation route. **Caveat for the human:**
+enabling BLE buys less than it looks — ruff exempts any handler that re-raises or
+calls `logger.exception`, so ~10 blanket handlers in `ts_admin/` remain silent
+under the new gate. They are inventoried and tracked on **M16**, not left
+implicit, which is what the criterion asks; but a green BLE run is not evidence
+that blanket handlers were removed.
+
+**2026-09-09 (reconcile).** Merged as PR #48 (`4f343e1`) and re-verified against
+`main`. The squash-merged tree is byte-identical to the tree QA verified
+(`cdedf0b9b926bde2f6c8dd61074378794bfc5c68`), so the acceptance evidence carries
+over exactly rather than by assumption: **AC(1)** — the ten-site mutation harness
+(`if succeeded == 0:` → `if False:`, one site at a time, full suite each run,
+881 tests collected per run) killed 10/10 with a named red test per site, and the
+cluster and org filters are each killed independently on both new aggregates.
+**AC(2)** — ruff `BLE` is in `select`, the `reviewer.md` correctness lens treats a
+blanket handler as CONFIRMED-always with an escalation route, and the residual
+sites are inventoried on **M16**. Criteria met; closing.
+
+Caveat carried forward, not a gap in this row: `BLE001` flags only 3 of 21 blanket
+handlers because ruff exempts any handler that re-raises or calls
+`logger.exception`. A green BLE run is evidence about silent swallowing, not about
+`CLAUDE.md`'s unconditional rule — that remains the reviewer lens's job. Tracked
+on M16.
+
