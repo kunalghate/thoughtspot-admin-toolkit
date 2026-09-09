@@ -449,7 +449,7 @@ button { font-family: inherit; }
 .dash-tiles     { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .dash-attention { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 24px; }
 .dash-split     { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.dash-fresh     { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.dash-fresh     { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 
 @media (max-width: 1180px) {
   .dash-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }

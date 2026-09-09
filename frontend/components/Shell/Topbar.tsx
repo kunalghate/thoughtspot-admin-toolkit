@@ -15,6 +15,7 @@ const ENTITY_LABELS: Partial<Record<EntityType, string>> = {
   users: "Users",
   groups: "Groups",
   tags: "Tags",
+  connections: "Connections",
   dependencies: "Lineage",
 };
 

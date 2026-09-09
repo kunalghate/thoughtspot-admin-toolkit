@@ -3,7 +3,7 @@
  * Never call /api/* directly from page components.
  */
 
-import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, MetadataListResponse, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind, UpdateCheck } from "./types";
+import type { Cluster, Org, SyncLog, EntityType, Job, MetadataObject, MetadataStats, MetadataListResponse, PaginatedResponse, OffsetPaginatedResponse, PermissionsResponse, ArchiverItem, ArchiverPreview, ArchiveRecord, ArchiveSessionSummary, ArchiveRecordFlatItem, DeleterItem, DeleterResolveResponse, RootSearchItem, UserListItem, UserDetail, UserAccessResponse, GroupListItem, GroupDetail, TransferPreviewResponse, TransferSharingPreviewResponse, DeletePreviewResponse, UserHistoryItem, PrincipalPickerItem, SharingPreviewResponse, SharingHistoryItem, SharePermissionMode, DashboardSummary, TopologyResponse, LineageGraphResponse, ConsumersResponse, RootKind, UpdateCheck, DataConnectionListResponse } from "./types";
 
 // In dev mode, Next.js static-export config disables rewrites so we
 // hit FastAPI directly on :8000. In production the SPA is served by
@@ -161,6 +161,7 @@ export const metadataApi = {
     org_id: number;
     types?: string[];
     owner_guid?: string;
+    connection_guid?: string;
     tag_names?: string[];
     search?: string;
     stale_days?: number;
@@ -184,6 +185,7 @@ export const metadataApi = {
     q.set("org_id", String(params.org_id));
     if (params.types)          params.types.forEach((t) => q.append("types", t));
     if (params.owner_guid)     q.set("owner_guid", params.owner_guid);
+    if (params.connection_guid) q.set("connection_guid", params.connection_guid);
     if (params.tag_names)      params.tag_names.forEach((t) => q.append("tag_names", t));
     if (params.search)         q.set("search", params.search);
     if (params.stale_days)     q.set("stale_days", String(params.stale_days));
@@ -246,6 +248,26 @@ export const metadataApi = {
     request<{ job_id: string; total: number }>("/metadata/transfer/execute", {
       method: "POST", body: JSON.stringify(body),
     }),
+};
+
+// ── Data connections ──────────────────────────────────────────────────────────
+
+export const connectionsApi = {
+  list: (params: {
+    cluster_id: string;
+    org_id: number;
+    search?: string;
+    sort_field?: string;
+    sort_order?: "asc" | "desc";
+  }) => {
+    const q = new URLSearchParams();
+    q.set("cluster_id", params.cluster_id);
+    q.set("org_id", String(params.org_id));
+    if (params.search) q.set("search", params.search);
+    if (params.sort_field) q.set("sort_field", params.sort_field);
+    if (params.sort_order) q.set("sort_order", params.sort_order);
+    return request<DataConnectionListResponse>(`/connections?${q.toString()}`);
+  },
 };
 
 // ── Jobs ──────────────────────────────────────────────────────────────────────

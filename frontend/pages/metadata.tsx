@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import { AgGridReact } from "ag-grid-react";
 import type { GridReadyEvent, RowClickedEvent, SortChangedEvent } from "ag-grid-community";
 import { ArrowRightLeft, Download, Search, X } from "lucide-react";
@@ -34,6 +35,9 @@ export default function MetadataPage() {
 
 function MetadataContent({ syncVersion }: { syncVersion: number }) {
   const { activeCluster, activeOrg } = useShell();
+  const router = useRouter();
+  // Deep link from the Connections page: /metadata?connection_guid=…
+  const connectionGuid = typeof router.query.connection_guid === "string" ? router.query.connection_guid : undefined;
   const gridRef = useRef<AgGridReact>(null);
   // Generation counter for the active datasource — see the same guard on the
   // Groups page. Drops responses from a superseded datasource.
@@ -76,6 +80,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
         cluster_id: clusterId,
         org_id: orgId,
         types:               intersectTypes(f.types, toolbarTypes),
+        connection_guid:     connectionGuid,
         search:              f.search ?? toolbarSearch,
         owner_name_search:   f.owner_name_search,
         tag_search:          f.tag_search,
@@ -99,7 +104,7 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
     });
 
     gridRef.current?.api?.setGridOption("datasource", datasource);
-  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder, colFilters]);
+  }, [activeCluster?.id, activeOrg?.org_id, search, selectedTypes, sortField, sortOrder, colFilters, connectionGuid]);
 
   const handleGridReady = useCallback((e: GridReadyEvent) => {
     e.api.applyColumnState({
@@ -202,6 +207,26 @@ function MetadataContent({ syncVersion }: { syncVersion: number }) {
             );
           })}
         </div>
+
+        {/* A deep-linked connection filter is invisible in the toolbar chips, so
+            it gets its own removable pill — a filter the admin cannot see or
+            clear is one they will read as a broken object count. */}
+        {connectionGuid && (
+          <button
+            data-testid="connection-filter-chip"
+            onClick={() => router.push("/metadata")}
+            title="Showing only objects on this connection — click to clear"
+            style={{
+              display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
+              borderRadius: 14, border: `1px solid ${theme.color.accent}`,
+              background: theme.color.accentSoft, color: theme.color.accent2,
+              fontSize: 11.5, fontWeight: 500, cursor: "pointer", fontFamily: theme.font.sans,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Connection filter <X size={11} />
+          </button>
+        )}
 
         {/* Clear filters */}
         {hasFilters && (

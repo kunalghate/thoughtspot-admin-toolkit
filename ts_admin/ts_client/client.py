@@ -36,6 +36,7 @@ from ts_admin.ts_client.exceptions import (
 from ts_admin.ts_client.models import (
     MetadataType,
     SharePermission,
+    TSConnection,
     TSGroup,
     TSMetadataObject,
     TSOrg,
@@ -1266,6 +1267,38 @@ class ThoughtSpotClient:
         return result
 
     # ── Connections ──────────────────────────────────────────────────────────────
+
+    async def search_connections(self) -> list[TSConnection]:
+        """
+        Every data connection on the cluster, with its warehouse type.
+
+        POST /api/rest/2.0/connection/search — an empty body lists all.
+        Requires DATAMANAGEMENT ("Can manage data") or ADMINISTRATION; on an
+        RBAC instance, CAN_CREATE_OR_EDIT_CONNECTIONS.
+
+        Note `include_details` is NOT requested: it returns the full
+        configuration blob per connection, and nothing here reads it. Measured
+        on se-demo, this endpoint returns ~1,300 connections in one call.
+        """
+        data = await self._request(
+            "POST",
+            "/api/rest/2.0/connection/search",
+            json={"record_offset": 0, "record_size": -1},
+            context="search_connections",
+        )
+        items = data if isinstance(data, list) else data.get("connections", [])
+        out: list[TSConnection] = []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            try:
+                out.append(TSConnection.model_validate(item))
+            except ValidationError as exc:
+                raise TSResponseParseError(
+                    url="/api/rest/2.0/connection/search",
+                    detail=str(exc),
+                ) from exc
+        return out
 
     async def list_connections(self) -> list[dict]:
         """
