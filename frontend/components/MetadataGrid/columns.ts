@@ -66,6 +66,38 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     filterValueGetter: (p) => TYPE_LABELS[p.data?.object_type as string] ?? p.data?.object_type,
     cellRenderer: (p: { value: string }) => TypeChip({ value: p.value }),
   },
+  // ── Where a table actually comes from ────────────────────────────────────
+  // ThoughtSpot's own UI makes this genuinely hard to find, which is why it is
+  // here at all. Every LOGICAL_TABLE subtype has one — tables, models,
+  // worksheets, SQL views, CSV uploads. Liveboards and Answers sit on models
+  // rather than on a connection, so their cells read "—" rather than sitting
+  // empty and looking like missing data.
+  //
+  // Both the filter and the sort are served by a join on ts_connections
+  // (metadata_service.search) — the row itself stores only the GUID, so neither
+  // can be answered from the cached row alone. Filtering by an exact connection
+  // is the toolbar's connection picker, which sets connection_guid.
+  {
+    field: "connection_name",
+    headerName: "Connection",
+    width: 180,
+    filter: "agTextColumnFilter",
+    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
+    valueFormatter: (p) => (isDataObject(p.data?.object_type) ? (p.value || "—") : "—"),
+    // The cell shows a name or nothing — never a GUID, which reads as an
+    // unreadable name rather than as "unresolved". The GUID is still on the
+    // row, so hovering an unresolved cell recovers it (and says what to do).
+    tooltipValueGetter: (p) => {
+      if (!isDataObject(p.data?.object_type)) return "Liveboards and Answers sit on a model, not on a connection";
+      if (p.value) return p.value as string;
+      const guid = p.data?.connection_guid;
+      if (!guid) return "No connection recorded — re-sync metadata to fill this in";
+      // A metadata sync refreshes the connection cache too, so a GUID still
+      // unresolved after one is a source /connection/search does not return
+      // (Analyst Studio, CSV uploads) rather than a cache that is simply old.
+      return `Connection ${guid} is not one ThoughtSpot lists — its source has no connection entry`;
+    },
+  },
   {
     field: "owner_name",
     headerName: "Owner",
@@ -115,36 +147,6 @@ export const METADATA_COLUMNS: ColDef<MetadataObject>[] = [
     filter: "agDateColumnFilter",
     filterParams: { suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
     valueFormatter: (p) => formatDate(p.value),
-  },
-  // ── Where a table actually comes from ────────────────────────────────────
-  // ThoughtSpot's own UI makes this genuinely hard to find, which is why it is
-  // here at all. Every LOGICAL_TABLE subtype has one — tables, models,
-  // worksheets, SQL views, CSV uploads. Liveboards and Answers sit on models
-  // rather than on a connection, so their cells read "—" rather than sitting
-  // empty and looking like missing data.
-  //
-  // Both the filter and the sort are served by a join on ts_connections
-  // (metadata_service.search) — the row itself stores only the GUID, so neither
-  // can be answered from the cached row alone. Filtering by an exact connection
-  // still happens from the Connections page, which links here with
-  // connection_guid set.
-  {
-    field: "connection_name",
-    headerName: "Connection",
-    width: 180,
-    filter: "agTextColumnFilter",
-    filterParams: { filterOptions: ["contains"], suppressAndOrCondition: true, buttons: ["reset", "apply"], closeOnApply: true },
-    valueFormatter: (p) => (isDataObject(p.data?.object_type) ? (p.value || "—") : "—"),
-    // The cell shows a name or nothing — never a GUID, which reads as an
-    // unreadable name rather than as "unresolved". The GUID is still on the
-    // row, so hovering an unresolved cell recovers it (and says what to do).
-    tooltipValueGetter: (p) => {
-      if (!isDataObject(p.data?.object_type)) return "Liveboards and Answers sit on a model, not on a connection";
-      if (p.value) return p.value as string;
-      const guid = p.data?.connection_guid;
-      if (!guid) return "No connection recorded — re-sync metadata to fill this in";
-      return `Connection ${guid} is not in the local cache — re-sync connections from Settings`;
-    },
   },
   {
     field: "db_name",
