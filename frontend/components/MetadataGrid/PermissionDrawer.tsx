@@ -63,13 +63,14 @@ export default function PermissionDrawer({ object, clusterId, orgId, onClose }: 
       {/* Backdrop */}
       <div
         onClick={onClose}
+        className="scrim"
         style={{
           position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 200,
         }}
       />
 
       {/* Drawer */}
-      <div style={{
+      <div className="drawer-panel" style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: 400,
         background: theme.color.surface, boxShadow: theme.shadow.lg,
         zIndex: 201, display: "flex", flexDirection: "column",

@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Adversarial diff reviewer. Spawn one per LENS (correctness / security / regression / performance / simplicity). Assume the diff is wrong and hunt the evidence; every finding needs a concrete failure scenario. Grades findings CONFIRMED / PLAUSIBLE. Does NOT run the port-binding gates (QA owns those).
+description: Adversarial diff reviewer. Spawn one per LENS (correctness / security / regression / performance / simplicity / craft). Assume the diff is wrong and hunt the evidence; every finding needs a concrete failure scenario. Grades findings CONFIRMED / PLAUSIBLE. Does NOT run the port-binding gates (QA owns those).
 tools: Read, Glob, Grep, Bash
 ---
 
@@ -43,6 +43,37 @@ review only through it.
   result growth, blocking I/O in an async path, missing pagination, a full sync
   where a lazy per-entity sync was intended, redundant DB round-trips, heavy work
   in a hot loop, frontend bundle/asset bloat.
+- **craft** — interaction and interface quality on any diff that touches
+  `frontend/`. Read the `apple-design` skill (`.claude/skills/apple-design/`)
+  **including its "How THIS repo applies it" preamble**, and
+  `docs/dev/DESIGN.md`. Check, in this order:
+  1. **Keyboard focus is visible.** A new control that sets `outline: "none"`
+     inline is fine — the global `:focus-visible` rule in `theme.css` restores
+     the ring — but a control that also sets an inline `box-shadow` on focus,
+     or lives inside a stacking context that clips the outline, is not. Tab to
+     it and look.
+  2. **Reduced motion.** Any NEW `animation:` — especially any `infinite` one —
+     needs an answer under `prefers-reduced-motion: reduce`. The blanket
+     transition-killer in `theme.css` covers `transition:`, not `animation:`.
+     A frozen indeterminate progress bar that now reads as a determinate
+     percentage is a CONFIRMED finding, not a nit.
+  3. **Overlay symmetry.** A new drawer/modal gets `.scrim` +
+     `.drawer-panel`/`.modal-panel`. A panel centred with an inline
+     `transform: translate(-50%, -50%)` MUST use `.modal-panel-fixed` — the
+     plain keyframe replaces the centring transform and throws the panel
+     off-centre while it plays.
+  4. **Press feedback and hover-only affordances.** Feedback on pointer-down,
+     and anything revealed only on `:hover` needs a `@media (hover: none)`
+     fallback or it is undiscoverable on touch.
+  5. **Tracking is size-specific.** Large numerals want negative tracking;
+     small uppercase labels want positive. One value for both is wrong somewhere.
+
+  Grade these like any other lens (concrete failure scenario required), but
+  they follow the **simplicity** rule: a craft finding **never blocks the PR**.
+  Apply the cheap ones in the diff; file the rest as `S` rows. Do NOT open
+  findings against the sections the skill's preamble marks non-binding —
+  translucent materials, spring physics, and gesture mechanics are settled.
+
 - **simplicity** — what in this diff should not exist: reinvented stdlib, a new
   dependency where a few lines would do, an abstraction with exactly one caller, a
   config knob nothing sets, dead flexibility, a helper that duplicates one already

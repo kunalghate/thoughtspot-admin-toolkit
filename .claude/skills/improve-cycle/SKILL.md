@@ -137,11 +137,18 @@ independent items, use worktree-isolated implementers (one each).
 
 ### 4. REVIEW ∥ QA
 In ONE message, launch the **Review Board** (`reviewer` per lens —
-correctness / security / regression / performance / **simplicity**, each told to
-REFUTE) **and** `qa-verifier` together. Also run `/code-review`,
+correctness / security / regression / performance / **simplicity**, plus
+**craft** whenever the diff touches `frontend/`, each told to REFUTE) **and**
+`qa-verifier` together. Also run `/code-review`,
 `/security-review` and `/ponytail-review` on the diff. Fix every **CONFIRMED**
 finding (re-dispatch `implementer`), then **re-run QA** — a diff that changed
 after verification is unverified.
+
+- **Craft findings never block the PR either.** Same rule as simplicity:
+  apply the cheap ones in the diff, file the rest as `S` rows. The craft lens
+  reads the `apple-design` skill and `DESIGN.md`; it is scoped by that skill's
+  "How THIS repo applies it" preamble and may not re-litigate the settled
+  no-materials / no-spring-library decisions.
 
 - **Simplicity findings never block the PR.** A correctness/security/regression
   CONFIRMED finding stops the ship; a simplicity one does not. Apply the ones
@@ -163,6 +170,13 @@ after verification is unverified.
   "X is unchanged" assertion must first assert X is non-empty — fixtures can be
   vacuous one level below the assertion (S27). Tell the reviewer NOT to trust
   the implementer's own kill table; re-run it.
+- **Check the accessibility preferences, not just the theme.** "Both themes"
+  is no longer the whole visual matrix — `theme.css` also answers
+  `prefers-reduced-motion`, `prefers-reduced-transparency` and
+  `prefers-contrast`. Chrome DevTools → Rendering → "Emulate CSS media feature"
+  toggles each without touching OS settings; Playwright takes
+  `reducedMotion: "reduce"` / `forcedColors` on the context. A diff that adds
+  motion ships a screenshot with reduced motion emulated.
 - **Visual changes need a visual artifact:** the whole bar is blind to layout
   (jsdom doesn't lay out; `tsc`/build check types). Measure in a real browser —
   a headless replica or Playwright — and show the human the change running

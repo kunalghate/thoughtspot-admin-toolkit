@@ -147,11 +147,12 @@ export default function UserDetailDrawer({ clusterId, orgId, user, onClose }: Pr
       {/* Backdrop */}
       <div
         onClick={onClose}
+        className="scrim"
         style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 200 }}
       />
 
       {/* Drawer */}
-      <div style={{
+      <div className="drawer-panel" style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: 420,
         background: theme.color.surface, boxShadow: theme.shadow.lg,
         zIndex: 201, display: "flex", flexDirection: "column",
@@ -303,7 +304,6 @@ export default function UserDetailDrawer({ clusterId, orgId, user, onClose }: Pr
                       ThoughtSpot walks every permission for this user — this can take a minute or
                       two. The result is kept for this session, so reopening the user is instant.
                     </p>
-                    <style>{"@keyframes spin { to { transform: rotate(360deg) } }"}</style>
                   </div>
                 )}
                 {accessError && (
@@ -440,7 +440,7 @@ function Stat({ label, value }: { label: string; value: number }) {
       flex: 1, padding: "10px 12px", borderRadius: 8,
       border: `1px solid ${theme.color.border}`,
     }}>
-      <div style={{ fontSize: 18, fontWeight: 600, color: theme.color.textPrimary }}>{value}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: theme.color.textPrimary, letterSpacing: "-0.015em" }}>{value}</div>
       <div style={{ fontSize: 11, color: theme.color.textMuted }}>{label}</div>
     </div>
   );
