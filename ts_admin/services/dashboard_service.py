@@ -48,7 +48,11 @@ ACTIVITY_MAX_AGE_DAYS = 30
 # there is never a prior row to diff against. A "change since the last sync"
 # needs a second stored number, not a second query.
 _TRACKED_ENTITIES = ("metadata", "users", "groups", "tags", "connections", "dependencies")
-_IN_FLIGHT_STATUSES = ("QUEUED", "PENDING", "RUNNING")
+# `Job.status` is only ever QUEUED | RUNNING | COMPLETE | FAILED | PARTIAL
+# (`job_service.py:36,79,99,138,152`). "PENDING" was a member that nothing can
+# ever match — coverage that was not there. Do not re-add a value without a
+# writer.
+_IN_FLIGHT_STATUSES = ("QUEUED", "RUNNING")
 
 
 def _naive(dt: datetime | None) -> datetime | None:
@@ -108,14 +112,33 @@ def _delete_entry(
     elif action == "export":
         intent = "export"
 
+    in_flight = job_status in _IN_FLIGHT_STATUSES
+
     if total > 0 and deleted == total:
         return f"Deleted {_plural(total, 'object')} (TML backed up)", "SUCCESS"
     if deleted > 0:
+        # The COUNTS still outrank the job's metadata — a confirmed delete is
+        # real evidence and is reported either way. Only the STATUS defers: a
+        # bulk_delete at chunk 2 of 8 really has deleted some objects, but
+        # PARTIAL is this repo's "some worked, retry the rest", a terminal
+        # claim about a job that will most likely finish fine.
+        if in_flight:
+            return f"Deleted {deleted} of {_plural(total, 'object')} so far (TML backed up)…", "PENDING"
         return f"Deleted {deleted} of {_plural(total, 'object')} (TML backed up)", "PARTIAL"
-    if job_status in _IN_FLIGHT_STATUSES:
+    if in_flight:
         return f"Exporting/Deleting {_plural(total, 'object')}…", "PENDING"
     if intent == "export":
-        if failed == 0:
+        # `exported == total`, NOT `failed == 0`. `tml_export_status` is
+        # TRI-valued, and PENDING is reachable at rest: the per-chunk reconcile
+        # loop that converts unaccounted GUIDs to FAILED
+        # (`deletion_service.py:490-499`) is skipped ENTIRELY when a
+        # non-`(TSAdminError, httpx.HTTPError)` exception escapes to the blanket
+        # handler at `deletion_service.py:715` — e.g. `tml_path.write_text()`
+        # raising OSError on a full or read-only TML directory — and a
+        # mid-export restart recovered by `_recover_stuck_jobs` leaves the same
+        # shape. So `failed == 0` NEVER means "everything succeeded"; a run that
+        # wrote zero TML files lands at 0 SUCCESS / 0 FAILED / N PENDING.
+        if total > 0 and exported == total:
             return f"Exported {_plural(total, 'object')} to TML (not deleted)", "SUCCESS"
         if exported > 0:
             return f"Exported {exported} of {_plural(total, 'object')} to TML (not deleted)", "PARTIAL"
@@ -477,10 +500,18 @@ class DashboardService:
             )
 
         # Sharing changes — one row per object × principal; grouped per session
-        # in SQL, same shape as above. No `Job` join here: a share row's own
-        # `status` already says what happened to it, and a session still in
-        # flight simply reads as PENDING until its rows land, self-correcting on
-        # the next poll (the dashboard polls; there is no cached verdict).
+        # in SQL, same shape as above INCLUDING the OUTER `Job` join.
+        #
+        # That join is load-bearing, not symmetry. `ShareRecord.status` has
+        # exactly ONE writer — `"FAILED" if chunk_error else "SUCCESS"`
+        # (`bulk_sharing_service.py:891`) — and it commits per
+        # (object_type, 50-GUID chunk) INSIDE the share loop
+        # (`bulk_sharing_service.py:843-895`). So the rows of a RUNNING job are
+        # indistinguishable from the rows of a finished one: sharing 60
+        # LIVEBOARDs + 40 ANSWERs, a poll landing between chunks sees
+        # succeeded=50 / failed=0 and, on row status alone, renders a terminal
+        # green "Updated sharing on 50 objects" about a job that may still end
+        # FAILED. Only the `Job` row can say "still in flight".
         #
         # NOTE: COUNT(DISTINCT x) is single-column only on SQLite — there is no
         # COUNT(DISTINCT a, b), so these must stay two separate counts.
@@ -493,34 +524,44 @@ class DashboardService:
                 func.count(distinct(col(ShareRecord.principal_guid))).label("principals"),
                 func.count(case((ShareRecord.status == "SUCCESS", 1))).label("succeeded"),
                 func.count(case((ShareRecord.status == "FAILED", 1))).label("failed"),
+                Job.status,
+            )
+            .select_from(ShareRecord)
+            .join(
+                Job,
+                onclause=(Job.id == ShareRecord.job_id) & (Job.cluster_id == ShareRecord.cluster_id),
+                isouter=True,
             )
             .where(
                 ShareRecord.cluster_id == cluster_id,
                 ShareRecord.org_id == org_id,
             )
-            .group_by(col(ShareRecord.job_id))
+            .group_by(col(ShareRecord.job_id), col(Job.status))
             .having(func.max(ShareRecord.executed_at) >= cutoff)
             .order_by(desc("executed_at"))
             .limit(_ACTIVITY_SCAN_SESSIONS)
         ).all():
             n, m = row.objects, row.principals
-            # Three-way, with the zero-success limb first: a session where every
-            # row failed is FAILED, and a session where no row has reached a
-            # terminal state yet is PENDING — never a silent SUCCESS.
-            if row.succeeded and row.failed:
-                status = "PARTIAL"
-            elif row.failed:
-                status = "FAILED"
-            elif row.succeeded:
-                status = "SUCCESS"
-            else:
+            # The job's state is checked FIRST and overrides the row counts: no
+            # terminal verdict about a session that is still writing rows.
+            if row.status in _IN_FLIGHT_STATUSES:
                 status = "PENDING"
-            if status == "FAILED":
-                label = f"Sharing update failed for {_plural(n, 'object')} ({_plural(m, 'principal')})"
-            elif status == "PENDING":
-                label = f"Sharing update pending on {_plural(n, 'object')} for {_plural(m, 'principal')}"
-            else:
+                label = f"Sharing update in progress on {_plural(n, 'object')} for {_plural(m, 'principal')}…"
+            elif row.succeeded and not row.failed:
+                status = "SUCCESS"
                 label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
+            elif row.succeeded:
+                status = "PARTIAL"
+                label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
+            else:
+                # Every terminal row failed. `succeeded == failed == 0` is not
+                # reachable — the single writer above emits only SUCCESS or
+                # FAILED, and an empty group produces no row at all — but it
+                # falls in HERE rather than into a limb of its own so that a
+                # future third status can only make this entry more
+                # conservative, never green.
+                status = "FAILED"
+                label = f"Sharing update failed for {_plural(n, 'object')} ({_plural(m, 'principal')})"
             items.append(
                 {
                     "kind": "share",
@@ -581,6 +622,12 @@ class DashboardService:
             prev = collapsed[-1] if collapsed else None
             if prev and prev["kind"] == item["kind"] and prev["label"] == item["label"]:
                 prev["count"] += 1
+                # The STRICT `>` is unreachable-by-construction today: `>=`
+                # survives every equal-status test (assigning a status onto an
+                # identical status is a no-op) and only differs when two
+                # DISTINCT statuses TIE in rank — i.e. PENDING against an
+                # unrecognised status, which no writer produces. Treat it as
+                # untested-but-correct, not as pinned behaviour.
                 if _severity(item["status"]) > _severity(prev["status"]):
                     prev["status"] = item["status"]
                 continue

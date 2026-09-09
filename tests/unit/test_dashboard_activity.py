@@ -89,6 +89,18 @@ DELETE_CASES = [
         job_status="RUNNING",
         expect=("Deleted 2 objects (TML backed up)", "SUCCESS"),
     ),
+    # (b) in flight WITH some already deleted: the counts are real and stay,
+    # but PARTIAL ("some worked, retry the rest") is a terminal claim about a
+    # job at chunk 2 of 8 — the status must be the neutral PENDING.
+    _case(
+        "b-in-flight-with-some-deleted",
+        total=8,
+        deleted=2,
+        exported=8,
+        job_type="bulk_delete",
+        job_status="RUNNING",
+        expect=("Deleted 2 of 8 objects so far (TML backed up)…", "PENDING"),
+    ),
     # (c) in flight — nothing confirmed yet, and the job is still going.
     _case(
         "c-in-flight-running",
@@ -106,13 +118,16 @@ DELETE_CASES = [
         action="delete",
         expect=("Exporting/Deleting 1 object…", "PENDING"),
     ),
+    # `Job.status` is never "PENDING" (`job_service.py:36,79,99,138,152`), so
+    # it is NOT an in-flight status — an export session carrying it is read on
+    # its rows like any other finished one.
     _case(
-        "c-in-flight-pending",
+        "c-pending-is-not-a-job-status",
         total=5,
         job_type="archive",
         job_status="PENDING",
         action="export",
-        expect=("Exporting/Deleting 5 objects…", "PENDING"),
+        expect=("TML export failed for 5 objects", "FAILED"),
     ),
     # (d) export-only run that finished cleanly — NOT a delete.
     _case(
@@ -134,6 +149,35 @@ DELETE_CASES = [
         job_status="PARTIAL",
         action="export",
         expect=("Exported 2 of 3 objects to TML (not deleted)", "PARTIAL"),
+    ),
+    # (d1) export-only where the reconcile loop never ran: `failed == 0` while
+    # every row is still PENDING. `deletion_service.py:490-499` is what turns an
+    # unaccounted GUID into FAILED, and it is skipped whole when an exception
+    # escapes to the blanket handler at `deletion_service.py:715`, so this is
+    # the shape of a run that wrote ZERO TML files. The old `failed == 0` test
+    # rendered it green: "Exported 200 objects to TML" / SUCCESS.
+    _case(
+        "d-export-none-exported-none-failed",
+        total=200,
+        exported=0,
+        failed=0,
+        deleted=0,
+        job_type="archive",
+        job_status="FAILED",
+        action="export",
+        expect=("TML export failed for 200 objects", "FAILED"),
+    ),
+    # (d2b) same hole one step along: a partial export whose unwritten rows are
+    # PENDING rather than FAILED.
+    _case(
+        "d2-export-partial-none-failed",
+        total=200,
+        exported=50,
+        failed=0,
+        job_type="archive",
+        job_status="FAILED",
+        action="export",
+        expect=("Exported 50 of 200 objects to TML (not deleted)", "PARTIAL"),
     ),
     # (d3) export-only, nothing exported at all.
     _case(
@@ -191,7 +235,7 @@ DELETE_CASES = [
 
 def test_the_case_table_is_not_empty():
     """S27/M4: a parametrize over an empty list reads green while testing nothing."""
-    assert len(DELETE_CASES) == 16
+    assert len(DELETE_CASES) == 19
     assert {c.id for c in DELETE_CASES} >= {"a-all-deleted", "d-export-only-clean", "e-delete-nothing-confirmed"}
 
 

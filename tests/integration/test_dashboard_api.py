@@ -730,6 +730,57 @@ class TestDeleteFeedCountsConfirmedDeletes:
         assert entry["status"] == "PENDING"
         assert entry["label"].endswith("…"), entry["label"]
 
+    def test_an_export_only_run_that_exported_nothing_is_failed_not_success(self, client, seeded, in_memory_db):
+        """
+        Round-3 F1: the export limb keyed success on `failed == 0`, but
+        `tml_export_status` is TRI-valued. The per-chunk reconcile loop that
+        turns an unaccounted GUID into FAILED (`deletion_service.py:490-499`)
+        is skipped whole when a non-`(TSAdminError, httpx.HTTPError)` exception
+        escapes to the blanket handler at `deletion_service.py:715` — an
+        OSError from `tml_path.write_text()` on a full or read-only TML
+        directory does exactly that — so a run that wrote ZERO files lands at
+        0 SUCCESS / 0 FAILED / N PENDING and used to render a green
+        "Exported 2 objects to TML".
+        """
+        with Session(in_memory_db) as session:
+            session.add(
+                Job(
+                    id="exp-nothing",
+                    cluster_id="c1",
+                    job_type="archive",
+                    status="FAILED",
+                    parameters=json.dumps({"action": "export", "object_ids": ["x1", "x2"]}),
+                )
+            )
+            session.add(self._rec("exp-nothing", "x1", "PENDING"))
+            session.add(self._rec("exp-nothing", "x2", "PENDING"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "FAILED"
+        assert "Exported" not in entry["label"], entry["label"]
+        assert entry["label"] == "TML export failed for 2 objects"
+
+    def test_a_running_delete_with_some_confirmed_keeps_the_counts_but_not_the_terminal_status(
+        self, client, seeded, in_memory_db
+    ):
+        """
+        Round-3 F5: `deleted > 0` was evaluated before the in-flight check, so a
+        bulk_delete at chunk 2 of 8 showed an amber PARTIAL — this repo's "some
+        worked, retry the rest" — about a job that will most likely finish. The
+        counts are real and stay; only the pill goes neutral.
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="del-midway", cluster_id="c1", job_type="bulk_delete", status="RUNNING"))
+            session.add(self._rec("del-midway", "x1", "SUCCESS", deleted=True))
+            session.add(self._rec("del-midway", "x2", "SUCCESS", deleted=True))
+            session.add(self._rec("del-midway", "x3", "PENDING"))
+            session.add(self._rec("del-midway", "x4", "PENDING"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "PENDING"
+        assert entry["status"] != "PARTIAL"
+        assert "2 of 4 objects" in entry["label"], entry["label"]
+
     def test_a_session_whose_job_row_is_gone_still_renders_neutrally(self, client, seeded, in_memory_db):
         """The join is OUTER: purged job history must not delete the admin's audit feed."""
         with Session(in_memory_db) as session:
@@ -864,14 +915,66 @@ class TestShareFeedStatus:
         assert len(matching) == 1, f"expected exactly one share entry, got {activity}"
         return matching[0]
 
-    def test_a_share_session_with_nothing_terminal_yet_is_pending_not_success(self, client, seeded, in_memory_db):
+    def test_a_running_share_job_is_pending_even_when_every_landed_row_succeeded(self, client, seeded, in_memory_db):
+        """
+        Round-3 F2. The predecessor of this test hand-seeded
+        `ShareRecord(status="PENDING")`, a value NO writer can produce —
+        `bulk_sharing_service.py:891` writes only
+        `"FAILED" if chunk_error else "SUCCESS"` — so it exercised a dead limb.
+
+        The REACHABLE in-flight case is this one: that writer commits per
+        (object_type, 50-GUID chunk) INSIDE its loop
+        (`bulk_sharing_service.py:843-895`), so a poll between chunks sees a
+        set of rows that all succeeded belonging to a job that is still
+        running and may still end FAILED. Row status alone cannot tell that
+        apart from "finished"; the `Job` row can.
+        """
         with Session(in_memory_db) as session:
-            session.add(self._share("share-pending", "x1", "g1", "PENDING"))
-            session.add(self._share("share-pending", "x2", "g1", "PENDING"))
+            session.add(Job(id="share-live", cluster_id="c1", job_type="bulk_share", status="RUNNING"))
+            session.add(self._share("share-live", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-live", "x2", "g1", "SUCCESS"))
             session.commit()
         entry = self._entry(client)
         assert entry["status"] == "PENDING"
         assert entry["status"] != "SUCCESS"
+        assert "in progress" in entry["label"], entry["label"]
+
+    def test_a_completed_share_job_is_still_a_plain_success(self, client, seeded, in_memory_db):
+        """Non-vacuity for the test above: the Job join must not make everything PENDING."""
+        with Session(in_memory_db) as session:
+            session.add(Job(id="share-done", cluster_id="c1", job_type="bulk_share", status="COMPLETE"))
+            session.add(self._share("share-done", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-done", "x2", "g1", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "SUCCESS"
+        assert entry["label"] == "Updated sharing on 2 objects for 1 principal"
+
+    def test_the_share_feed_is_scoped_by_both_cluster_and_org(self, client, seeded, in_memory_db):
+        """
+        S27 diagonal, re-confirmed after the `Job` join was added: a single
+        diagonal shadow is excluded by EITHER predicate alone, so both shadows
+        are needed for `cluster_id` and `org_id` each to be independently
+        load-bearing. Both reuse the job id so a leak merges into the group
+        under test and changes its distinct counts.
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="share-scope", cluster_id="c1", job_type="bulk_share", status="COMPLETE"))
+            session.add(self._share("share-scope", "x1", "g1", "SUCCESS"))
+            session.add(self._share("share-scope", "x2", "g1", "SUCCESS"))
+            # Shadow A: right cluster, wrong org.
+            for obj in ("s1", "s2"):
+                shadow = self._share("share-scope", obj, "g9", "FAILED")
+                shadow.org_id = 0
+                session.add(shadow)
+            # Shadow B: wrong cluster, right org.
+            for obj in ("s3", "s4"):
+                shadow = self._share("share-scope", obj, "g9", "FAILED")
+                shadow.cluster_id = "c2"
+                session.add(shadow)
+            session.commit()
+        entry = self._entry(client)
+        assert (entry["label"], entry["status"]) == ("Updated sharing on 2 objects for 1 principal", "SUCCESS")
 
     def test_a_wholly_failed_share_session_says_so_in_the_label(self, client, seeded, in_memory_db):
         with Session(in_memory_db) as session:
