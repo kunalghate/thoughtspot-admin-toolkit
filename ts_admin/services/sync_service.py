@@ -865,9 +865,22 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
         logger.info("Column-map pass cancelled (object tier kept): %s", exc)
     except TSAuthenticationError:
         raise
+    # Deliberately blind, and it stays blind. This is a best-effort column pass:
+    # narrowing it to named classes would let any one of them destroy the object
+    # tier already committed above (see the comment at :851-855 and
+    # tests/unit/test_lineage_service.py:676). It is permitted to swallow ANY
+    # error for that reason, and it swallows nothing that matters silently —
+    # TSAuthenticationError re-raises on the line above, SyncCancelled is handled
+    # above that, and whatever is caught here is logged AND surfaced to the UI as
+    # result["column_error"].
     except Exception as exc:
         column_error = str(exc)
-        logger.warning("Column-map pass failed (object tier kept): %s", exc)
+        # `logger.exception`, not `.warning`: it preserves the traceback (a
+        # `TypeError: 'NoneType' object is not subscriptable` here used to be
+        # swallowed with NO frame, undiagnosable) — and ruff exempts a blanket
+        # handler that calls it, so BLE001 no longer fires and the suppression
+        # this line used to carry is gone.
+        logger.exception("Column-map pass failed (object tier kept): %s", exc)
 
     # A swallowed column failure used to be invisible: the job read COMPLETE and
     # the graph just silently had no connection nodes and no column map. Carry

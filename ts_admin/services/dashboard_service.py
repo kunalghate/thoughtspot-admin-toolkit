@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func
+from sqlalchemy import case, desc, distinct, func
 from sqlmodel import Session, col, select
 
 from ts_admin import database as _db
@@ -28,10 +28,15 @@ from ts_admin.services.metadata_service import MetadataService
 
 RECENT_JOBS_LIMIT = 5
 RECENT_ACTIVITY_LIMIT = 8
-# How many raw audit rows to scan per source when building the activity feed.
-# Bulk operations write one row per object/principal, so grouping needs a
-# window of raw rows, not a LIMIT on the grouped result.
+# How many raw audit rows to scan for the UserActionRecord feed. That source is
+# ALREADY one row per action, so a row limit drops whole entries and distorts
+# nothing — each surviving row still carries its complete state.
 _ACTIVITY_SCAN_ROWS = 300
+# How many grouped sessions to scan for the archive/share feeds. Those two are
+# aggregated in SQL, so the per-session counts are exact: truncation here drops
+# whole sessions only, and no entry can ever make a terminal claim ("FAILED",
+# "Deleted N of M") from a partial view of its own rows.
+_ACTIVITY_SCAN_SESSIONS = 50
 # Activity older than this is history, not news — the feed hides it so a
 # months-old bulk delete cannot masquerade as "recent".
 ACTIVITY_MAX_AGE_DAYS = 30
@@ -43,7 +48,11 @@ ACTIVITY_MAX_AGE_DAYS = 30
 # there is never a prior row to diff against. A "change since the last sync"
 # needs a second stored number, not a second query.
 _TRACKED_ENTITIES = ("metadata", "users", "groups", "tags", "connections", "dependencies")
-_IN_FLIGHT_STATUSES = ("QUEUED", "PENDING", "RUNNING")
+# `Job.status` is only ever QUEUED | RUNNING | COMPLETE | FAILED | PARTIAL
+# (`job_service.py:36,79,99,138,152`). "PENDING" was a member that nothing can
+# ever match — coverage that was not there. Do not re-add a value without a
+# writer.
+_IN_FLIGHT_STATUSES = ("QUEUED", "RUNNING")
 
 
 def _naive(dt: datetime | None) -> datetime | None:
@@ -51,6 +60,94 @@ def _naive(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
+# Worst-wins ordering for `_collapse`. An UNKNOWN status ranks 1 — above
+# SUCCESS, so a status this code has never heard of can never be swallowed by a
+# green one, and below PARTIAL, so it can never be promoted into a terminal
+# claim about what happened.
+_STATUS_SEVERITY = {"SUCCESS": 0, "PENDING": 1, "PARTIAL": 2, "FAILED": 3}
+_UNKNOWN_STATUS_SEVERITY = 1
+
+
+def _severity(status: str | None) -> int:
+    return _STATUS_SEVERITY.get(status or "", _UNKNOWN_STATUS_SEVERITY)
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def _delete_entry(
+    *,
+    total: int,
+    deleted: int,
+    exported: int,
+    failed: int,
+    job_type: str | None,
+    job_status: str | None,
+    action: str | None,
+) -> tuple[str, str]:
+    """
+    Render one archive session as (label, status).
+
+    `deleted` counts rows with `deleted_confirmed_at IS NOT NULL`, which per
+    `ts_admin/models/archive_record.py:46-55` is the ONLY predicate that means
+    "this object is really gone from ThoughtSpot". `tml_export_status` says
+    nothing about it: `_execute_delete` exports every object (Phase A) before
+    deleting any (Phase B), so a crash between the phases leaves a whole session
+    SUCCESS-exported and fully alive.
+
+    The archive rows alone cannot distinguish an export-only run from a delete
+    job that crashed in Phase B — both leave every row SUCCESS-exported with no
+    delete confirmation — so the owning `Job` supplies the *intent*. A confirmed
+    delete is still evaluated FIRST: real evidence outranks job metadata, so a
+    mislabelled job can never hide a delete that actually happened.
+
+    Module-level and pure so every branch is unit-testable without HTTP.
+    """
+    intent: str | None = None
+    if job_type == "bulk_delete" or action == "delete":
+        intent = "delete"
+    elif action == "export":
+        intent = "export"
+
+    in_flight = job_status in _IN_FLIGHT_STATUSES
+
+    if total > 0 and deleted == total:
+        return f"Deleted {_plural(total, 'object')} (TML backed up)", "SUCCESS"
+    if deleted > 0:
+        # The COUNTS still outrank the job's metadata — a confirmed delete is
+        # real evidence and is reported either way. Only the STATUS defers: a
+        # bulk_delete at chunk 2 of 8 really has deleted some objects, but
+        # PARTIAL is this repo's "some worked, retry the rest", a terminal
+        # claim about a job that will most likely finish fine.
+        if in_flight:
+            return f"Deleted {deleted} of {_plural(total, 'object')} so far (TML backed up)…", "PENDING"
+        return f"Deleted {deleted} of {_plural(total, 'object')} (TML backed up)", "PARTIAL"
+    if in_flight:
+        return f"Exporting/Deleting {_plural(total, 'object')}…", "PENDING"
+    if intent == "export":
+        # `exported == total`, NOT `failed == 0`. `tml_export_status` is
+        # TRI-valued, and PENDING is reachable at rest: the per-chunk reconcile
+        # loop that converts unaccounted GUIDs to FAILED
+        # (`deletion_service.py:490-499`) is skipped ENTIRELY when a
+        # non-`(TSAdminError, httpx.HTTPError)` exception escapes to the blanket
+        # handler at `deletion_service.py:715` — e.g. `tml_path.write_text()`
+        # raising OSError on a full or read-only TML directory — and a
+        # mid-export restart recovered by `_recover_stuck_jobs` leaves the same
+        # shape. So `failed == 0` NEVER means "everything succeeded"; a run that
+        # wrote zero TML files lands at 0 SUCCESS / 0 FAILED / N PENDING.
+        if total > 0 and exported == total:
+            return f"Exported {_plural(total, 'object')} to TML (not deleted)", "SUCCESS"
+        if exported > 0:
+            return f"Exported {exported} of {_plural(total, 'object')} to TML (not deleted)", "PARTIAL"
+        return f"TML export failed for {_plural(total, 'object')}", "FAILED"
+    if intent == "delete":
+        return f"Delete failed — 0 of {_plural(total, 'object')} deleted", "FAILED"
+    # No jobs row at all (purged history, or a hand-written record): we know
+    # what was archived and that nothing is confirmed deleted, and nothing else.
+    return f"Archived {_plural(total, 'object')} — none deleted, {exported} backed up", "PENDING"
 
 
 class DashboardService:
@@ -335,78 +432,202 @@ class DashboardService:
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVITY_MAX_AGE_DAYS)
         items: list[dict] = []
 
-        # Content deletions (Archiver / Bulk Delete) — one row per object;
-        # group into one feed entry per session (job).
-        deletions: dict[str, dict] = {}
-        for rec in session.exec(
-            select(ArchiveRecord)
+        # Content deletions (Archiver / Bulk Delete) — one row per object,
+        # aggregated in SQL into one feed entry per session (job). One query,
+        # no per-session follow-up read.
+        #
+        # `cluster_id` AND `org_id` stay in the WHERE clause (pre-aggregation):
+        # they select which rows belong to this feed at all. The AGE cutoff, by
+        # contrast, is a HAVING on max(archived_at) — a row-level cutoff would
+        # re-introduce exactly the defect this query exists to remove, letting a
+        # session straddling the boundary be counted from a partial view of its
+        # own rows and report "Deleted 3 of 3" about a 400-row session. Do not
+        # "optimize" it back into the WHERE.
+        #
+        # The join is an OUTER join so a session whose `Job` row has been purged
+        # still renders (as "archived, intent unknown") rather than vanishing.
+        # We `json_extract` the one key we need instead of selecting
+        # `Job.parameters`: that column holds the full `object_ids` list
+        # (`ts_admin/api/archiver.py:429`), so selecting it for 50 sessions on
+        # every dashboard poll could pull ~10MB. `json_extract` is SQLite's
+        # JSON1 extension — compiled in by default since 3.38; a build without
+        # it raises OperationalError loudly rather than degrading silently.
+        archived_at = func.max(ArchiveRecord.archived_at).label("archived_at")
+        action = func.json_extract(Job.parameters, "$.action")
+        for row in session.exec(
+            select(
+                ArchiveRecord.job_id,
+                archived_at,
+                func.count().label("total"),
+                func.count(case((col(ArchiveRecord.deleted_confirmed_at).is_not(None), 1))).label("deleted"),
+                func.count(case((ArchiveRecord.tml_export_status == "SUCCESS", 1))).label("exported"),
+                func.count(case((ArchiveRecord.tml_export_status == "FAILED", 1))).label("failed"),
+                Job.job_type,
+                Job.status,
+                action.label("action"),
+            )
+            .select_from(ArchiveRecord)
+            .join(
+                Job,
+                onclause=(Job.id == ArchiveRecord.job_id) & (Job.cluster_id == ArchiveRecord.cluster_id),
+                isouter=True,
+            )
             .where(
                 ArchiveRecord.cluster_id == cluster_id,
                 ArchiveRecord.org_id == org_id,
-                col(ArchiveRecord.archived_at) >= cutoff,
             )
-            .order_by(col(ArchiveRecord.archived_at).desc())
-            .limit(_ACTIVITY_SCAN_ROWS)
+            .group_by(col(ArchiveRecord.job_id), col(Job.job_type), col(Job.status), action)
+            .having(func.max(ArchiveRecord.archived_at) >= cutoff)
+            .order_by(desc("archived_at"))
+            .limit(_ACTIVITY_SCAN_SESSIONS)
         ).all():
-            entry = deletions.setdefault(
-                rec.job_id,
-                {"kind": "delete", "count": 0, "failed": 0, "timestamp": _naive(rec.archived_at)},
+            label, status = _delete_entry(
+                total=row.total,
+                deleted=row.deleted,
+                exported=row.exported,
+                failed=row.failed,
+                job_type=row.job_type,
+                job_status=row.status,
+                action=row.action,
             )
-            entry["count"] += 1
-            if rec.tml_export_status == "FAILED":
-                entry["failed"] += 1
-            ts = _naive(rec.archived_at)
-            if ts and entry["timestamp"] and ts > entry["timestamp"]:
-                entry["timestamp"] = ts
-        for entry in deletions.values():
-            n = entry["count"]
             items.append(
                 {
                     "kind": "delete",
-                    "label": f"Deleted {n} object{'s' if n != 1 else ''} (TML backed up)",
-                    "status": "PARTIAL" if entry["failed"] else "SUCCESS",
-                    "timestamp": entry["timestamp"],
+                    "label": label,
+                    "status": status,
+                    "timestamp": _naive(row.archived_at),
                 }
             )
 
-        # Sharing changes — one row per object × principal; group per session.
-        shares: dict[str, dict] = {}
-        for rec in session.exec(
-            select(ShareRecord)
+        # Sharing changes — one row per object × principal; grouped per session
+        # in SQL, same shape as above INCLUDING the OUTER `Job` join.
+        #
+        # That join is load-bearing, not symmetry. `ShareRecord.status` has
+        # exactly ONE writer — `"FAILED" if chunk_error else "SUCCESS"`
+        # (`bulk_sharing_service.py:891`) — and it commits per
+        # (object_type, 50-GUID chunk) INSIDE the share loop
+        # (`bulk_sharing_service.py:843-895`). So the rows of a RUNNING job are
+        # indistinguishable from the rows of a finished one: sharing 60
+        # LIVEBOARDs + 40 ANSWERs, a poll landing between chunks sees
+        # succeeded=50 / failed=0 and, on row status alone, renders a terminal
+        # green "Updated sharing on 50 objects" about a job that may still end
+        # FAILED. Only the `Job` row can say "still in flight".
+        #
+        # NOTE: COUNT(DISTINCT x) is single-column only on SQLite — there is no
+        # COUNT(DISTINCT a, b), so these must stay two separate counts.
+        executed_at = func.max(ShareRecord.executed_at).label("executed_at")
+        for row in session.exec(
+            select(
+                ShareRecord.job_id,
+                executed_at,
+                func.count(distinct(col(ShareRecord.object_guid))).label("objects"),
+                func.count(distinct(col(ShareRecord.principal_guid))).label("principals"),
+                func.count(case((ShareRecord.status == "SUCCESS", 1))).label("succeeded"),
+                func.count(case((ShareRecord.status == "FAILED", 1))).label("failed"),
+                Job.status,
+            )
+            .select_from(ShareRecord)
+            .join(
+                Job,
+                onclause=(Job.id == ShareRecord.job_id) & (Job.cluster_id == ShareRecord.cluster_id),
+                isouter=True,
+            )
             .where(
                 ShareRecord.cluster_id == cluster_id,
                 ShareRecord.org_id == org_id,
-                col(ShareRecord.executed_at) >= cutoff,
             )
-            .order_by(col(ShareRecord.executed_at).desc())
-            .limit(_ACTIVITY_SCAN_ROWS)
+            # `Job.status` is in the GROUP BY for correctness under strict SQL, not
+            # for behaviour: the WHERE pins one cluster, so exactly one Job row joins
+            # per job_id and SQLite's bare-column pick would agree. Removing it is an
+            # EQUIVALENT MUTANT here — no test can kill it. Keep it anyway.
+            .group_by(col(ShareRecord.job_id), col(Job.status))
+            .having(func.max(ShareRecord.executed_at) >= cutoff)
+            .order_by(desc("executed_at"))
+            .limit(_ACTIVITY_SCAN_SESSIONS)
         ).all():
-            entry = shares.setdefault(
-                rec.job_id,
-                {
-                    "objects": set(),
-                    "principals": set(),
-                    "failed": 0,
-                    "timestamp": _naive(rec.executed_at),
-                },
-            )
-            entry["objects"].add(rec.object_guid)
-            entry["principals"].add(rec.principal_guid)
-            if rec.status == "FAILED":
-                entry["failed"] += 1
-            ts = _naive(rec.executed_at)
-            if ts and entry["timestamp"] and ts > entry["timestamp"]:
-                entry["timestamp"] = ts
-        for entry in shares.values():
-            n, m = len(entry["objects"]), len(entry["principals"])
+            n, m = row.objects, row.principals
+            # The job's state is checked FIRST and overrides the row counts: no
+            # terminal verdict about a session that is still writing rows.
+            if row.status in _IN_FLIGHT_STATUSES:
+                status = "PENDING"
+                label = f"Sharing update in progress on {_plural(n, 'object')} for {_plural(m, 'principal')}…"
+            elif row.succeeded and not row.failed and row.status in (None, "COMPLETE"):
+                # The TERMINAL job status gates SUCCESS exactly as the in-flight
+                # one gates PENDING, because `ShareRecord.status` is OPTIMISTIC:
+                # `bulk_sharing_service.py:891` writes
+                # `"FAILED" if chunk_error else "SUCCESS"` per chunk BEFORE any
+                # verification, and `_verify_share` — which runs after every row
+                # is committed — only adjusts the JOB
+                # (`bulk_sharing_service.py:926-927`), never rewriting the rows.
+                # So a job ThoughtSpot itself confirmed did not land is FAILED
+                # with 100% SUCCESS rows and `failed == 0`. Same for a PARTIAL
+                # from skipped GUIDs (which produce no ShareRecord at all), a
+                # user cancel, and `_recover_stuck_jobs` after a restart. Rows
+                # alone cannot be trusted; the job row can.
+                #
+                # `row.status is None` is the LEFT OUTER JOIN case. NO writer
+                # produces a missing `Job` row today: nothing in `ts_admin/`
+                # ever deletes one (no `session.delete(job)`, no
+                # `DELETE FROM jobs`; `api/jobs.py`'s only mutating route sets
+                # `is_cancelled`; `database._REBUILDABLE_SENTINELS` does not
+                # list `jobs`; `config.delete_cluster` drops only the `Cluster`
+                # row). So this disjunct is FORWARD-INSURANCE against a future
+                # job-retention/pruning feature — it fails safe by keeping a
+                # job-less all-SUCCESS session SUCCESS instead of degrading it
+                # to PARTIAL — not a live production case.
+                status = "SUCCESS"
+                label = f"Updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
+            elif row.status == "FAILED":
+                # A terminal FAILED job overrides the row counts in BOTH
+                # directions. Without this limb the guard above only vetoes
+                # SUCCESS, and `elif row.succeeded` immediately catches the same
+                # session as PARTIAL.
+                #
+                # `Job.status == "FAILED"` has THREE writers for a bulk_share
+                # job and they do NOT agree on what landed in ThoughtSpot:
+                #   (a) `bulk_sharing_service.py:926-927` — the `_verify_share`
+                #       read-back found nothing granted, so NOTHING landed.
+                #   (b) `bulk_sharing_service.py:1003-1005` — the last-resort
+                #       handler, i.e. anything raised AFTER the chunk loop
+                #       (inside `_verify_share`, `_share_failure_reason`, or the
+                #       audit-log commit at `:958-971`). Every chunk that already
+                #       committed SUCCESS rows at `:891` DID grant those
+                #       permissions and they are LIVE.
+                #   (c) `ts_admin/main.py:163` (`_recover_stuck_jobs`) — a
+                #       RUNNING job marked FAILED at startup after a restart.
+                #       Same story as (b): already-committed SUCCESS rows are
+                #       live grants; only the unreached chunks did not happen.
+                # From `(succeeded, failed, Job.status)` alone (a) is
+                # INDISTINGUISHABLE from (b)/(c), so any affirming verdict is
+                # false half the time — "failed for 2 objects" is a lie about
+                # permissions the admin can see granted in the UI. The status
+                # stays FAILED (conservative, and a re-share is idempotent) but
+                # the label must assert NEITHER outcome: "did not complete".
+                status = "FAILED"
+                label = f"Sharing update did not complete for {_plural(n, 'object')} ({_plural(m, 'principal')})"
+            elif row.succeeded:
+                # `n`/`m` count DISTINCT guids over ALL rows of the session,
+                # SUCCESS and FAILED alike — they are the scope of the attempt,
+                # never the updated count. So this limb must not reuse the
+                # SUCCESS limb's "Updated sharing on n objects" wording, which
+                # over-counts by exactly the failed rows that made it PARTIAL.
+                status = "PARTIAL"
+                label = f"Partially updated sharing on {_plural(n, 'object')} for {_plural(m, 'principal')}"
+            else:
+                # Every terminal row failed. `succeeded == failed == 0` is not
+                # reachable — the single writer above emits only SUCCESS or
+                # FAILED, and an empty group produces no row at all — but it
+                # falls in HERE rather than into a limb of its own so that a
+                # future third status can only make this entry more
+                # conservative, never green.
+                status = "FAILED"
+                label = f"Sharing update failed for {_plural(n, 'object')} ({_plural(m, 'principal')})"
             items.append(
                 {
                     "kind": "share",
-                    "label": (
-                        f"Updated sharing on {n} object{'s' if n != 1 else ''} for {m} principal{'s' if m != 1 else ''}"
-                    ),
-                    "status": "PARTIAL" if entry["failed"] else "SUCCESS",
-                    "timestamp": entry["timestamp"],
+                    "label": label,
+                    "status": status,
+                    "timestamp": _naive(row.executed_at),
                 }
             )
 
@@ -445,13 +666,29 @@ class DashboardService:
 
     @staticmethod
     def _collapse(items: list[dict]) -> list[dict]:
-        """Fold runs of identical adjacent entries into one row with a count."""
+        """
+        Fold runs of identical adjacent entries into one row with a count.
+
+        The merged status is the WORST of the run by explicit rank
+        (`_STATUS_SEVERITY`), not "whatever the first writer put there". The
+        previous form only overwrote a SUCCESS, so a FAILED entry followed by a
+        PARTIAL one stayed FAILED (correct) while the same pair in the other
+        order reported PARTIAL about a run containing a total failure. The rank
+        also covers `kind == "user_action"`, whose status comes straight off the
+        record and can be FAILED.
+        """
         collapsed: list[dict] = []
         for item in items:
             prev = collapsed[-1] if collapsed else None
             if prev and prev["kind"] == item["kind"] and prev["label"] == item["label"]:
                 prev["count"] += 1
-                if prev["status"] == "SUCCESS" and item["status"] != "SUCCESS":
+                # The STRICT `>` is unreachable-by-construction today: `>=`
+                # survives every equal-status test (assigning a status onto an
+                # identical status is a no-op) and only differs when two
+                # DISTINCT statuses TIE in rank — i.e. PENDING against an
+                # unrecognised status, which no writer produces. Treat it as
+                # untested-but-correct, not as pinned behaviour.
+                if _severity(item["status"]) > _severity(prev["status"]):
                     prev["status"] = item["status"]
                 continue
             collapsed.append({**item, "count": 1})

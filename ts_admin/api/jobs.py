@@ -136,10 +136,15 @@ async def cancel_job(job_id: str) -> None:
 
     Every job type honours the flag: the bulk write paths (delete, share, user
     management) and — since the sweeps below read it too — sync and the lineage
-    crawls. A cancelled job ends PARTIAL, never COMPLETE, and its cache purge /
-    delete-before-insert is skipped, because a partial sweep cannot tell "deleted
-    upstream" from "not reached yet". See `sync_service._finish_cancelled` and
-    `lineage_service.SyncCancelled`.
+    crawls. A cancelled job never ends COMPLETE, but its terminal status depends
+    on the job family. A cancelled SYNC/LINEAGE job ends PARTIAL: the pages it
+    committed before the cancel are a genuine partial result
+    (`sync_service._finish_cancelled`, `sync_service.py:948-961`). A cancelled
+    WRITE job ends PARTIAL only if something already succeeded, and FAILED
+    otherwise — zero successes is never reported as a partial success (M14).
+    Either way the cache purge / delete-before-insert is skipped, because a
+    partial sweep cannot tell "deleted upstream" from "not reached yet". See
+    `sync_service._finish_cancelled` and `lineage_service.SyncCancelled`.
 
     Returns 409 if the job is already done.
     """

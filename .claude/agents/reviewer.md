@@ -19,6 +19,21 @@ review only through it.
 
 - **correctness** — logic errors, wrong edge-case handling, off-by-one, bad error
   paths, `except Exception` swallowing failures, broken invariants.
+  - Explicit checklist item: a blanket `except Exception` / `except BaseException`
+    is a **CONFIRMED finding, always** — `CLAUDE.md` ("Never `except Exception` —
+    name the specific exception class") is unconditional and a backlog row's
+    acceptance criteria cannot amend it. The only resolution inside a cycle is
+    (a) narrow it to named exception classes. A handler the implementer believes
+    genuinely cannot be narrowed is an **ESCALATION**: report it as CONFIRMED,
+    leave it in the diff only with a comment naming what it swallows *and* a
+    backlog row, and say in the review that it needs explicit human sign-off.
+    Never grade it "acceptable". This matters most around a **batch/chunk loop
+    body**, where the handler converts any failure — including a `TypeError` in
+    our own code — into "this chunk failed -> PARTIAL". Lint cannot express it:
+    `BLE001` catches only the *silent* cases (ruff exempts a handler that
+    re-raises or calls `logger.exception`), so an OUTER handler that logs a
+    traceback and re-reports the job as FAILED stays quiet, and a PER-CHUNK
+    handler that manufactures PARTIAL stays quiet too. That gap is this lens's job.
 - **security** — SSRF (does `validate_cluster_url` still gate every TS URL?), CORS
   widening, secrets leaking out of keyring, dry-run bypass, audit-log skipped, a
   destructive endpoint missing from `DRYRUN_ENDPOINTS`, cluster-isolation leak.

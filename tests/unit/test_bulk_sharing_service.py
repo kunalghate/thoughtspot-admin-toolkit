@@ -568,6 +568,32 @@ class TestZeroSuccessesIsFailedNeverPartial:
         assert (job.get_result() or {})["succeeded_pairs"] == 1
         assert _audit_rows()[0].status == "PARTIAL"
 
+    def test_a_cancel_before_the_first_success_is_failed_not_partial(self, in_memory_db, patched_env, seeded):
+        """Cancelling before anything landed is zero successes, not a partial one.
+
+        `cancelled` is one of the PARTIAL limbs, so ordering it ahead of the
+        `succeeded_pairs == 0` branch would report a job that shared nothing as
+        having shared some of it.
+        """
+        from ts_admin.database import get_session
+
+        job_id = _create_job("bulk_share")
+        with get_session() as s:
+            job = s.get(Job, job_id)
+            job.is_cancelled = True
+            s.add(job)
+            s.commit()
+
+        _execute(job_id, ["lb-1", "ans-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.status != "PARTIAL"
+        assert "cancel" in (job.error or "").lower()
+        # `mark_failed` stores no result, so the count lives on the audit row.
+        assert _audit_rows()[0].get_parameters()["succeeded_pairs"] == 0
+        assert _audit_rows()[0].status == "FAILED"
+
     def test_a_bug_in_our_own_code_fails_the_job_instead_of_becoming_a_partial(
         self,
         in_memory_db,

@@ -27,6 +27,7 @@ only when a human promotes them.
 | 2026-08-24 · reconcile (human-directed) | 6 | 0 | 42 open · 0 in-review · 7 feedback |
 | 2026-09-08 · S31 (fix cycle) | 0 | 1 | 42 open · 1 in-review · 7 feedback |
 | 2026-09-08 · reconcile (B1) | 6 | 1 | 43 open · 0 in-review · 2 feedback |
+| 2026-09-09 · M14 (fix cycle) | 0 | 1 | 43 open · 1 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -65,7 +66,6 @@ an item reaches `done`, move its index line and detail entry to
 | M11 | P2 | A silently-degraded best-effort pass reports success at every level | — |
 | M12 | P2 | Frontend vitest executes on zero automated entry points | yes (`.github/workflows/*`, `CLAUDE.md`) |
 | M13 | P2 | Library-contract blindness: dead grid sorting graded 'clean' twice | — |
-| M14 | P2 | Blanket except in batch loops: total failure reports PARTIAL | — |
 | M15 | P2 | READ_ENDPOINTS cannot register a non-JSON (CSV) read endpoint | yes (`tests/integration/test_cluster_isolation.py`) |
 | S7 | P2 | has_lb_edges self-heal makes incremental a permanent full crawl | — |
 | S26 | P2 | Sync background tasks block the FastAPI event loop | — |
@@ -100,11 +100,14 @@ an item reaches `done`, move its index line and detail entry to
 | W1 | P3 | Add mypy to CI | yes (`.github/workflows/*`) |
 | W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
+| M16 | P3 | Blanket except Exception survives the BLE gate: keyring residue + column-map site | yes (`ts_admin/config.py`, `ts_admin/main.py`) |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (0)
+### In review (1)
 
-_Nothing in review._
+| ID | P | Item | Protected |
+|----|---|------|-----------|
+| M14 | P2 | Blanket except in batch loops: total failure reports PARTIAL | — |
 
 ### Done
 
@@ -174,11 +177,68 @@ Two bug-hunt passes graded the three grid pages' stale-response guards "clean" w
 
 ### M14 — Blanket except in batch loops: total failure reports PARTIAL
 
-`P2` · **open** · protected: no
+`P2` · **in-review** · protected: no
 
 A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete
 
 **Acceptance criteria:** A job in which zero items succeeded reports FAILED, never PARTIAL — the `succeeded == 0` branch is evaluated first at every such site, with a test per site. Separately, the org's review checklist requires that a blanket `except Exception` wrapping a batch loop is either narrowed to named exception classes or justified in a comment naming what it is allowed to swallow; CLAUDE.md already forbids bare `except Exception`, so the ~20 pre-existing sites are inventoried and tracked rather than left implicit
+
+
+**2026-09-09 (cycle).** Implemented across four review rounds; PR pending human
+review. **AC(1) discharged at ten sites, not eight.** The eight service-level
+`succeeded == 0` sites were already correct on `main` (shipped in `c586ffc`, the
+same cycle that filed this row) — an independent QA mutation harness
+(`if succeeded == 0:` → `if False:`, one site at a time) confirmed every one is
+killed by a named test. The two genuinely unfixed instances were in the Dashboard
+activity feed, where `"PARTIAL" if failed else "SUCCESS"` could not emit FAILED at
+all.
+
+Fixing those two expressions turned out to require rewriting both feeds. The
+review board found the naive fix wrong three times in a row, each time in the
+branch that round had just added, each time through a fully green five-gate bar:
+(1) `_collapse` merged statuses on a two-level ladder, so the new FAILED was
+downgraded back to PARTIAL whenever two same-label sessions were adjacent —
+the fix did not survive the path every response takes; (2) `succeeded` was
+`count - failed` over `tml_export_status`, which is not a delete outcome and is
+tri-valued, so a job that exported everything and deleted nothing rendered green,
+and stranded PENDING rows counted as successes; (3) the truncated 300-row scan
+let a session make a terminal claim from an arbitrary sample of its own rows —
+measured, a 400-object delete reported "nothing deleted" while 100 objects were
+permanently gone; (4) the export branch added in round 2 keyed success on
+`failed == 0` rather than `exported == total`, reproducing this row's own defect;
+(5) the share half added in round 3 selected `Job.status` and consulted it only
+for the in-flight limb, so a job `_verify_share` had proven failed rendered green
+because `ShareRecord.status` is written optimistically per chunk and never
+rewritten.
+
+Both feeds are now per-session SQL aggregates (`GROUP BY job_id`, newest N
+**sessions** rather than newest 300 **rows**), `deleted_confirmed_at` is the
+success predicate, job intent comes from a LEFT OUTER join to `jobs`, and
+`_collapse` ranks by explicit severity. Export-only runs (F9) stop rendering as
+deletions — a pre-existing defect this row's expression made visible.
+
+Rounds 5 and 6 were about the *sentences*, not the verdicts. Once the share
+ladder was correct in every reachable cell, two labels still lied in opposite
+directions: a job marked FAILED by `_recover_stuck_jobs` after a restart, or by
+the last-resort handler, leaves already-committed SUCCESS rows describing grants
+that are **live in ThoughtSpot** — yet the label asserted the update had failed;
+and the PARTIAL limb emitted the SUCCESS f-string byte-for-byte, over-counting by
+exactly the failed rows. This matters more than copy: `dashboard.tsx:732-762`
+renders a 6px colour dot plus the label with no status chip text, so the sentence
+is the entire message. `Job.status == "FAILED"` has three writers with
+contradictory ground truth that are indistinguishable from
+`(succeeded, failed, status)`, so the status stays conservative (FAILED) while
+the label is now non-affirming.
+
+**AC(2)** met via ruff `BLE` in `select` plus the `reviewer.md` checklist, which
+was strengthened mid-cycle: an earlier draft blessed a blanket handler that
+"carries a comment naming what it swallows", which `CLAUDE.md` does not grant, so
+it now reads CONFIRMED-always with an escalation route. **Caveat for the human:**
+enabling BLE buys less than it looks — ruff exempts any handler that re-raises or
+calls `logger.exception`, so ~10 blanket handlers in `ts_admin/` remain silent
+under the new gate. They are inventoried and tracked on **M16**, not left
+implicit, which is what the criterion asks; but a green BLE run is not evidence
+that blanket handlers were removed.
 
 ### M15 — READ_ENDPOINTS cannot register a non-JSON (CSV) read endpoint
 
@@ -187,6 +247,7 @@ A blanket `except Exception` around a chunk loop converts ANY failure — includ
 `GET /api/v1/users/export.csv` and `GET /api/v1/groups/export.csv` (`ts_admin/api/users.py:288`, `ts_admin/api/groups.py:123`) are cluster-scoped read endpoints that stream every cached row for a cluster, and neither is in `READ_ENDPOINTS` (`tests/integration/test_cluster_isolation.py:30-101`). They are absent structurally, not by oversight: every registry row carries a JSON-shaped extractor (`lambda body: body["items"]`), so a `text/csv` response cannot be registered in the current shape at all. The consequence is that the highest-volume read paths in the app — a full-table export — have their cluster isolation asserted only by ad-hoc per-API tests, never by the guard whose whole purpose is to make that assertion unforgettable for new endpoints. Found during the 2026-09-08 reconcile of F8.
 
 **Acceptance criteria:** `READ_ENDPOINTS` can express a non-JSON read endpoint (e.g. an optional per-row extractor that parses CSV, or a declared response kind), and both `export.csv` routes are registered through it; the registration is proven non-vacuous by a demonstrated red-then-green against a mutation that drops the `cluster_id` filter from the CSV query — the guard must fail on that mutation and pass on `main`
+
 
 ### S7 — has_lb_edges self-heal makes incremental a permanent full crawl
 
@@ -300,6 +361,16 @@ A "spares X" guard test placed on a code path that full-rebuilds X is vacuous �
 
 **Acceptance criteria:** The Records step requires **pruning** — every cycle re-verifies the org-memory facts its work touched and DELETES or amends the ones that no longer hold, not just appends new ones; `docs/org-memory/README.md` states this and the ~120-line cap is described as enforced by pruning stale facts first
 
+### M16 — Blanket except Exception survives the BLE gate: keyring residue + column-map site
+
+`P3` · **open** · protected: yes (`ts_admin/config.py`, `ts_admin/main.py`)
+
+`pyproject.toml` exempts BLE001 for two whole files because they are CLAUDE.md protected paths and an inline `# noqa` there would need a human-approved PR. The exemption is not cosmetic: `ts_admin/config.py:371-379 _delete_secret` loops over ("password", "secret_key", "token") calling `keyring.delete_password` under a blanket `except Exception: pass`. If the OS keychain is locked or failing, deleting a cluster leaves all three secrets resident in the keychain with no log line, no UI signal and no audit row — the user believes the credentials are gone. BLE001 is exactly the lint that surfaces that handler, and the exemption suppresses it for the whole file. The second site is `ts_admin/main.py:220` (TML cleanup at startup).
+
+Enabling BLE buys less than it appears: ruff BLE001 exempts ANY handler that re-raises or calls `logger.exception`, so all ~10 remaining blanket handlers in `ts_admin/` are silent under the new gate. That includes `ts_admin/services/sync_service.py:876` (the dependencies column-map pass), which the M14 review escalated — round 3 changed its `logger.warning` to `logger.exception`, which made it lint-clean WITHOUT narrowing it. It still swallows e.g. a `TypeError` from our own `build_column_map` into a `column_error` string while the job goes on to `mark_complete` — a COMPLETE dependencies sync with an empty column map. **A green BLE run is NOT evidence that blanket handlers were removed.**
+
+**Acceptance criteria:** `_delete_secret` names the exception classes it tolerates (`keyring.errors.KeyringError` / `PasswordDeleteError`), logs each failure with the key it could not delete, and surfaces a residue signal to the caller so cluster deletion can report "credentials may remain in the OS keychain" instead of silently succeeding; the `[tool.ruff.lint.per-file-ignores]` block in `pyproject.toml` is removed (or narrowed to a single `# noqa: BLE001` with a reason) so BLE001 is live on every file; a unit test stubs the keyring to raise and asserts the failure is reported, not swallowed; the `sync_service.py` column-map handler either names the exception classes it tolerates or its comment states exactly WHAT it is permitted to swallow (it currently argues only WHY it is blind), and the job does not report COMPLETE when the column tier is empty because of a swallowed error. Touches protected paths — needs the `human-approved` label.
+
 ### S2 — Add a /health smoke check to CI
 
 `P3` · **open** · protected: yes (`.github/workflows/*`)
@@ -355,6 +426,8 @@ Multi-cluster is a v1 pillar but the dashboard is single-cluster: no roll-up and
 `_recent_activity` scans a fixed 300 raw rows per audit source, so one bulk share of 500 objects fills the window and hides every other activity type
 
 **Acceptance criteria:** The feed's per-source window cannot let a single large session crowd out other kinds of activity (e.g. group in SQL, or scan per-kind); a test seeds one oversized share session plus a deletion and asserts both appear
+
+2026-09-09 (M14 review cycle): largely retired for two of the three sources. The archive and share feeds are now aggregated in SQL and limited to `_ACTIVITY_SCAN_SESSIONS` **sessions**, not rows (`ts_admin/services/dashboard_service.py`), so one 400-row bulk session occupies exactly one slot and its per-session counts are exact. Still open: the `UserActionRecord` source remains row-limited by `_ACTIVITY_SCAN_ROWS`, and nothing yet balances the three sources against each other
 
 ### S32 — cache_authoritative is produced end-to-end and consumed nowhere
 
@@ -519,9 +592,6 @@ done; F3/F6/F11 partially covered or already filed.
 **Ask:** **Table list shows connection + external db/schema/table**, and lineage traces model → table → connection → external object
 
 **Triage + acceptance criteria:** PARTIAL. The lineage trace model → table → connection already works end-to-end (upstream BFS follows `USES` then `CONNECTS`). But connection nodes carry a name only — the TML `db:`/`schema:` fields are never parsed (`_parse_physical_source`, `lineage_service.py:443-461`) — and `CachedMetadata` has no connection/physical-source fields, so the Metadata Explorer table list cannot show them. Criteria: TABLE rows in the metadata grid show connection name and external database/schema/table; connection nodes in lineage expose the same; the TML parse captures `db`/`schema`
-
-
-
 
 
 **2026-09-08 (reconcile).** Re-verified against `main` @ `fb0cc0f` after PR #44: **PARTIALLY MET — stays open.** What shipped: the external-source linkage now reaches the cache, though from the metadata detail payload rather than TML (`ts_client/models.py:276-281` reads `dataSourceId` and `logicalTableContent.tableMappingInfo.{databaseName, schemaName, tableName}`), landing in `CachedMetadata` as `connection_guid`/`db_name`/`db_schema`/`db_table` (`models/cache/ts_metadata.py:54-58`, written `sync_service.py:478-480`, additive ALTERs `database.py:145`), and the connection **name** is resolved at read time and shown in the grid (`api/metadata.py:223`, `MetadataGrid/columns.ts:128-134`).

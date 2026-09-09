@@ -46,6 +46,7 @@ class _FakeClient:
     live_user: object = None
     live_guids: set | None = None
     share_should_fail: Exception | None = None
+    share_fail_guids: set = set()
 
     def __init__(self, *args, **kwargs):
         pass
@@ -92,6 +93,11 @@ class _FakeClient:
         _FakeClient.share_kwargs.append({"message": message, "notify": notify})
         if _FakeClient.share_should_fail is not None:
             raise _FakeClient.share_should_fail
+        # Fail only the buckets/chunks touching these GUIDs — the sharing twin
+        # of `assign_fail_guids`, so a test can make ONE bucket fail and leave
+        # a genuine PARTIAL rather than a whole-call failure.
+        if _FakeClient.share_fail_guids & set(object_ids):
+            raise TSServerError(status_code=503, body="simulated failure")
 
     async def principal_permissions(self, *, principal_identifier, default_metadata_type=None):
         return list(_FakeClient.principal_perm_results)
@@ -116,6 +122,7 @@ def reset_fake():
     _FakeClient.live_user = SimpleNamespace(name="bob", display_name="Bob")
     _FakeClient.live_guids = None
     _FakeClient.share_should_fail = None
+    _FakeClient.share_fail_guids = set()
 
 
 # ── DB + env fixtures ─────────────────────────────────────────────────────────
@@ -1163,6 +1170,65 @@ class TestNothingSucceededIsFailedNeverPartial:
         assert job.status == "PARTIAL"
         assert (job.get_result() or {})["succeeded"] == 1
         assert _audit_row("delete_users").status == "PARTIAL"
+
+    def test_a_genuinely_partial_transfer_is_still_partial(self, in_memory_db, patched_env, seeded):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        from ts_admin.services.user_management_service import execute_transfer
+
+        # Two GUIDs under two DIFFERENT owners, so they land in two chunks
+        # (chunks are built within an owner group and the chunk size is 50).
+        with Session(in_memory_db) as s:
+            obj = s.exec(select(CachedMetadata).where(CachedMetadata.ts_guid == "ans-1")).one()
+            obj.owner_guid, obj.owner_name = "u-bob", "Bob"
+            s.add(obj)
+            s.commit()
+
+        _FakeClient.assign_fail_guids = {"ans-1"}
+        job_id = _create_job("metadata_transfer_ownership", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid=None,
+                to_user_identifier="admin-user",
+                object_ids=["lb-1", "ans-1"],
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "PARTIAL"
+        assert (job.get_result() or {})["succeeded"] == 1
+        assert _audit_row("transfer_ownership").status == "PARTIAL"
+
+    def test_a_genuinely_partial_transfer_sharing_is_still_partial(self, in_memory_db, patched_env, seeded):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        from ts_admin.services.user_management_service import execute_transfer_sharing
+
+        # Two share modes → two buckets → two chunks, so failing one leaves a
+        # genuine partial rather than a whole-call failure.
+        _FakeClient.principal_perm_results = [
+            {"metadata_id": "lb-1", "metadata_name": "Sales", "metadata_type": "LIVEBOARD", "share_mode": "READ_ONLY"},
+            {"metadata_id": "ans-1", "metadata_name": "Rev", "metadata_type": "ANSWER", "share_mode": "MODIFY"},
+        ]
+        _FakeClient.share_fail_guids = {"ans-1"}
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "PARTIAL"
+        assert (job.get_result() or {})["succeeded"] == 1
+        assert _audit_row("transfer_sharing").status == "PARTIAL"
+        assert _action_record().status == "PARTIAL"
+        assert _action_record().items_succeeded == 1
 
     def test_a_bug_in_our_own_code_fails_the_delete_instead_of_being_retried_ten_times(
         self,
