@@ -848,3 +848,124 @@ def test_lineage_graph_tml_indexed_answer_without_table_still_reduces(in_memory_
 
     graph = lineage_service.get_lineage_graph(cluster_id=CLUSTER_ID, org_id=0, guid="answer-1", root_kind="answer")
     assert ("answer-1", "table-1") not in _edge_pairs(graph)
+
+
+# ── derive_content_connections ───────────────────────────────────────────────────
+
+
+def _seed_uses_chain(engine, *, source: str, source_type: str, target: str, target_type: str) -> None:
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+
+    with Session(engine) as session:
+        session.add(
+            CachedDependency(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                source_guid=source,
+                source_type=source_type,
+                source_name=source,
+                target_guid=target,
+                target_type=target_type,
+                target_name=target,
+                relation="USES",
+            )
+        )
+        session.commit()
+
+
+def _seed_connects(engine, *, table: str, connection_guid: str, connection_name: str) -> None:
+    from ts_admin.models.cache.ts_dependency import CachedDependency
+
+    with Session(engine) as session:
+        session.add(
+            CachedDependency(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                source_guid=table,
+                source_type="DB_TABLE",
+                source_name=table,
+                target_guid=connection_guid,
+                target_type="CONNECTION",
+                target_name=connection_name,
+                relation="CONNECTS",
+            )
+        )
+        session.commit()
+
+
+def test_derive_content_connections_backfills_answer_and_liveboard(in_memory_db, patched_config):
+    """answer-1/lb-1 USES model-1 USES table-1 CONNECTS conn-1 — both content rows
+    should pick up conn-1, exactly what the metadata sync itself never writes for
+    non-table object types."""
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    _seed_uses_chain(in_memory_db, source="model-1", source_type="MODEL", target="table-1", target_type="DB_TABLE")
+    _seed_uses_chain(in_memory_db, source="answer-1", source_type="ANSWER", target="model-1", target_type="MODEL")
+    _seed_uses_chain(in_memory_db, source="lb-1", source_type="LIVEBOARD", target="model-1", target_type="MODEL")
+    _seed_connects(in_memory_db, table="table-1", connection_guid="conn-1", connection_name="Snowflake Prod")
+
+    updated = lineage_service.derive_content_connections(cluster_id=CLUSTER_ID, org_id=0)
+    assert updated == 2  # answer-1, lb-1 — table-1 already had no connection_guid to change
+
+    with Session(in_memory_db) as session:
+        by_guid = {
+            r.ts_guid: r
+            for r in session.exec(select(CachedMetadata).where(CachedMetadata.cluster_id == CLUSTER_ID)).all()
+        }
+    assert by_guid["answer-1"].connection_guid == "conn-1"
+    assert by_guid["answer-1"].connection_is_mixed is False
+    assert by_guid["lb-1"].connection_guid == "conn-1"
+    assert by_guid["lb-1"].connection_is_mixed is False
+    # A physical table's connection_guid comes from the metadata sync's own
+    # detail payload, not this derivation — it must be left alone.
+    assert by_guid["table-1"].connection_guid == ""
+
+
+def test_derive_content_connections_flags_mixed_sources(in_memory_db, patched_config):
+    """A liveboard built on two models on two different connections gets one
+    connection_guid written plus connection_is_mixed=True, not a silent pick."""
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+    with Session(in_memory_db) as session:
+        session.add(
+            CachedMetadata(
+                cluster_id=CLUSTER_ID, org_id=0, ts_guid="table-2", name="DB Table 2", object_type="ONE_TO_ONE_LOGICAL"
+            )
+        )
+        session.commit()
+
+    _seed_uses_chain(in_memory_db, source="model-1", source_type="MODEL", target="table-1", target_type="DB_TABLE")
+    _seed_uses_chain(in_memory_db, source="lb-1", source_type="LIVEBOARD", target="model-1", target_type="MODEL")
+    _seed_uses_chain(in_memory_db, source="lb-1", source_type="LIVEBOARD", target="table-2", target_type="DB_TABLE")
+    _seed_connects(in_memory_db, table="table-1", connection_guid="conn-1", connection_name="Alpha Warehouse")
+    _seed_connects(in_memory_db, table="table-2", connection_guid="conn-2", connection_name="Beta Warehouse")
+
+    lineage_service.derive_content_connections(cluster_id=CLUSTER_ID, org_id=0)
+
+    with Session(in_memory_db) as session:
+        lb = session.exec(
+            select(CachedMetadata).where(CachedMetadata.cluster_id == CLUSTER_ID, CachedMetadata.ts_guid == "lb-1")
+        ).one()
+    # "Alpha Warehouse" sorts before "Beta Warehouse" — the deterministic pick.
+    assert lb.connection_guid == "conn-1"
+    assert lb.connection_is_mixed is True
+
+
+def test_derive_content_connections_no_lineage_leaves_content_blank(in_memory_db, patched_config):
+    """No dependencies sync has ever run — content rows must stay exactly as the
+    metadata sync left them (empty), not error out."""
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed_metadata(in_memory_db, CLUSTER_ID)
+
+    updated = lineage_service.derive_content_connections(cluster_id=CLUSTER_ID, org_id=0)
+    assert updated == 0
+
+    with Session(in_memory_db) as session:
+        rows = session.exec(select(CachedMetadata).where(CachedMetadata.cluster_id == CLUSTER_ID)).all()
+    assert all(r.connection_guid == "" and r.connection_is_mixed is False for r in rows)

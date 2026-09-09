@@ -945,6 +945,14 @@ async def _sync_dependencies(*, org_id: int, job_id: str, target_cluster_id: str
         result["cancelled"] = True
         mark_partial(job_id, result)
         return
+
+    # Backfill the Metadata grid's Connection column for Answers/Liveboards from
+    # the graph just (re)built above. Runs even after a column_error: CONNECTS
+    # edges from a prior successful build may still be sitting in ts_dependencies,
+    # and this is a pure local read/write with no API calls to fail on.
+    result["content_connections_updated"] = lineage_service.derive_content_connections(
+        cluster_id=cluster_id, org_id=org_id
+    )
     mark_complete(job_id, result)
 
 

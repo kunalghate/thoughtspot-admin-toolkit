@@ -100,6 +100,11 @@ class MetadataObjectResponse(BaseModel):
     # tables cached before the linkage columns existed.
     connection_guid: str
     connection_name: str
+    # For Answers/Liveboards, connection_guid is DERIVED from the lineage graph
+    # (see lineage_service.derive_content_connections) rather than read off the
+    # object itself. True when the object spans more than one connection —
+    # connection_guid/connection_name then name just one of them.
+    connection_is_mixed: bool
     db_name: str
     db_schema: str
     db_table: str
@@ -125,6 +130,7 @@ class MetadataObjectResponse(BaseModel):
             view_count=obj.view_count,
             connection_guid=obj.connection_guid,
             connection_name=_connection_label(obj, connection_names),
+            connection_is_mixed=obj.connection_is_mixed,
             db_name=obj.db_name,
             db_schema=obj.db_schema,
             db_table=obj.db_table,

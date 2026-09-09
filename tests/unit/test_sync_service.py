@@ -416,6 +416,52 @@ async def test_dependencies_dispatches_to_lineage_build(monkeypatch, in_memory_d
     assert status == "COMPLETE"
 
 
+@pytest.mark.anyio
+async def test_dependencies_sync_backfills_content_connections(monkeypatch, in_memory_db, patched_config):
+    """After both lineage phases, _sync_dependencies must call
+    derive_content_connections and surface its count in the job result — the
+    Metadata grid's Connection column has no other route to Answer/Liveboard
+    rows."""
+    import ts_admin.services.lineage_service as lineage_module
+
+    async def _fake_object_graph(*, cluster_id, org_id, job_id, finalize=True):
+        return 2
+
+    async def _fake_column_map(*, cluster_id, org_id, job_id):
+        return 1
+
+    derive_calls: list[dict] = []
+
+    def _fake_derive(*, cluster_id, org_id):
+        derive_calls.append({"cluster_id": cluster_id, "org_id": org_id})
+        return 3
+
+    monkeypatch.setattr(lineage_module, "build_object_graph", _fake_object_graph)
+    monkeypatch.setattr(lineage_module, "build_column_map", _fake_column_map)
+    monkeypatch.setattr(lineage_module, "derive_content_connections", _fake_derive)
+
+    from ts_admin.services.sync_service import run_sync
+
+    _write_metadata_success()
+
+    job_id = _make_job("dependencies")
+    await run_sync(entity_type="dependencies", org_id=0, job_id=job_id)
+
+    assert derive_calls == [{"cluster_id": CLUSTER_ID, "org_id": 0}]
+    status, _ = _job_status(job_id)
+    assert status == "COMPLETE"
+
+    import json
+
+    from ts_admin.database import get_session
+    from ts_admin.models.job import Job
+
+    with get_session() as session:
+        job = session.get(Job, job_id)
+        result = json.loads(job.result)
+    assert result["content_connections_updated"] == 3
+
+
 # ── Metadata cache completeness (S23) ─────────────────────────────────────────
 #
 # `_sync_metadata` commits a DELETE-all for the org and then re-pages in the
