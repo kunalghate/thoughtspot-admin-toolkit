@@ -348,6 +348,8 @@ export interface UserListItem {
   display_name: string;
   email: string;
   status: "ACTIVE" | "INACTIVE";
+  /** Creator's display name, or the raw GUID if that user isn't cached. */
+  created_by: string | null;
   created_at: string | null;
   modified_at: string | null;
   synced_at: string | null;

@@ -57,6 +57,9 @@ class UserListItem(BaseModel):
     display_name: str
     email: str
     status: str
+    # Display name of the creating user, or the raw GUID when that user is not
+    # in the cache. None when ThoughtSpot reported no author for the user.
+    created_by: str | None
     created_at: str | None
     modified_at: str | None
     synced_at: str | None
@@ -275,6 +278,7 @@ _CSV_COLUMNS = [
     ("display_name", "Display name"),
     ("email", "Email"),
     ("status", "Status"),
+    ("created_by", "Created by"),
     ("created_at", "Created"),
     ("modified_at", "Modified"),
     ("ts_guid", "GUID"),

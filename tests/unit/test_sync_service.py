@@ -133,6 +133,7 @@ async def test_user_sync_reports_progress(monkeypatch, in_memory_db, patched_con
             display_name=f"User {guid}",
             email=f"{guid}@example.io",
             status=SimpleNamespace(value="ACTIVE"),
+            author_id="",
             created=now,
             modified=now,
         )
@@ -228,6 +229,7 @@ async def test_user_resync_updates_timestamps_on_existing_rows(monkeypatch, in_m
         display_name="User A",
         email="a@example.io",
         status=SimpleNamespace(value="ACTIVE"),
+        author_id="",
         created=created,
         modified=modified,
     )
@@ -1006,7 +1008,7 @@ def test_sync_log_keeps_no_history_so_there_is_no_record_count_trend(in_memory_d
 # exactly this case read 0 and showed an all-clear.
 
 
-def _fake_user(guid: str, *, status: str = "ACTIVE"):
+def _fake_user(guid: str, *, status: str = "ACTIVE", author_id: str = ""):
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
@@ -1017,6 +1019,7 @@ def _fake_user(guid: str, *, status: str = "ACTIVE"):
         display_name=f"User {guid}",
         email=f"{guid}@example.io",
         status=SimpleNamespace(value=status),
+        author_id=author_id,
         created=now,
         modified=now,
     )
@@ -1847,6 +1850,60 @@ async def test_lineage_fails_actionably_when_the_chained_metadata_sync_fails(mon
 
     with pytest.raises(LineagePrerequisiteError, match="did not complete"):
         await _ensure_metadata_cache(cluster_id=CLUSTER_ID, org_id=0)
+
+
+# ── users: created-by (author_id) ─────────────────────────────────────────────
+# users/search reports the creating user as `author_id`, the same field
+# groups/search uses. It is stored as a GUID and resolved to a display name at
+# read time, so the sync's only job is to persist it on both branches of the
+# upsert — an update-only miss would silently freeze the value at first sync.
+
+
+def _author_guid_of(guid: str) -> str:
+    from sqlmodel import select
+
+    from ts_admin.database import get_session
+    from ts_admin.models.cache.ts_user import CachedUser
+
+    with get_session() as session:
+        return session.exec(
+            select(CachedUser.author_guid).where(
+                CachedUser.cluster_id == CLUSTER_ID,
+                CachedUser.ts_guid == guid,
+            )
+        ).one()
+
+
+@pytest.mark.anyio
+async def test_user_sync_persists_the_author_guid_on_insert(monkeypatch, in_memory_db, patched_config):
+    pages: list[list] = [[_fake_user("u1", author_id="admin-guid")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _author_guid_of("u1") == "admin-guid"
+
+
+@pytest.mark.anyio
+async def test_user_resync_updates_the_author_guid_on_an_existing_row(monkeypatch, in_memory_db, patched_config):
+    """The update branch must carry author_guid too, not just the insert.
+
+    A row cached before the column existed comes back with an empty author; the
+    next sweep has to fill it in, or the value stays frozen at whatever the
+    first sync happened to see.
+    """
+    pages: list[list] = [[_fake_user("u1", author_id="")]]
+    _users_client(pages, monkeypatch)
+
+    from ts_admin.services.sync_service import run_sync
+
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _author_guid_of("u1") == ""
+
+    pages[:] = [[_fake_user("u1", author_id="admin-guid")]]
+    await run_sync(entity_type="users", org_id=0, job_id=_make_job("users"))
+    assert _author_guid_of("u1") == "admin-guid"
 
 
 # ── connections ──────────────────────────────────────────────────────────────

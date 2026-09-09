@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, create_engine
+from sqlmodel import Session, create_engine, select
 
 from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
@@ -328,12 +328,13 @@ class TestExportCsv:
             "Display name",
             "Email",
             "Status",
+            "Created by",
             "Created",
             "Modified",
             "GUID",
         ]
         assert {row[0] for row in rows[1:]} == {"alice", "bob"}
-        assert {row[6] for row in rows[1:]} == {"u-alice", "u-bob"}
+        assert {row[7] for row in rows[1:]} == {"u-alice", "u-bob"}
 
     def test_honours_the_search_filter(self, client, seeded):
         r = client.get("/api/v1/users/export.csv?cluster_id=c1&search=alice")
@@ -396,3 +397,61 @@ class TestExportCsv:
         body = client.get("/api/v1/users/export.csv?cluster_id=c1").text
         assert "other-cluster-user" not in body
         assert "u-other" not in body
+
+
+class TestCreatedBy:
+    """
+    users/search returns the creating user's GUID as `author_id`, the same way
+    groups/search does. The grid shows a display name, so the GUID is resolved
+    against the user cache at read time rather than denormalized at sync time.
+    """
+
+    def _set_author(self, engine, *, user_guid: str, author_guid: str) -> None:
+        with Session(engine) as session:
+            row = session.exec(
+                select(CachedUser).where(
+                    CachedUser.cluster_id == "c1",
+                    CachedUser.ts_guid == user_guid,
+                )
+            ).one()
+            row.author_guid = author_guid
+            session.add(row)
+            session.commit()
+
+    def test_resolves_the_author_guid_to_a_display_name(self, client, in_memory_db, seeded):
+        self._set_author(in_memory_db, user_guid="u-bob", author_guid="u-alice")
+
+        r = client.get("/api/v1/users?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        by_guid = {u["ts_guid"]: u["created_by"] for u in r.json()["items"]}
+        assert by_guid["u-bob"] == "Alice"
+
+    def test_falls_back_to_the_raw_guid_when_the_creator_is_gone(self, client, in_memory_db, seeded):
+        """A creator deleted upstream must not make the user row vanish."""
+        self._set_author(in_memory_db, user_guid="u-bob", author_guid="u-vanished")
+
+        r = client.get("/api/v1/users?cluster_id=c1")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 2, "the LEFT JOIN must not drop rows with an unresolvable author"
+        by_guid = {u["ts_guid"]: u["created_by"] for u in items}
+        assert by_guid["u-bob"] == "u-vanished"
+
+    def test_none_when_thoughtspot_reported_no_author(self, client, seeded):
+        r = client.get("/api/v1/users?cluster_id=c1")
+        assert r.json()["items"][0]["created_by"] is None
+
+    def test_sortable_by_created_by(self, client, in_memory_db, seeded):
+        self._set_author(in_memory_db, user_guid="u-bob", author_guid="u-alice")
+
+        r = client.get("/api/v1/users?cluster_id=c1&sort_field=created_by&sort_order=desc")
+        assert r.status_code == 200
+        assert r.json()["items"][0]["ts_guid"] == "u-bob"
+
+    def test_appears_in_the_csv_export(self, client, in_memory_db, seeded):
+        self._set_author(in_memory_db, user_guid="u-bob", author_guid="u-alice")
+
+        r = client.get("/api/v1/users/export.csv?cluster_id=c1&search=bob")
+        rows = list(csv.reader(io.StringIO(r.text)))
+        assert rows[0][4] == "Created by"
+        assert rows[1][4] == "Alice"

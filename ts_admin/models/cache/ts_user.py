@@ -27,6 +27,9 @@ class CachedUser(SQLModel, table=True):
     display_name: str = ""
     email: str = ""
     status: str = "ACTIVE"  # ACTIVE | INACTIVE
+    # GUID of the creating user (users/search `author_id`). Resolved to a
+    # display name at read time by joining ts_users — see user_management_service.
+    author_guid: str = ""
     created_at: datetime | None = None
     modified_at: datetime | None = None
     synced_at: datetime | None = None

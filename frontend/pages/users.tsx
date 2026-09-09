@@ -152,6 +152,12 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
       ),
     },
     {
+      // ThoughtSpot's own UI never shows who created a user; users/search
+      // returns it as `author_id`, resolved to a display name server-side.
+      field: "created_by", headerName: "Created by", flex: 1, minWidth: 150,
+      valueFormatter: (p) => (p.value as string | null) ?? "—",
+    },
+    {
       field: "created_at", headerName: "Created", width: 140,
       valueFormatter: (p) => formatDay(p.value as string),
     },

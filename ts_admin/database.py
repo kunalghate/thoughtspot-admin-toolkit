@@ -53,6 +53,11 @@ _REBUILDABLE_SENTINELS: dict[str, tuple[str, str]] = {
     # cache of groups/search, so drop-and-re-sync is cheaper and safer than a
     # migration — the next Groups sync repopulates it with the creator GUID.
     "ts_groups": ("author_guid", "groups"),
+    # Same story for ts_users, and for the same column. An additive ALTER would
+    # leave author_guid empty on every existing row with nothing on screen
+    # saying why "Created by" is blank; dropping makes the entity read "never
+    # synced", which is both true and actionable.
+    "ts_users": ("author_guid", "users"),
 }
 
 
