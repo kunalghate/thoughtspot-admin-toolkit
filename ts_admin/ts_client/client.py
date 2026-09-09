@@ -671,9 +671,22 @@ class ThoughtSpotClient:
             metadata_filter["subtypes"] = subtypes
 
         body: dict = {"metadata": [metadata_filter], "include_stats": True}
-        # Only the tables pass pays for details — the response is ~10x larger
-        # (measured 18MB vs 1.8MB for 900 tables) and no other subtype needs it.
-        wants_details = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
+        # Every LOGICAL_TABLE subtype pays for details; Liveboards and Answers
+        # never do. The response is ~10x larger (measured 18MB vs 1.8MB for 900
+        # tables), which is why this is not simply on for everything — but it is
+        # the only place `dataSourceId` appears, and the Metadata grid's
+        # Connection column is blank without it. Restricting it to
+        # ONE_TO_ONE_LOGICAL left worksheets, models, SQL views and CSV uploads
+        # with no connection at all: on se-demo that was 2,722 of 11,667
+        # LOGICAL_TABLE rows reading "—" for a value ThoughtSpot does return
+        # (verified live — all four remaining subtypes carry dataSourceId).
+        # Liveboards and Answers stay excluded: they sit on models, not on a
+        # connection, so there is no single value to show.
+        wants_details = api_type == "LOGICAL_TABLE"
+        # The Analyst Studio reclassification stays scoped to the tables pass, as
+        # before — widening `wants_details` must not start re-stamping worksheets
+        # or SQL views as DATASET.
+        checks_dataset = effective_type is MetadataType.ONE_TO_ONE_LOGICAL
         if wants_details:
             body["include_details"] = True
         page_size = DETAIL_PAGE_SIZE if wants_details else PAGE_SIZE
@@ -691,7 +704,7 @@ class ThoughtSpotClient:
                 break
             # Stamp each item with the effective type so the model stores it correctly
             for item in page:
-                if wants_details and _is_analyst_studio_dataset(item):
+                if checks_dataset and _is_analyst_studio_dataset(item):
                     item["metadata_type"] = MetadataType.DATASET
                 else:
                     item["metadata_type"] = effective_type

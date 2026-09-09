@@ -58,3 +58,24 @@ describe("intersectTypes", () => {
     expect(intersectTypes(["ANSWER"], ["LIVEBOARD"])).toEqual([NO_TYPE_MATCH]);
   });
 });
+
+describe("Connection column filter", () => {
+  // The Connection column carried `filter: false`, because the metadata row
+  // stores only `connection_guid` and there was no server-side way to match on
+  // the name. There is now (a join on ts_connections), so the term has to reach
+  // the backend as `connection_name_search` — dropping it would render as a lit
+  // filter icon over an unfiltered grid.
+  it("maps the connection column term to connection_name_search", () => {
+    const out = serializeFilterModel({
+      connection_name: { filterType: "text", type: "contains", filter: "Snowflake" },
+    });
+    expect(out.connection_name_search).toBe("Snowflake");
+  });
+
+  it("ignores a blank term rather than sending an empty match-everything filter", () => {
+    const out = serializeFilterModel({
+      connection_name: { filterType: "text", type: "contains", filter: "   " },
+    });
+    expect(out.connection_name_search).toBeUndefined();
+  });
+});

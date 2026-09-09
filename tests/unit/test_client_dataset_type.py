@@ -75,8 +75,16 @@ async def test_mode_backed_tables_are_typed_as_datasets():
 
 @respx.mock
 @pytest.mark.anyio
-async def test_only_the_tables_pass_asks_for_details():
-    """include_details roughly 10x's the response, so no other subtype pays for it."""
+async def test_only_the_logical_table_passes_ask_for_details():
+    """
+    `dataSourceId` — the Metadata grid's Connection column — lives only in the
+    detail payload, and every LOGICAL_TABLE subtype carries one (verified live
+    against se-demo: worksheets, models, SQL views and CSV uploads all do).
+
+    include_details roughly 10x's the response, so the Liveboard and Answer
+    passes still must NOT pay for it: those sit on models rather than on a
+    connection, so there is nothing there to fetch.
+    """
     seen: dict[str | None, bool] = {}
 
     def responder(request: httpx.Request) -> httpx.Response:
@@ -90,5 +98,7 @@ async def test_only_the_tables_pass_asks_for_details():
         async for _ in client.search_metadata():
             pass
 
-    assert seen.pop("ONE_TO_ONE_LOGICAL") is True
+    for subtype in ("ONE_TO_ONE_LOGICAL", "WORKSHEET", "AGGR_WORKSHEET", "SQL_VIEW", "USER_DEFINED"):
+        assert seen.pop(subtype) is True, f"{subtype} must ask for details"
+    # Whatever is left is the subtype-less LIVEBOARD/ANSWER passes.
     assert not any(seen.values()), f"details requested for {[k for k, v in seen.items() if v]}"

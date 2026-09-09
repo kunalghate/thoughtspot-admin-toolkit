@@ -134,6 +134,17 @@ const installStubs = async (page: Page, captured: Captured) => {
 const firstRowCheckbox = (page: Page) =>
   page.getByRole("checkbox", { name: /toggle row selection/i });
 
+/**
+ * Take the whole filtered set. Both entry points — the header checkbox and the
+ * selection bar's link — now go through the same confirmation, because the next
+ * click after either can be "Delete selected" over thousands of objects.
+ */
+const selectAllMatching = async (page: Page, via: "header" | "link" = "link") => {
+  await page.getByTestId(via === "header" ? "select-all-header" : "select-all-matching").click();
+  await expect(page.getByTestId("confirm-select-all")).toBeVisible();
+  await page.getByTestId("confirm-select-all-ok").click();
+};
+
 test("select-all offer appears only once something is checked", async ({ page }) => {
   const captured: Captured = {};
   await installStubs(page, captured);
@@ -157,7 +168,7 @@ test("select all → untick one → dry-run receives the resolved list, not a fi
   await expect(page.locator(".ag-row", { hasText: "Stale Board One" })).toBeVisible({ timeout: 15_000 });
 
   await firstRowCheckbox(page).first().click();
-  await page.getByTestId("select-all-matching").click();
+  await selectAllMatching(page);
 
   // The bar now claims the whole matching set.
   await expect(page.getByTestId("select-all-badge")).toBeVisible();
@@ -170,6 +181,10 @@ test("select all → untick one → dry-run receives the resolved list, not a fi
 
   await page.getByTestId("open-dryrun-modal").click();
   await expect(page.getByTestId("dryrun-modal")).toBeVisible();
+  // The modal appearing is not the POST landing — poll for the request rather
+  // than reading `captured` the instant it renders. On a cold dev server the
+  // gap is wide enough to read as "the dry-run was never sent".
+  await expect.poll(() => captured.dryrunBody).toBeTruthy();
 
   // The resolve call carried the exclusion...
   expect(captured.resolveBody.excluded_guids).toEqual(["lb-1"]);
@@ -187,13 +202,73 @@ test("changing the filter drops a standing select-all", async ({ page }) => {
 
   await expect(page.locator(".ag-row", { hasText: "Stale Board One" })).toBeVisible({ timeout: 15_000 });
   await firstRowCheckbox(page).first().click();
-  await page.getByTestId("select-all-matching").click();
+  await selectAllMatching(page);
   await expect(page.getByTestId("select-all-badge")).toBeVisible();
 
   // "All matching" means something different now, so the standing selection
   // must not silently re-point at a different set of objects.
   await page.getByPlaceholder(/search by name/i).fill("board two");
   await expect(page.getByTestId("select-all-badge")).toHaveCount(0, { timeout: 10_000 });
+});
+
+/**
+ * The same rule, for the OTHER half of the filter set.
+ *
+ * The toolbar criteria live in React state; AG Grid's column filters live in a
+ * ref (so that re-rendering cannot close an open filter popup mid-typing). The
+ * invalidation effect only ever watched the first, so a column filter change
+ * left "ALL MATCHING" standing over a different set — measured on se-demo:
+ * select all 2,081 → filter Owner down to nothing → clear the filter again, and
+ * the badge still claimed 2,081 objects the admin had never reviewed, still
+ * carrying an exclusion GUID from the previous set.
+ */
+test("changing a COLUMN filter drops a standing select-all", async ({ page }) => {
+  const captured: Captured = {};
+  await installStubs(page, captured);
+  await page.goto("/archiver");
+
+  await expect(page.locator(".ag-row", { hasText: "Stale Board One" })).toBeVisible({ timeout: 15_000 });
+  await firstRowCheckbox(page).first().click();
+  await selectAllMatching(page);
+  await expect(page.getByTestId("select-all-badge")).toBeVisible();
+
+  await page.locator(".ag-header-cell", { hasText: "Owner" }).locator(".ag-header-icon").first().click();
+  await page.locator(".ag-filter input").first().fill("alice");
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByTestId("select-all-badge")).toHaveCount(0, { timeout: 10_000 });
+});
+
+/**
+ * The header checkbox is the control admins actually reach for. AG Grid's own
+ * `headerCheckboxSelection` is inert under the infinite row model, so the header
+ * used to render nothing at all and the only route to the whole set was to tick
+ * a row first and then find a link inside the selection bar.
+ */
+test("the header checkbox selects everything matching, after confirming", async ({ page }) => {
+  const captured: Captured = {};
+  await installStubs(page, captured);
+  await page.goto("/archiver");
+
+  await expect(page.locator(".ag-row", { hasText: "Stale Board One" })).toBeVisible({ timeout: 15_000 });
+
+  // No row ticked first — that was the old prerequisite.
+  await page.getByTestId("select-all-header").click();
+  await expect(page.getByTestId("confirm-select-all")).toBeVisible();
+  await expect(page.getByTestId("confirm-select-all")).toContainText("2,000");
+
+  // Backing out must arm nothing.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("select-all-badge")).toHaveCount(0);
+
+  await page.getByTestId("select-all-header").click();
+  await page.getByTestId("confirm-select-all-ok").click();
+  await expect(page.getByTestId("select-all-badge")).toBeVisible();
+  await expect(page.locator("body")).toContainText("2,000 selected");
+
+  // Unticking it is the way back out.
+  await page.getByTestId("select-all-header").click();
+  await expect(page.getByTestId("select-all-badge")).toHaveCount(0);
 });
 
 
@@ -215,7 +290,7 @@ test("select all → Export TML exports the whole filtered set, not the loaded r
   await expect(page.locator(".ag-row", { hasText: "Stale Board One" })).toBeVisible({ timeout: 15_000 });
 
   await firstRowCheckbox(page).first().click();
-  await page.getByTestId("select-all-matching").click();
+  await selectAllMatching(page);
 
   await page.getByTestId("export-tml").click();
   await expect.poll(() => captured.executeBody?.action).toBe("export");

@@ -27,6 +27,7 @@ from sqlalchemy import asc, desc, func, nulls_last
 from sqlmodel import Session, col, or_, select
 
 import ts_admin.database as _db  # import module, not function — keeps monkeypatching working in tests
+from ts_admin.models.cache.ts_connection import CachedConnection
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.services.sync_status import last_successful_sync, metadata_is_authoritative
 
@@ -59,6 +60,7 @@ class MetadataService:
         search: str | None = None,
         stale_days: int | None = None,
         owner_name_search: str | None = None,
+        connection_name_search: str | None = None,
         tag_search: str | None = None,
         views_min: int | None = None,
         views_max: int | None = None,
@@ -82,6 +84,7 @@ class MetadataService:
           types       — object types to include (LIVEBOARD, ANSWER, etc.)
           owner_guid  — filter by owner GUID
           connection_guid — only objects sitting on this data connection
+          connection_name_search — substring match on the connection's display name
           tag_names   — filter objects that have ALL of the given tags
           search      — substring match on object name (case-insensitive)
           stale_days  — objects not accessed in the last N days
@@ -174,18 +177,45 @@ class MetadataService:
             "modified_at": CachedMetadata.modified_at,
             "last_accessed_at": CachedMetadata.last_accessed_at,
             "view_count": CachedMetadata.view_count,
+            # Not a column on ts_metadata — the row stores only the GUID, and the
+            # display name lives on ts_connections. Sorting by the GUID would
+            # order by an opaque string the admin never sees, so both sorting and
+            # filtering go through the join below.
+            "connection_name": CachedConnection.name,
         }
         sort_col = _sortable.get(sort_field, CachedMetadata.name)
         direction = asc if sort_order.lower() == "asc" else desc
         order_expr = nulls_last(direction(sort_col))
 
+        # Only pay for the join when the caller actually asks about connections.
+        needs_connection_join = sort_field == "connection_name" or bool(connection_name_search)
+        if connection_name_search:
+            conditions.append(col(CachedConnection.name).ilike(f"%{connection_name_search}%"))
+
+        def _scoped(stmt):
+            """Apply the connection LEFT JOIN, when this query needs it.
+
+            LEFT, not inner: objects with no connection (Liveboards, Answers, and
+            anything cached before the linkage columns existed) must still appear
+            when the grid is merely *sorted* by connection — an inner join would
+            silently drop two-thirds of the cache from the list.
+            """
+            if not needs_connection_join:
+                return stmt
+            return stmt.outerjoin(
+                CachedConnection,
+                (CachedConnection.ts_guid == CachedMetadata.connection_guid)
+                & (CachedConnection.cluster_id == CachedMetadata.cluster_id)
+                & (CachedConnection.org_id == CachedMetadata.org_id),
+            )
+
         with Session(_db.get_engine()) as session:
             # Total count — use COUNT(*) not len(all()) to avoid loading all rows
-            count_stmt = select(func.count()).select_from(CachedMetadata).where(*conditions)
+            count_stmt = _scoped(select(func.count()).select_from(CachedMetadata)).where(*conditions)
             total = session.exec(count_stmt).one()
 
             # Paginated fetch
-            base_stmt = select(CachedMetadata).where(*conditions).order_by(order_expr)
+            base_stmt = _scoped(select(CachedMetadata)).where(*conditions).order_by(order_expr)
             items = session.exec(base_stmt.offset(record_offset).limit(page_size)).all()
 
             return list(items), total

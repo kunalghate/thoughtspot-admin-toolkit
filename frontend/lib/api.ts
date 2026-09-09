@@ -166,6 +166,7 @@ export const metadataApi = {
     search?: string;
     stale_days?: number;
     owner_name_search?: string;
+    connection_name_search?: string;
     tag_search?: string;
     views_min?: number;
     views_max?: number;
@@ -190,6 +191,7 @@ export const metadataApi = {
     if (params.search)         q.set("search", params.search);
     if (params.stale_days)     q.set("stale_days", String(params.stale_days));
     if (params.owner_name_search) q.set("owner_name_search", params.owner_name_search);
+    if (params.connection_name_search) q.set("connection_name_search", params.connection_name_search);
     if (params.tag_search)     q.set("tag_search", params.tag_search);
     if (params.views_min != null) q.set("views_min", String(params.views_min));
     if (params.views_max != null) q.set("views_max", String(params.views_max));
