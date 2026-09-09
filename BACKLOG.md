@@ -26,6 +26,7 @@ only when a human promotes them.
 |---|---|---|---|
 | 2026-08-24 · reconcile (human-directed) | 6 | 0 | 42 open · 0 in-review · 7 feedback |
 | 2026-09-08 · S31 (fix cycle) | 0 | 1 | 42 open · 1 in-review · 7 feedback |
+| 2026-09-08 · reconcile (B1) | 6 | 1 | 43 open · 0 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -53,7 +54,7 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (42)
+### Open (43)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -65,6 +66,7 @@ an item reaches `done`, move its index line and detail entry to
 | M12 | P2 | Frontend vitest executes on zero automated entry points | yes (`.github/workflows/*`, `CLAUDE.md`) |
 | M13 | P2 | Library-contract blindness: dead grid sorting graded 'clean' twice | — |
 | M14 | P2 | Blanket except in batch loops: total failure reports PARTIAL | — |
+| M15 | P2 | READ_ENDPOINTS cannot register a non-JSON (CSV) read endpoint | yes (`tests/integration/test_cluster_isolation.py`) |
 | S7 | P2 | has_lb_edges self-heal makes incremental a permanent full crawl | — |
 | S26 | P2 | Sync background tasks block the FastAPI event loop | — |
 | S28 | P2 | Bare-timestamp watermark cannot express 'not yet crawled' | — |
@@ -100,26 +102,19 @@ an item reaches `done`, move its index line and detail entry to
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (1)
+### In review (0)
 
-| ID | P | Item | Protected |
-|----|---|------|-----------|
-| S31 | P2 | preview_delete trusts a possibly-truncated cache ('0 owned objects') | — |
+_Nothing in review._
 
 ### Done
 
 Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 
-### Feedback (7 open)
+### Feedback (2 open)
 
 | ID | P | Type | Item | Status | Protected |
 |----|---|------|------|--------|-----------|
-| F1 | P3 | Feature | Connections list page with per-connection object counts | open | yes (`tests/integration/test_cluster_isolation.py`) |
 | F2 | P3 | Feature | Connection + external db/schema/table on the table list and in lineage | open | — |
-| F3 | P4 | Feature | 'Created by' on the users list; 'Created' date on the groups list | open | — |
-| F8 | P4 | Feature | CSV export for Users and Groups | open | — |
-| F9 | P3 | Feature | Export tagged content to TML without deleting | open | — |
-| F10 | P3 | Feature | Transfer ownership of selected objects from the Metadata screen | open | yes (`tests/integration/test_dryrun_safety.py`) |
 | F11 | P3 | Feature | Select-all on the Archiver results grid | open | — |
 
 > Seeded 2026-07-15 at bootstrap (BOOT) from Step 0 discovery. Run
@@ -184,6 +179,14 @@ Two bug-hunt passes graded the three grid pages' stale-response guards "clean" w
 A blanket `except Exception` around a chunk loop converts ANY failure — including a `TypeError` from our own code — into a "chunk failed" that the job reports as **PARTIAL**, and `mark_partial` is checked before the `succeeded == 0` branch, so a totally-failed job never reports FAILED. This is the mechanism that hid three 404-ing endpoints for the life of the project: Bulk Sharing, transfer sharing and bulk user delete each reported PARTIAL with zero items affected, attached to a "run a sync and retry" message, rather than failing. It also swallowed a live `TypeError` during the fix itself. Sites: `bulk_sharing_service.py:690`, and the equivalents in `user_management_service` transfer-sharing and delete
 
 **Acceptance criteria:** A job in which zero items succeeded reports FAILED, never PARTIAL — the `succeeded == 0` branch is evaluated first at every such site, with a test per site. Separately, the org's review checklist requires that a blanket `except Exception` wrapping a batch loop is either narrowed to named exception classes or justified in a comment naming what it is allowed to swallow; CLAUDE.md already forbids bare `except Exception`, so the ~20 pre-existing sites are inventoried and tracked rather than left implicit
+
+### M15 — READ_ENDPOINTS cannot register a non-JSON (CSV) read endpoint
+
+`P2` · **open** · protected: yes (`tests/integration/test_cluster_isolation.py`)
+
+`GET /api/v1/users/export.csv` and `GET /api/v1/groups/export.csv` (`ts_admin/api/users.py:288`, `ts_admin/api/groups.py:123`) are cluster-scoped read endpoints that stream every cached row for a cluster, and neither is in `READ_ENDPOINTS` (`tests/integration/test_cluster_isolation.py:30-101`). They are absent structurally, not by oversight: every registry row carries a JSON-shaped extractor (`lambda body: body["items"]`), so a `text/csv` response cannot be registered in the current shape at all. The consequence is that the highest-volume read paths in the app — a full-table export — have their cluster isolation asserted only by ad-hoc per-API tests, never by the guard whose whole purpose is to make that assertion unforgettable for new endpoints. Found during the 2026-09-08 reconcile of F8.
+
+**Acceptance criteria:** `READ_ENDPOINTS` can express a non-JSON read endpoint (e.g. an optional per-row extractor that parses CSV, or a declared response kind), and both `export.csv` routes are registered through it; the registration is proven non-vacuous by a demonstrated red-then-green against a mutation that drops the `cluster_id` filter from the CSV query — the guard must fail on that mutation and pass on `main`
 
 ### S7 — has_lb_edges self-heal makes incremental a permanent full crawl
 
@@ -497,25 +500,6 @@ _Rows sit here only while their PR is open; the
 next cycle's reconcile step moves merged rows to
 [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md)._
 
-### S31 — preview_delete trusts a possibly-truncated cache ('0 owned objects')
-
-`P2` · **in-review** · protected: no
-
-`preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
-
-**Acceptance criteria:** `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0
-
-**2026-09-08 (cycle).** Implemented as a **flag**, not a refusal — the criteria
-permitted either. Refusing at `dryrun_delete` would have destroyed `missing_live`
-(live `search_users`), `admin_count` (`UserGroupMembership`) and `unrecognized`
-(`CachedUser`) — three safety signals with no metadata-cache dependency — and
-permanently blocked offboarding on clusters whose metadata sync is PARTIAL
-forever (W3/W6) and on fresh installs. `preview_delete` now returns
-`metadata_cache_authoritative`, read before AND after the count loop in one
-session; the delete modal warns and gates Confirm behind an acknowledgement when
-it is false. Review Board raised 7 CONFIRMED findings on the first
-implementation, all fixed. PR pending human review.
-
 
 ## Feedback (user-reported)
 
@@ -527,13 +511,6 @@ instead of getting its own work stream. Same bright-line rules as above.
 Batch 1 received 2026-08-24 (SE Demo evaluation). Triage 2026-08-24: none fully
 done; F3/F6/F11 partially covered or already filed.
 
-### F1 — Connections list page with per-connection object counts
-
-`P3` · Feature · **open** · protected: yes (`tests/integration/test_cluster_isolation.py`)
-
-**Ask:** **Connections list page** — list data connections (Snowflake, Databricks, …) with details and an object count per connection, so empty connections are findable
-
-**Triage + acceptance criteria:** NOT DONE. Today connections appear only as name-only lineage nodes (built from TML `CONNECTS` edges, `lineage_service.py:1339`), so a connection never referenced by TML is invisible. `ts_client.list_connections()` (`client.py:1187`) exists but returns only `{id, name}` and is used solely for lineage GUID resolution. Criteria: a Connections view lists every connection from `connection/search` (synced into a cluster+org-scoped cache table) with type/details and a per-connection object count; zero-object connections are visible; the list endpoint is registered in `READ_ENDPOINTS`
 
 ### F2 — Connection + external db/schema/table on the table list and in lineage
 
@@ -543,37 +520,15 @@ done; F3/F6/F11 partially covered or already filed.
 
 **Triage + acceptance criteria:** PARTIAL. The lineage trace model → table → connection already works end-to-end (upstream BFS follows `USES` then `CONNECTS`). But connection nodes carry a name only — the TML `db:`/`schema:` fields are never parsed (`_parse_physical_source`, `lineage_service.py:443-461`) — and `CachedMetadata` has no connection/physical-source fields, so the Metadata Explorer table list cannot show them. Criteria: TABLE rows in the metadata grid show connection name and external database/schema/table; connection nodes in lineage expose the same; the TML parse captures `db`/`schema`
 
-### F3 — 'Created by' on the users list; 'Created' date on the groups list
 
-`P4` · Feature · **open** · protected: no
 
-**Ask:** **"Created by" on the users list; "Created" date on the groups list**
 
-**Triage + acceptance criteria:** PARTIAL — each grid has the inverse of what's asked. Groups already show "Created by" (`groups.tsx:121`) and `created_at` is already synced, serialized, sortable, and typed — the Created column is one ColDef copy of the Modified entry. Users show "Created" but have no creator: `TSUser`/`CachedUser` carry no author field, so first verify live whether `users/search` returns one at all; if yes, mirror the group author chain (model field → sync → self-join name resolution in `group_service.py:87`)
 
-### F8 — CSV export for Users and Groups
+**2026-09-08 (reconcile).** Re-verified against `main` @ `fb0cc0f` after PR #44: **PARTIALLY MET — stays open.** What shipped: the external-source linkage now reaches the cache, though from the metadata detail payload rather than TML (`ts_client/models.py:276-281` reads `dataSourceId` and `logicalTableContent.tableMappingInfo.{databaseName, schemaName, tableName}`), landing in `CachedMetadata` as `connection_guid`/`db_name`/`db_schema`/`db_table` (`models/cache/ts_metadata.py:54-58`, written `sync_service.py:478-480`, additive ALTERs `database.py:145`), and the connection **name** is resolved at read time and shown in the grid (`api/metadata.py:223`, `MetadataGrid/columns.ts:128-134`).
 
-`P4` · Feature · **open** · protected: no
+Unmet criteria, exactly three: (a) *"TABLE rows in the metadata grid show … external database/schema/table"* — the three ColDefs ship `hide: true` (`MetadataGrid/columns.ts:140`, `:148`, `:156`) and there is **no way to unhide them**: the project uses `ag-grid-community` only (`frontend/package.json:20`) with no `sideBar` or columns tool panel anywhere in `frontend/`, and they are excluded from the CSV export, which defaults to visible columns (`metadata.tsx:135`); (b) *"connection nodes in lineage expose the same"* — `_connection_items` still emits name only (`lineage_service.py:1351-1358`); (c) *"the TML parse captures `db`/`schema`"* — `_parse_physical_source` is unchanged (`lineage_service.py:443-460`); `lineage_service.py` was not touched by PR #44.
 
-**Ask:** **CSV export for Users and Groups**
-
-**Triage + acceptance criteria:** NOT DONE, trivial. The existing pattern is frontend-only `gridApi.exportDataAsCsv()` (metadata.tsx:127, archiver, sharing, deleter history); users/groups pages already hold the `gridRef`. Criteria: both pages get the same Export CSV button. Known shared limitation (all four existing sites): infinite row model exports only cached blocks, not the full server-side set — matching existing behavior is in scope, a full-export endpoint is not
-
-### F9 — Export tagged content to TML without deleting
-
-`P3` · Feature · **open** · protected: no
-
-**Ask:** **Export tagged content to TML without deleting** (cs_tools parity — export first, delete later once trusted)
-
-**Triage + acceptance criteria:** NOT DONE. TML export exists only inside the delete pipeline (`deletion_service._execute_delete` → `_export_tml_resilient`); the archiver's `action` literal is tag/untag/delete only, and `download_tml` requires an already-deleted `ArchiveRecord`. Criteria: an export-only action reuses `_export_tml_resilient` without deleting, downloadable as a bundle; export-only `ArchiveRecord`s are distinguishable so restore does not offer to re-import objects that were never deleted; non-destructive, but registered wherever the safety tests require
-
-### F10 — Transfer ownership of selected objects from the Metadata screen
-
-`P3` · Feature · **open** · protected: yes (`tests/integration/test_dryrun_safety.py`)
-
-**Ask:** **Transfer ownership of selected objects from the Metadata screen** (today transfer is all-objects-of-one-user, from the Users screen)
-
-**Triage + acceptance criteria:** NOT DONE, but the client call is object-scoped already: `assign_metadata_owner` (`client.py:943`) takes `object_ids`, and `execute_transfer` chunks it — only the preview/record path is user-shaped. Criteria: metadata grid gains multi-select + a Transfer action (reusing `UserPicker`/the transfer modal); new `POST /metadata/transfer-owner` follows the full write pattern — verify live, dry-run first, audit log after — and is registered in `DRYRUN_ENDPOINTS`
+Note for whoever re-scopes this row: sourcing the lineage half from the sync-time denormalization already in `CachedMetadata` is cheaper than extending `_parse_physical_source` and avoids a second source of truth — but changing the criteria is the human's lever, not a cycle's.
 
 ### F11 — Select-all on the Archiver results grid
 
@@ -582,6 +537,10 @@ done; F3/F6/F11 partially covered or already filed.
 **Ask:** **Select-all on the Archiver results grid**
 
 **Triage + acceptance criteria:** NOT DONE — deliberately: `headerCheckboxSelection` is unsupported on the infinite row model (documented in `Deleter/columns.ts:61-73`), and grid-held selection already silently drops past ~2,000 rows (**S41**). Criteria: a "Select all N matching" affordance backed by filter-criteria selection (execute accepts the same filter params as `/archiver/results`, or selection moves to page state keyed by GUID) — must resolve, not worsen, S41; the dry-run count reflects the true N
+
+**2026-09-08 (reconcile).** Re-verified against `main` @ `fb0cc0f` after PR #43: **PARTIALLY MET — stays open.** The select-all mechanism itself shipped well and is eviction-safe: filter-criteria selection held as `selectAllMode` + `excludedGuids` (`frontend/pages/archiver.tsx:303-304`, affordance `:982-999`), dropped whenever the filter changes (`:466-473`); `syncSelectAllCheckboxes` re-ticks newly loaded blocks on `onModelUpdated` (`:452-463`, wired `:1184`) and `handleSelectionChanged` reconciles only currently-loaded nodes into `excludedGuids` (`:498-513`), so an evicted row cannot be silently excluded. Backend `POST /archiver/resolve` (`api/archiver.py:330` → `archiver_service.resolve_guids:395`) expands the filter to an explicit GUID list bounded by `RESOLVE_MAX = 5000` with a 413 rather than a truncated list, and `not_in(excluded_guids)` is guarded by `if excluded_guids:` (`:450`). The criterion *"the dry-run count reflects the true N"* is **met**: `resolveActionGuids` (`:624-642`) expands before the dry-run modal opens (`:646-650`).
+
+Unmet criterion, exactly one: *"must resolve, not worsen, S41."* Manual (non-select-all) selection still rebuilds `selectedGuids` wholesale from `getSelectedRows()` (`archiver.tsx:493`, `:515`), so ticked rows in an evicted block are still silently dropped — S41 verbatim — with no cap and no warning. S41 is sidestepped for the all-matching case, not resolved; **S41 stays open**, and PR #42 added a fourth site with the same pathology (`frontend/pages/metadata.tsx:317`, alongside `users.tsx:167` and `sharing.tsx:199`). Also worth naming: the only coverage of the exclusion-inference path — the single place a delete set could silently shrink — is `frontend/tests/e2e/archiver-select-all.spec.ts`, which runs on no automated entry point (see M12).
 
 - 2026-07-15 (S1): Delivered the non-protected core of S1 in PR (branch
   `improve/S1-wire-vitest`, commit `65d612d`): `frontend/vitest.config.mts` +
