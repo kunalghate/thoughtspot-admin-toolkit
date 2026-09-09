@@ -207,12 +207,15 @@ class TestDownloadBundle:
             assert zf.namelist() == ["Good-guid-Good.tml"]
 
     def test_a_failed_jobs_tml_bundle_is_still_downloadable(self, client, in_memory_db, seeded, tmp_path):
-        """M14: a job whose terminal status is FAILED still exported real files.
+        """The bundle must NEVER be gated on the `jobs` row.
 
-        The bundle is built from ArchiveRecord rows, never from
-        `job.get_result()` — a FAILED job stores no result at all
-        (`job_service.mark_failed`), so gating the download on the job status
-        would strand the very backups an admin needs after a failed run.
+        Kill target: any `job = session.get(Job, job_id)` lookup in
+        `download_export_bundle` that can refuse the download — e.g.
+        `if job.status == "FAILED": raise HTTPException(404)`. A FAILED job
+        still exported real files and stores no result at all
+        (`job_service.mark_failed`), so gating on its status strands the very
+        backups an admin needs after a failed run. The bundle is built from
+        `ArchiveRecord` rows and nothing else.
         """
         _seed_export(in_memory_db, tmp_path, job_id="job-5", cluster_id="c1", name="Alpha")
         _seed_export(in_memory_db, tmp_path, job_id="job-5", cluster_id="c1", name="Beta")
@@ -226,3 +229,20 @@ class TestDownloadBundle:
         assert r.status_code == 200, r.text
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             assert sorted(zf.namelist()) == ["Alpha-guid-Alpha.tml", "Beta-guid-Beta.tml"]
+
+    def test_a_bundle_with_no_jobs_row_at_all_is_still_downloadable(self, client, in_memory_db, seeded, tmp_path):
+        """Second half of the same kill target: `if job is None: raise` must go red.
+
+        `_cleanup_old_tml_exports` and ordinary history pruning can outlive the
+        `ArchiveRecord` rows' `jobs` row, so the download must not require one
+        to exist. Without this case the seed above is inert: the endpoint never
+        reads `jobs`, so deleting a `Job` seed leaves the suite green.
+        """
+        _seed_export(in_memory_db, tmp_path, job_id="job-6", cluster_id="c1", name="Gamma")
+        with Session(in_memory_db) as session:
+            assert session.get(Job, "job-6") is None, "the point of this test is that there is NO jobs row"
+
+        r = client.get("/api/v1/archiver/export/job-6/download?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            assert zf.namelist() == ["Gamma-guid-Gamma.tml"]

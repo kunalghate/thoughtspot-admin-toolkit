@@ -20,15 +20,20 @@ review only through it.
 - **correctness** — logic errors, wrong edge-case handling, off-by-one, bad error
   paths, `except Exception` swallowing failures, broken invariants.
   - Explicit checklist item: a blanket `except Exception` / `except BaseException`
-    wrapping a **batch/chunk loop body** is a CONFIRMED finding unless it is
-    either (a) narrowed to named exception classes, or (b) carries a comment
-    naming exactly what it is permitted to swallow and why the loop cannot report
-    the failure any other way. Lint cannot express this: `BLE001` (now in
-    `select`) catches only the *silent* cases — ruff exempts a handler that
-    re-raises or calls `logger.exception`. So an OUTER handler that logs a
-    traceback and re-reports the job as FAILED is fine and lint stays quiet; a
-    PER-CHUNK handler that converts anything at all into "this chunk failed ->
-    PARTIAL" is not, and lint stays quiet there too. That gap is this lens's job.
+    is a **CONFIRMED finding, always** — `CLAUDE.md` ("Never `except Exception` —
+    name the specific exception class") is unconditional and a backlog row's
+    acceptance criteria cannot amend it. The only resolution inside a cycle is
+    (a) narrow it to named exception classes. A handler the implementer believes
+    genuinely cannot be narrowed is an **ESCALATION**: report it as CONFIRMED,
+    leave it in the diff only with a comment naming what it swallows *and* a
+    backlog row, and say in the review that it needs explicit human sign-off.
+    Never grade it "acceptable". This matters most around a **batch/chunk loop
+    body**, where the handler converts any failure — including a `TypeError` in
+    our own code — into "this chunk failed -> PARTIAL". Lint cannot express it:
+    `BLE001` catches only the *silent* cases (ruff exempts a handler that
+    re-raises or calls `logger.exception`), so an OUTER handler that logs a
+    traceback and re-reports the job as FAILED stays quiet, and a PER-CHUNK
+    handler that manufactures PARTIAL stays quiet too. That gap is this lens's job.
 - **security** — SSRF (does `validate_cluster_url` still gate every TS URL?), CORS
   widening, secrets leaking out of keyring, dry-run bypass, audit-log skipped, a
   destructive endpoint missing from `DRYRUN_ENDPOINTS`, cluster-isolation leak.

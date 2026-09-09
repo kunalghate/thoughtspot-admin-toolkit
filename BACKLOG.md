@@ -100,6 +100,7 @@ an item reaches `done`, move its index line and detail entry to
 | W1 | P3 | Add mypy to CI | yes (`.github/workflows/*`) |
 | W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
+| M16 | P3 | BLE001 whole-file exemption hides silent keyring-delete failures | yes (`ts_admin/config.py`, `ts_admin/main.py`) |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
 ### In review (0)
@@ -187,6 +188,13 @@ A blanket `except Exception` around a chunk loop converts ANY failure — includ
 `GET /api/v1/users/export.csv` and `GET /api/v1/groups/export.csv` (`ts_admin/api/users.py:288`, `ts_admin/api/groups.py:123`) are cluster-scoped read endpoints that stream every cached row for a cluster, and neither is in `READ_ENDPOINTS` (`tests/integration/test_cluster_isolation.py:30-101`). They are absent structurally, not by oversight: every registry row carries a JSON-shaped extractor (`lambda body: body["items"]`), so a `text/csv` response cannot be registered in the current shape at all. The consequence is that the highest-volume read paths in the app — a full-table export — have their cluster isolation asserted only by ad-hoc per-API tests, never by the guard whose whole purpose is to make that assertion unforgettable for new endpoints. Found during the 2026-09-08 reconcile of F8.
 
 **Acceptance criteria:** `READ_ENDPOINTS` can express a non-JSON read endpoint (e.g. an optional per-row extractor that parses CSV, or a declared response kind), and both `export.csv` routes are registered through it; the registration is proven non-vacuous by a demonstrated red-then-green against a mutation that drops the `cluster_id` filter from the CSV query — the guard must fail on that mutation and pass on `main`
+### M16 — BLE001 whole-file exemption hides silent keyring-delete failures
+
+`P3` · **open** · protected: yes (`ts_admin/config.py`, `ts_admin/main.py`)
+
+`pyproject.toml` exempts BLE001 for two whole files because they are CLAUDE.md protected paths and an inline `# noqa` there would need a human-approved PR. The exemption is not cosmetic: `ts_admin/config.py:371-379 _delete_secret` loops over ("password", "secret_key", "token") calling `keyring.delete_password` under a blanket `except Exception: pass`. If the OS keychain is locked or failing, deleting a cluster leaves all three secrets resident in the keychain with no log line, no UI signal and no audit row — the user believes the credentials are gone. BLE001 is exactly the lint that surfaces that handler, and the exemption suppresses it for the whole file. The second site is `ts_admin/main.py:220` (TML cleanup at startup).
+
+**Acceptance criteria:** `_delete_secret` names the exception classes it tolerates (`keyring.errors.KeyringError` / `PasswordDeleteError`), logs each failure with the key it could not delete, and surfaces a residue signal to the caller so cluster deletion can report "credentials may remain in the OS keychain" instead of silently succeeding; the `[tool.ruff.lint.per-file-ignores]` block in `pyproject.toml` is removed (or narrowed to a single `# noqa: BLE001` with a reason) so BLE001 is live on every file; a unit test stubs the keyring to raise and asserts the failure is reported, not swallowed. Touches protected paths — needs the `human-approved` label.
 
 ### S7 — has_lb_edges self-heal makes incremental a permanent full crawl
 
@@ -355,6 +363,8 @@ Multi-cluster is a v1 pillar but the dashboard is single-cluster: no roll-up and
 `_recent_activity` scans a fixed 300 raw rows per audit source, so one bulk share of 500 objects fills the window and hides every other activity type
 
 **Acceptance criteria:** The feed's per-source window cannot let a single large session crowd out other kinds of activity (e.g. group in SQL, or scan per-kind); a test seeds one oversized share session plus a deletion and asserts both appear
+
+2026-09-09 (M14 review cycle): largely retired for two of the three sources. The archive and share feeds are now aggregated in SQL and limited to `_ACTIVITY_SCAN_SESSIONS` **sessions**, not rows (`ts_admin/services/dashboard_service.py`), so one 400-row bulk session occupies exactly one slot and its per-session counts are exact. Still open: the `UserActionRecord` source remains row-limited by `_ACTIVITY_SCAN_ROWS`, and nothing yet balances the three sources against each other
 
 ### S32 — cache_authoritative is produced end-to-end and consumed nowhere
 

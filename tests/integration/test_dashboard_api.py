@@ -117,6 +117,11 @@ def seeded(in_memory_db):
         session.add(old)
 
         # Audit rows: a 2-object deletion session, a share session, a transfer.
+        # `deleted_confirmed_at` is what makes the feed say "Deleted" — a
+        # SUCCESS export alone only means the backup exists
+        # (`ts_admin/models/archive_record.py:46-55`), and the owning Job row
+        # supplies the intent for sessions that confirm nothing.
+        session.add(Job(id="del-1", cluster_id="c1", job_type="bulk_delete", status="COMPLETE"))
         for guid in ("m1", "m2"):
             session.add(
                 ArchiveRecord(
@@ -129,6 +134,7 @@ def seeded(in_memory_db):
                     owner_name="user-u1",
                     org_id=0,
                     tml_export_status="SUCCESS",
+                    deleted_confirmed_at=now,
                 )
             )
         session.add(
@@ -218,6 +224,7 @@ class TestDashboard:
         """Four single-object deletes are one event to an admin, not four rows."""
         with Session(in_memory_db) as session:
             for n in range(4):
+                session.add(Job(id=f"solo-{n}", cluster_id="c1", job_type="bulk_delete", status="COMPLETE"))
                 session.add(
                     ArchiveRecord(
                         cluster_id="c1",
@@ -229,6 +236,7 @@ class TestDashboard:
                         owner_name="user-u1",
                         org_id=0,
                         tml_export_status="SUCCESS",
+                        deleted_confirmed_at=datetime.now(tz=timezone.utc),
                     )
                 )
             session.commit()
@@ -503,20 +511,23 @@ class TestSyncInFlightFlag:
 class TestActivityStatusCanSayFailed:
     """
     M14: the activity feed's status was `"PARTIAL" if failed else "SUCCESS"` —
-    a two-way expression that can never emit FAILED. A delete session where
-    every TML export failed (so, per `ts_admin/models/archive_record.py:18`,
-    NOTHING was deleted) rendered as a partial success on the dashboard.
+    a two-way expression that can never emit FAILED, so a delete session in
+    which nothing was deleted rendered as a partial success on the dashboard.
+
+    The status now derives from `deleted_confirmed_at` (the only field that
+    means "gone from ThoughtSpot") plus the owning Job's intent, so every
+    session here seeds a matching `Job` row as production does.
 
     These tests seed into org 7 so the feed under test contains only the
     session being asserted on — the `seeded` fixture's own del-1/share-1
-    sessions live in org 0 and would otherwise collapse into these by label
-    (`DashboardService._collapse` folds adjacent identical kind+label rows).
+    sessions live in org 0. The collapse behaviour they used to lean on is now
+    covered directly by `TestCollapseMergesByWorstStatus`.
     """
 
     URL = "/api/v1/dashboard?cluster_id=c1&org_id=7"
 
     @staticmethod
-    def _archive(job_id: str, guid: str, status: str) -> ArchiveRecord:
+    def _archive(job_id: str, guid: str, status: str, *, deleted: bool = False) -> ArchiveRecord:
         return ArchiveRecord(
             cluster_id="c1",
             job_id=job_id,
@@ -527,7 +538,12 @@ class TestActivityStatusCanSayFailed:
             owner_name="user-u1",
             org_id=7,
             tml_export_status=status,
+            deleted_confirmed_at=datetime.now(tz=timezone.utc) if deleted else None,
         )
+
+    @staticmethod
+    def _delete_job(job_id: str, status: str = "COMPLETE") -> Job:
+        return Job(id=job_id, cluster_id="c1", job_type="bulk_delete", status=status)
 
     @staticmethod
     def _share(job_id: str, guid: str, status: str) -> ShareRecord:
@@ -555,6 +571,7 @@ class TestActivityStatusCanSayFailed:
 
     def test_a_delete_session_where_every_tml_export_failed_is_failed(self, client, seeded, in_memory_db):
         with Session(in_memory_db) as session:
+            session.add(self._delete_job("del-allfail", "FAILED"))
             session.add(self._archive("del-allfail", "x1", "FAILED"))
             session.add(self._archive("del-allfail", "x2", "FAILED"))
             session.commit()
@@ -565,15 +582,17 @@ class TestActivityStatusCanSayFailed:
     def test_a_partly_failed_delete_session_is_still_partial(self, client, seeded, in_memory_db):
         """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
         with Session(in_memory_db) as session:
-            session.add(self._archive("del-mixed", "x1", "SUCCESS"))
+            session.add(self._delete_job("del-mixed", "PARTIAL"))
+            session.add(self._archive("del-mixed", "x1", "SUCCESS", deleted=True))
             session.add(self._archive("del-mixed", "x2", "FAILED"))
             session.commit()
         assert self._entry(client, "delete")["status"] == "PARTIAL"
 
     def test_a_clean_delete_session_is_success(self, client, seeded, in_memory_db):
         with Session(in_memory_db) as session:
-            session.add(self._archive("del-clean", "x1", "SUCCESS"))
-            session.add(self._archive("del-clean", "x2", "SUCCESS"))
+            session.add(self._delete_job("del-clean"))
+            session.add(self._archive("del-clean", "x1", "SUCCESS", deleted=True))
+            session.add(self._archive("del-clean", "x2", "SUCCESS", deleted=True))
             session.commit()
         assert self._entry(client, "delete")["status"] == "SUCCESS"
 
@@ -593,3 +612,284 @@ class TestActivityStatusCanSayFailed:
             session.add(self._share("share-mixed", "x2", "FAILED"))
             session.commit()
         assert self._entry(client, "share")["status"] == "PARTIAL"
+
+
+class TestDeleteFeedCountsConfirmedDeletes:
+    """
+    The delete feed's verdict comes from `deleted_confirmed_at`, never from
+    `tml_export_status`.
+
+    `_execute_delete` runs Phase A (export EVERY object) to completion before
+    Phase B deletes any, so a crash between the phases leaves a session where
+    every row is SUCCESS-exported and every object is still live in
+    ThoughtSpot. Counting exports there told the admin "Deleted 2 objects
+    (TML backed up)" in green about content that was never touched — the exact
+    inversion `ts_admin/models/archive_record.py:46-55` warns about.
+
+    Archive rows alone cannot tell that crashed delete apart from a deliberate
+    export-only run (F9): both are all-SUCCESS-exported with nothing confirmed.
+    The owning `Job` supplies the intent, which is why every session here seeds
+    one. Seeded into org 7 so the `seeded` fixture's org-0 sessions cannot
+    collapse into these by label.
+    """
+
+    URL = "/api/v1/dashboard?cluster_id=c1&org_id=7"
+
+    @staticmethod
+    def _rec(job_id: str, guid: str, tml: str, *, deleted: bool = False, at=None) -> ArchiveRecord:
+        rec = ArchiveRecord(
+            cluster_id="c1",
+            job_id=job_id,
+            ts_guid=guid,
+            name=guid,
+            object_type="LIVEBOARD",
+            owner_guid="u1",
+            owner_name="user-u1",
+            org_id=7,
+            tml_export_status=tml,
+            deleted_confirmed_at=datetime.now(tz=timezone.utc) if deleted else None,
+        )
+        if at is not None:
+            rec.archived_at = at
+        return rec
+
+    def _delete_entries(self, client) -> list[dict]:
+        activity = client.get(self.URL).json()["recent_activity"]
+        assert activity, "recent_activity is empty — every assertion below would be vacuous"
+        return [a for a in activity if a["kind"] == "delete"]
+
+    def _entry(self, client) -> dict:
+        entries = self._delete_entries(client)
+        assert len(entries) == 1, f"expected exactly one delete entry, got {entries}"
+        return entries[0]
+
+    def test_a_crashed_delete_with_every_tml_exported_is_not_reported_as_deleted(self, client, seeded, in_memory_db):
+        """F2: SUCCESS exports + zero confirmations is a failed delete, not a success."""
+        with Session(in_memory_db) as session:
+            session.add(Job(id="del-crash", cluster_id="c1", job_type="bulk_delete", status="FAILED"))
+            session.add(self._rec("del-crash", "x1", "SUCCESS"))
+            session.add(self._rec("del-crash", "x2", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "FAILED"
+        assert "Deleted" not in entry["label"], entry["label"]
+
+    def test_an_export_only_run_says_exported_not_deleted(self, client, seeded, in_memory_db):
+        """F5/F9: the export-without-delete feature's own success state."""
+        with Session(in_memory_db) as session:
+            session.add(
+                Job(
+                    id="exp-1",
+                    cluster_id="c1",
+                    job_type="archive",
+                    status="COMPLETE",
+                    parameters=json.dumps({"action": "export", "object_ids": ["x1", "x2"]}),
+                )
+            )
+            session.add(self._rec("exp-1", "x1", "SUCCESS"))
+            session.add(self._rec("exp-1", "x2", "SUCCESS"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "SUCCESS"
+        assert "Exported" in entry["label"], entry["label"]
+        assert "Deleted" not in entry["label"], entry["label"]
+
+    def test_a_delete_session_with_no_terminal_export_at_all_is_failed_not_partial(self, client, seeded, in_memory_db):
+        """F3: a stranded PENDING row is not evidence of a partial success."""
+        with Session(in_memory_db) as session:
+            session.add(Job(id="del-stuck", cluster_id="c1", job_type="bulk_delete", status="FAILED"))
+            session.add(self._rec("del-stuck", "x1", "FAILED"))
+            session.add(self._rec("del-stuck", "x2", "PENDING"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "FAILED"
+        assert entry["status"] != "PARTIAL"
+        assert entry["label"] == "Delete failed — 0 of 2 objects deleted"
+
+    def test_a_session_larger_than_the_old_row_window_reports_exact_counts(self, client, seeded, in_memory_db):
+        """F4: 400 rows in ONE session — the counts must be the session's, not the window's."""
+        at = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+        with Session(in_memory_db) as session:
+            session.add(Job(id="del-big", cluster_id="c1", job_type="bulk_delete", status="PARTIAL"))
+            for n in range(300):
+                session.add(self._rec("del-big", f"fail-{n}", "FAILED", at=at))
+            for n in range(100):
+                session.add(self._rec("del-big", f"ok-{n}", "SUCCESS", deleted=True, at=at))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["label"] == "Deleted 100 of 400 objects (TML backed up)"
+        assert entry["status"] == "PARTIAL"
+
+    def test_a_job_still_running_reads_as_pending(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(Job(id="del-live", cluster_id="c1", job_type="bulk_delete", status="RUNNING"))
+            session.add(self._rec("del-live", "x1", "PENDING"))
+            session.add(self._rec("del-live", "x2", "PENDING"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "PENDING"
+        assert entry["label"].endswith("…"), entry["label"]
+
+    def test_a_session_whose_job_row_is_gone_still_renders_neutrally(self, client, seeded, in_memory_db):
+        """The join is OUTER: purged job history must not delete the admin's audit feed."""
+        with Session(in_memory_db) as session:
+            session.add(self._rec("del-orphan", "x1", "SUCCESS"))
+            session.add(self._rec("del-orphan", "x2", "FAILED"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "PENDING"
+        assert entry["label"] == "Archived 2 objects — none deleted, 1 backed up"
+        assert "Deleted" not in entry["label"]
+
+    def test_the_feed_is_scoped_by_both_cluster_and_org(self, client, seeded, in_memory_db):
+        """
+        Two shadow scopes, per the S27 diagonal rule: a single diagonal shadow is
+        excluded by either predicate alone, so dropping just `org_id` — or just
+        `cluster_id` — would survive. Both shadows reuse the job id so a leak
+        merges into the group under test and changes its counts.
+        """
+        with Session(in_memory_db) as session:
+            session.add(Job(id="scope-1", cluster_id="c1", job_type="bulk_delete", status="COMPLETE"))
+            session.add(self._rec("scope-1", "x1", "SUCCESS", deleted=True))
+            session.add(self._rec("scope-1", "x2", "SUCCESS", deleted=True))
+            # Shadow A: right cluster, wrong org.
+            for guid in ("s1", "s2"):
+                shadow = self._rec("scope-1", guid, "SUCCESS")
+                shadow.org_id = 0
+                session.add(shadow)
+            # Shadow B: wrong cluster, right org.
+            for guid in ("s3", "s4"):
+                shadow = self._rec("scope-1", guid, "SUCCESS")
+                shadow.cluster_id = "c2"
+                session.add(shadow)
+            session.commit()
+        entries = self._delete_entries(client)
+        assert [(e["label"], e["status"]) for e in entries] == [("Deleted 2 objects (TML backed up)", "SUCCESS")]
+
+    def test_the_feed_timestamp_is_a_real_datetime(self, client, seeded, in_memory_db):
+        """A bare string here would silently mis-sort the merged feed."""
+        with Session(in_memory_db) as session:
+            session.add(Job(id="del-ts", cluster_id="c1", job_type="bulk_delete", status="COMPLETE"))
+            session.add(self._rec("del-ts", "x1", "SUCCESS", deleted=True))
+            session.commit()
+        entry = self._entry(client)
+        assert isinstance(datetime.fromisoformat(entry["timestamp"]), datetime)
+
+
+class TestCollapseMergesByWorstStatus:
+    """
+    F1: `_collapse` only overwrote a SUCCESS, so the merged status depended on
+    which entry happened to be newest. A FAILED run followed by a PARTIAL one
+    kept FAILED; the same pair in the other order reported PARTIAL about a run
+    containing a total failure. The rank makes it worst-wins in both directions.
+
+    Driven through `user_action` rows: their status comes straight off the
+    record (so it can be any value) and two deletes of the same username
+    produce a byte-identical label, which is what makes them collapse.
+    """
+
+    URL = "/api/v1/dashboard?cluster_id=c1&org_id=7"
+
+    @staticmethod
+    def _action(job_id: str, status: str, at) -> UserActionRecord:
+        return UserActionRecord(
+            cluster_id="c1",
+            job_id=job_id,
+            org_id=7,
+            action_type="delete",
+            from_username="ghost",
+            status=status,
+            executed_at=at,
+        )
+
+    def _entry(self, client) -> dict:
+        activity = client.get(self.URL).json()["recent_activity"]
+        matching = [a for a in activity if a["label"] == "Deleted user ghost"]
+        assert len(matching) == 1, f"expected one collapsed entry, got {activity}"
+        return matching[0]
+
+    def _seed(self, in_memory_db, newest: str, oldest: str) -> None:
+        now = datetime.now(tz=timezone.utc)
+        with Session(in_memory_db) as session:
+            session.add(self._action("ua-new", newest, now))
+            session.add(self._action("ua-old", oldest, now - timedelta(minutes=5)))
+            session.commit()
+
+    def test_failed_then_partial_collapses_to_failed(self, client, seeded, in_memory_db):
+        self._seed(in_memory_db, newest="FAILED", oldest="PARTIAL")
+        entry = self._entry(client)
+        assert entry["count"] == 2
+        assert entry["status"] == "FAILED"
+
+    def test_partial_then_failed_also_collapses_to_failed(self, client, seeded, in_memory_db):
+        """The other direction — the pre-rank code reported PARTIAL here."""
+        self._seed(in_memory_db, newest="PARTIAL", oldest="FAILED")
+        entry = self._entry(client)
+        assert entry["count"] == 2
+        assert entry["status"] == "FAILED"
+
+    def test_two_successes_stay_success(self, client, seeded, in_memory_db):
+        """Non-vacuity: the rank must not promote a run that never failed."""
+        self._seed(in_memory_db, newest="SUCCESS", oldest="SUCCESS")
+        entry = self._entry(client)
+        assert entry["count"] == 2
+        assert entry["status"] == "SUCCESS"
+
+
+class TestShareFeedStatus:
+    """The share feed's three-way status, and its distinct object/principal counts."""
+
+    URL = "/api/v1/dashboard?cluster_id=c1&org_id=7"
+
+    @staticmethod
+    def _share(job_id: str, obj: str, principal: str, status: str) -> ShareRecord:
+        return ShareRecord(
+            cluster_id="c1",
+            job_id=job_id,
+            org_id=7,
+            object_guid=obj,
+            object_name=obj,
+            object_type="LIVEBOARD",
+            principal_guid=principal,
+            principal_name=principal,
+            principal_type="USER_GROUP",
+            new_mode="READ_ONLY",
+            status=status,
+        )
+
+    def _entry(self, client) -> dict:
+        activity = client.get(self.URL).json()["recent_activity"]
+        assert activity, "recent_activity is empty — the assertion below would be vacuous"
+        matching = [a for a in activity if a["kind"] == "share"]
+        assert len(matching) == 1, f"expected exactly one share entry, got {activity}"
+        return matching[0]
+
+    def test_a_share_session_with_nothing_terminal_yet_is_pending_not_success(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(self._share("share-pending", "x1", "g1", "PENDING"))
+            session.add(self._share("share-pending", "x2", "g1", "PENDING"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "PENDING"
+        assert entry["status"] != "SUCCESS"
+
+    def test_a_wholly_failed_share_session_says_so_in_the_label(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(self._share("share-dead", "x1", "g1", "FAILED"))
+            session.add(self._share("share-dead", "x2", "g1", "FAILED"))
+            session.commit()
+        entry = self._entry(client)
+        assert entry["status"] == "FAILED"
+        assert "failed" in entry["label"], entry["label"]
+
+    def test_a_large_share_session_reports_exact_distinct_counts(self, client, seeded, in_memory_db):
+        """100 objects × 4 principals = 400 rows, well past the old 300-row window."""
+        with Session(in_memory_db) as session:
+            for obj in range(100):
+                for principal in range(4):
+                    status = "SUCCESS" if obj >= 75 else "FAILED"
+                    session.add(self._share("share-big", f"obj-{obj}", f"g-{principal}", status))
+            session.commit()
+        entry = self._entry(client)
+        assert "100 objects for 4 principals" in entry["label"], entry["label"]
+        assert entry["status"] == "PARTIAL"
