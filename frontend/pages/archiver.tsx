@@ -1361,8 +1361,8 @@ function ConfirmSelectAllModal({ count, onCancel, onConfirm }: {
   const plural = count !== 1 ? "s" : "";
   return (
     <>
-      <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }} />
-      <div role="dialog" aria-modal="true" data-testid="confirm-select-all" style={{
+      <div onClick={onCancel} className="scrim" style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }} />
+      <div role="dialog" aria-modal="true" data-testid="confirm-select-all" className="modal-panel-fixed" style={{
         position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
         width: 400, background: theme.color.surface, borderRadius: 10, zIndex: 301,
         boxShadow: theme.shadow.lg, padding: 20, fontFamily: theme.font.sans,
