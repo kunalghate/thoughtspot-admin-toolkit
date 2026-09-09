@@ -536,6 +536,10 @@ class DashboardService:
                 ShareRecord.cluster_id == cluster_id,
                 ShareRecord.org_id == org_id,
             )
+            # `Job.status` is in the GROUP BY for correctness under strict SQL, not
+            # for behaviour: the WHERE pins one cluster, so exactly one Job row joins
+            # per job_id and SQLite's bare-column pick would agree. Removing it is an
+            # EQUIVALENT MUTANT here — no test can kill it. Keep it anyway.
             .group_by(col(ShareRecord.job_id), col(Job.status))
             .having(func.max(ShareRecord.executed_at) >= cutoff)
             .order_by(desc("executed_at"))
