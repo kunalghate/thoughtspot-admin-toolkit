@@ -350,10 +350,10 @@ function AddClusterPanel({ onClose, onSaved }: { onClose: () => void; onSaved: (
   return (
     <>
       {/* Backdrop */}
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 40 }} />
+      <div onClick={onClose} className="scrim" style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 40 }} />
 
       {/* Panel */}
-      <div style={{
+      <div className="drawer-panel" style={{
         position: "fixed", top: 0, right: 0, bottom: 0, width: 420,
         background: theme.color.surface, borderLeft: `1px solid ${theme.color.border}`,
         zIndex: 50, display: "flex", flexDirection: "column",
@@ -493,9 +493,9 @@ function EditClusterPanel({ cluster, onClose, onSaved }: {
 
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 49 }} />
+      <div onClick={onClose} className="scrim" style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 49 }} />
       <div style={panelStyle}>
-        <div style={{
+        <div className="drawer-panel" style={{
           width: 420, height: "100%", background: theme.color.surface,
           borderLeft: `1px solid ${theme.color.border}`, padding: 28,
           display: "flex", flexDirection: "column", gap: 20,

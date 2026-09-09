@@ -1237,8 +1237,8 @@ function ConfirmTagModal({ pending, onCancel, onConfirm }: {
 
   return (
     <>
-      <div onClick={onCancel} style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }} />
-      <div role="dialog" aria-modal="true" style={{
+      <div onClick={onCancel} className="scrim" style={{ position: "fixed", inset: 0, background: theme.color.overlay, zIndex: 300 }} />
+      <div role="dialog" aria-modal="true" className="modal-panel-fixed" style={{
         position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
         width: 380, background: theme.color.surface, borderRadius: 10, zIndex: 301,
         boxShadow: theme.shadow.lg, padding: 20, fontFamily: theme.font.sans,

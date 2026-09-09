@@ -295,6 +295,7 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
   return (
     <div
       onClick={onClose}
+      className="scrim"
       style={{
         position: "fixed", inset: 0, background: theme.color.overlay,
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -303,6 +304,7 @@ function JobErrorDetailsModal({ job, onClose }: { job: Job; onClose: () => void 
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className="modal-panel"
         style={{
           background: theme.color.surface, borderRadius: 12,
           maxWidth: 720, width: "100%", maxHeight: "85vh",

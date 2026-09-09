@@ -150,6 +150,25 @@ button { font-family: inherit; }
 @keyframes popoverIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes syncSlide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @keyframes status-pulse { 50% { opacity: .3; } }
+/* Exit for a toast — the reverse of `popoverIn`, so it leaves the way it came. */
+@keyframes toastOut { to { opacity: 0; transform: translateY(-4px); } }
+
+/* Overlay motion. A drawer is pinned to the right edge and a modal to the
+ * centre, so each enters along the axis it will leave by — the panel tells you
+ * where it came from, which is the whole point of animating it at all. Enter
+ * only for now; exit is still an instant unmount (tracked as S47). */
+@keyframes scrimIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes drawerInRight { from { transform: translateX(16px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes modalIn  { from { transform: translateY(8px) scale(.985); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+/* Panels centred with `top/left: 50%` carry an inline
+ * `transform: translate(-50%, -50%)`. An animation on `transform` REPLACES that
+ * for the duration, so a keyframe written as plain `translateY` would knock the
+ * panel a quarter-screen off-centre while it played. This variant carries the
+ * centring offset through both ends of the keyframe. */
+@keyframes modalInCentered {
+  from { transform: translate(-50%, -50%) translateY(8px) scale(.985); opacity: 0; }
+  to   { transform: translate(-50%, -50%) translateY(0)   scale(1);    opacity: 1; }
+}
 
 /* React Flow zoom controls (Relationship Visualizer) — the library ships a
  * light-only default (#fefefe pill), so dark mode rendered near-invisible
@@ -247,6 +266,112 @@ button { font-family: inherit; }
   background: var(--code-bg); color: var(--code-fg);
   font: 500 12px var(--mono); line-height: 1.6;
   border-radius: var(--radius-card); padding: 14px 16px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Focus, press feedback, and overlay motion
+ *
+ * These are global on purpose. Controls in this app are inline-styled rather
+ * than built from the `.input`/`.btn` classes above, and ~19 of them set
+ * `outline: "none"` inline to kill the browser default on mouse click. An
+ * author `!important` outranks a non-important inline style, so one rule here
+ * restores a visible keyboard ring everywhere without editing 19 files.
+ *
+ * `:focus-visible` (not `:focus`) is deliberate: the ring appears for keyboard
+ * and other non-pointer focus, so the inline `outline: none` still does its
+ * original job of keeping mouse clicks quiet.
+ * ───────────────────────────────────────────────────────────────────────────*/
+:where(input, select, textarea, button, a[href], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 1px;
+}
+
+/* Feedback belongs on the press, not the release. AG Grid ships its own
+ * active state on the filter Apply button and its header icons are 16px
+ * targets where a 1px shift reads as jitter, so the grid opts out. */
+:where(button, [role="button"]):not(:disabled):active {
+  transform: translateY(1px);
+}
+.ag-theme-alpine :where(button, [role="button"]):active { transform: none; }
+.ag-theme-alpine .ag-filter-apply-panel button:last-of-type:active { transform: translateY(1px); }
+
+/* Scrim + panel entrances. Applied by class from the overlay components. */
+.scrim        { animation: scrimIn 140ms ease-out; }
+.drawer-panel { animation: drawerInRight 180ms cubic-bezier(.22, 1, .36, 1); }
+.modal-panel  { animation: modalIn 160ms cubic-bezier(.22, 1, .36, 1); }
+.modal-panel-fixed { animation: modalInCentered 160ms cubic-bezier(.22, 1, .36, 1); }
+
+/* Hover-only affordances need a fallback where there is no hover. Without
+ * this, the per-entity sync button on the dashboard is undiscoverable on a
+ * touch device — it is `opacity: 0` with nothing to hover it out of hiding. */
+@media (hover: none) {
+  .dash-fresh-cell .sync,
+  .dash-attn-row .chev { opacity: 1; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Accessibility preferences
+ *
+ * Three independent OS signals, handled independently — see DESIGN.md
+ * ("Motion and accessibility"). Reduced motion is not "no feedback": the
+ * gentler equivalent still has to tell the admin the app is working.
+ * ───────────────────────────────────────────────────────────────────────────*/
+@media (prefers-reduced-motion: reduce) {
+  /* Transitions and entrances collapse to a cross-fade or nothing. */
+  *, *::before, *::after {
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+  .scrim, .drawer-panel, .modal-panel, .modal-panel-fixed,
+  .ag-theme-alpine .ag-popup .ag-menu,
+  .ag-theme-alpine .ag-popup .ag-filter,
+  .ag-theme-alpine .ag-popup .ag-tabs { animation: none !important; }
+
+  /* Press feedback is a 1px nudge, not vestibular motion — but it rides on the
+   * same `transform` a reduced-motion user may be filtering out. Drop it. */
+  :where(button, [role="button"]):not(:disabled):active { transform: none; }
+
+  /* The two decorative loops stop dead. `status-pulse` is a 1Hz opacity flash
+   * and `syncSlide` is a full-width travelling bar — both are exactly the
+   * looping oscillation this preference exists to suppress. The colour of the
+   * status dot already carries the state, and the sync bar's label already
+   * carries the count. */
+  .status[data-state="connecting"]::before { animation: none !important; opacity: 1 !important; }
+  /* The indeterminate sync bar is a 40%-wide block that travels the track.
+   * Frozen in place it reads as a determinate "40% done", so widen it to the
+   * full track at reduced opacity — still clearly "working", but not moving. */
+  [style*="syncSlide"] {
+    animation: none !important;
+    transform: none !important;
+    width: 100% !important;
+    opacity: .55;
+  }
+}
+
+/* A media query adds NO specificity, and `<ThemeProvider>` always stamps an
+ * explicit `data-theme` on <html>. So a bare `:root { … }` here (0,1,0) loses
+ * to the base theme block's `:root[data-theme="compendium-light"]` (0,2,0) and
+ * the override silently does nothing — measured, not theorised. Both blocks
+ * below therefore repeat the base blocks' exact selector shape, which ties at
+ * 0,2,0 and wins on source order. Keep them in sync if a theme is added. */
+
+@media (prefers-reduced-transparency: reduce) {
+  /* No backdrop-filter in this app, but the modal/drawer scrims are the one
+   * translucent surface. Push them to near-opaque. */
+  :root,
+  :root[data-theme="compendium-light"] { --overlay: rgba(26, 31, 74, 0.92); }
+  :root[data-theme="compendium-dark"]  { --overlay: rgba(3, 5, 15, 0.94); }
+}
+
+@media (prefers-contrast: more) {
+  /* Borders become defined rather than hairline, and muted text stops being
+   * muted. Token-level, so both themes follow. */
+  :root,
+  :root[data-theme="compendium-light"],
+  :root[data-theme="compendium-dark"] {
+    --border:     var(--border-light);
+    --text-muted: var(--text-secondary);
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

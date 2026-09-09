@@ -460,7 +460,7 @@ function StatTile({ icon: Icon, label, value, href, tone, synced, hint, onSync, 
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span style={{ fontSize: 26, fontWeight: 700, color: valueColor, fontFamily: theme.font.mono, lineHeight: 1 }}>
+          <span style={{ fontSize: 26, fontWeight: 700, color: valueColor, fontFamily: theme.font.mono, lineHeight: 1, letterSpacing: "-0.02em" }}>
             {known ? value.toLocaleString() : "—"}
           </span>
         </div>
