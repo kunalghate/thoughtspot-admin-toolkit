@@ -188,3 +188,21 @@ One line per cycle on process friction. Format:
   a real defect each time. The takeaway is not "review more" but: **a fix
   prescribed by the CEO gets no more trust than one written by an implementer**,
   and a re-review of the delta is mandatory, not optional, after any fix batch.
+
+- **2026-09-08 · reconcile (B1).** The single most productive cycle-hour so far
+  was spent reading `main` rather than writing to it: eight rows reading
+  `open`/`in-review` were checked against merged PRs, and **six were already
+  fully done** — S31 plus the entire user-feedback batch F1/F3/F8/F9/F10. The
+  queue had been overstating open work by six rows for up to two weeks, exactly
+  the drift B1 exists to catch, and exactly the size of the first reconcile
+  (also six). Two rows survived contact: F2 and F11 were each PARTIALLY MET, and
+  in both cases the unmet clause was the *hard* one the PR quietly deferred —
+  F2's UI columns ship `hide: true` in a grid with no column tool panel (dead in
+  the product, invisible to every gate), and F11 met its own dry-run-count
+  criterion while leaving "must resolve, not worsen, S41" untouched. **Friction
+  to fix:** B1 as written only walks the `in-review` section, but five of the six
+  closable rows were sitting in `Feedback` marked `open` — a status the cycle
+  never re-checks, because feedback PRs are shipped outside the cycle. The
+  reconcile step should walk every row with a merged PR, not just the in-review
+  ones; filed as part of this cycle's report rather than silently widened, since
+  the skill file is the human's lever.

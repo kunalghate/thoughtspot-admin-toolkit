@@ -474,6 +474,18 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
 - 2026-08-18 (live): the fallback must stay narrow — a GUID that is neither an object
   nor a CONNECTS target must still 404, or every bad GUID renders an empty graph.
   Guarded by `test_a_guid_that_is_neither_object_nor_connection_is_still_404`.
+- **2026-09-08 (amended, F1 shipped):** connections DO now have a first-class cache
+  row — but in their own table, not `ts_metadata`. `CachedConnection`
+  (`ts_admin/models/cache/ts_connection.py:6`, table `ts_connections`, `cluster_id`
+  `:27` + `org_id` `:28`) is populated by `_sync_connections`
+  (`sync_service.py:615`, registered as an entity `:907`) from
+  `POST /api/rest/2.0/connection/search` (`ts_client/client.py:1271`, `:1285`).
+  The "do NOT sync connections into `ts_metadata`" rule above still stands and was
+  deliberately honoured. **But lineage was not migrated:** `lineage_service` still
+  derives connection nodes from CONNECTS edge endpoints only
+  (`_connection_items`, `lineage_service.py:1351-1358`), so lineage and the new
+  Connections page are now two independent sources of connection identity. That
+  split is the open half of F2.
 
 ## TML kind → object type (live, 2026-08-18)
 
@@ -747,3 +759,73 @@ same tool rather than assuming these still hold.
   it.** That is the property that makes `(SyncLog.id, synced_at)` equality mean
   "no sync completed in the window" — and it is why a PK-only ("different row")
   check would NOT work: the row is upserted in place, so the id never changes.
+
+## Reconcile 2026-09-08 — what the user-feedback batch actually shipped
+
+Six rows (S31, F1, F3, F8, F9, F10) were verified MET on `main` @ `fb0cc0f` and
+closed; F2 and F11 were verified PARTIALLY MET and stayed open. Facts worth
+carrying:
+
+- 2026-09-08: **Per-connection object counts are never stored** — computed at read
+  time by a single GROUP BY over `CachedMetadata.connection_guid`
+  (`connection_service.py:80-93`), so a count cannot drift from the cache it
+  describes. `linked_rows`/`metadata_rows` (`:136-137`) keep an unsynced metadata
+  cache from reporting every connection as unused.
+- 2026-09-08: **The external-source linkage comes from the metadata detail payload,
+  not TML** — `metadata_detail.dataSourceId` and
+  `logicalTableContent.tableMappingInfo.{databaseName, schemaName, tableName}`
+  (`ts_client/models.py:276-281`), at zero extra API cost because the tables pass
+  already requests `include_details`. Measured on se-demo: 572/600 tables resolved a
+  connection, 599 carried a mapping; Analyst Studio (RDBMS_MODE) and the built-in
+  DEFAULT are absent from `/connection/search` and fall back to the GUID.
+- 2026-09-08: **`ts_metadata` uses additive ALTERs, never drop-and-rebuild**
+  (`database.py:145`). Dropping it would also discard the metadata `sync_log` that
+  the S23/S31 guards read as "authoritative", turning an upgrade into a silent
+  refusal of every transfer and archive.
+- 2026-09-08: **The frontend is `ag-grid-community` only** (`frontend/package.json:20`)
+  and no page anywhere uses a `sideBar` or columns tool panel. Therefore a ColDef
+  with `hide: true` is permanently invisible to the user — there is no UI to unhide
+  it. Repo-wide trap for any "add a column" item; it is what leaves F2 half-done
+  (`MetadataGrid/columns.ts:140`, `:148`, `:156`).
+- 2026-09-08: **CSV export for users/groups is a backend streaming endpoint, not
+  `gridApi.exportDataAsCsv()`** — `ts_admin/api/csv_export.py:29`, `:66` behind
+  `users.py:288` / `groups.py:123`, fronted by
+  `frontend/components/ExportCsvButton.tsx:16` (`exportCsvHref` `:43`). Reuse
+  `ExportCsvButton` for any new grid export; do not add another `exportDataAsCsv()`
+  site. Both routes are cluster-scoped reads **absent from `READ_ENDPOINTS`**
+  because the registry's extractor assumes a JSON `items` body — filed as **M15**.
+- 2026-09-08: **Export-only archive runs are discriminated by
+  `deleted_confirmed_at IS NULL`, not by a new column** (`archive_record.py:55`,
+  `deletion_service.py:511-524`). Consequence: `tml_export_status == "SUCCESS"` NO
+  LONGER implies a delete was attempted — it is the ordinary outcome of
+  `action="export"`. Two landmines follow: the one-shot backfill at
+  `database.py:157` (`SET deleted_confirmed_at = archived_at WHERE tml_export_status
+  = 'SUCCESS'`) is safe ONLY because it runs inside the transaction that first adds
+  the column — never re-run it; and the startup-recovery log line at
+  `main.py:157-164` ("N object(s) were never confirmed deleted … non-restorable")
+  now fires, worded as an anomaly, for a perfectly normal interrupted export job.
+  No test names either.
+- 2026-09-08: **`/archiver/resolve` (`api/archiver.py:330` →
+  `archiver_service.resolve_guids:395`) is the filter→GUID expander behind "Select
+  all N matching."** It deliberately returns an explicit GUID list rather than
+  letting dryrun/execute take criteria, so the dry-run guard, the confirmation
+  modal and the audit row all keep operating on a concrete set. Bounded at
+  `RESOLVE_MAX = 5000` with a **413** (not a truncated list) because the list is
+  persisted whole into `Job.parameters` and `AuditLog.parameters`.
+- 2026-09-08: **`execute_transfer` is now dual-shaped.** `from_user_guid=None` means
+  "a Metadata-page selection spanning many owners": it groups by cached `owner_guid`
+  and writes one `UserActionRecord` per distinct owner
+  (`user_management_service.py:596-640`), and the AuditLog `entity_type` flips
+  `"user"` → `"metadata"` on the same flag (`:751-757`). Anything filtering audit
+  history by `entity_type="user"` now misses metadata-page transfers.
+- 2026-09-08: **S41 is NOT resolved by F11.** `archiver.tsx:493` still rebuilds
+  `selectedGuids` wholesale from `getSelectedRows()`, so manual selection past block
+  eviction is still lost, with no cap and no warning. Four sites now share the
+  pathology: `archiver.tsx:493`, `users.tsx:167`, `sharing.tsx:199`, and — newly
+  added by F10 — `metadata.tsx:317`. Select-all mode itself IS eviction-safe
+  (`syncSelectAllCheckboxes` on `onModelUpdated`, `archiver.tsx:452`, `:1184`).
+- 2026-09-08: **Do not cite `tests/unit/test_stale_cache_guard.py`'s race tests as
+  evidence of production concurrency behaviour.** They run on a StaticPool
+  single-DBAPI-connection in-memory engine and are structurally incapable of proving
+  cross-connection visibility (noted in-code at `user_management_service.py:1270-1275`).
+  The S31 acceptance test itself (`:444`) is sound and proven non-vacuous.

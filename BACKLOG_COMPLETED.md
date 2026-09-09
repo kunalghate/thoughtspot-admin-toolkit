@@ -9,7 +9,7 @@ detail entry here.
 
 ## Index
 
-### Done items (28)
+### Done items (34)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -41,6 +41,12 @@ detail entry here.
 | M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
 | M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
 | F12 | P2 | Browser serves stale UI after a pip upgrade until hard refresh | yes (`ts_admin/main.py`) |
+| S31 | P2 | preview_delete trusts a possibly-truncated cache ('0 owned objects') | — |
+| F1 | P3 | Connections list page with per-connection object counts | yes (`tests/integration/test_cluster_isolation.py`) |
+| F3 | P4 | 'Created by' on the users list; 'Created' date on the groups list | — |
+| F8 | P4 | CSV export for Users and Groups | — |
+| F9 | P3 | Export tagged content to TML without deleting | — |
+| F10 | P3 | Transfer ownership of selected objects from the Metadata screen | yes (`tests/integration/test_dryrun_safety.py`) |
 
 ## Completed items
 
@@ -323,3 +329,79 @@ content-hashed `/_next/static/*` assets are `public, max-age=31536000,
 immutable`; an integration test pins both policies and the 304 case.
 
 **Closed 2026-08-24 (reconcile).** Shipped in PR #35 (`c2afdbe`). Verified on current `main`: [ts_admin/main.py:46-48](ts_admin/main.py#L46-L48) sets `public, max-age=31536000, immutable` for hashed `/_next/static/*` and `no-cache` elsewhere, and `tests/integration/test_static_cache_headers.py` pins both policies plus the 304 case (3 passed).
+
+### S31 — preview_delete trusts a possibly-truncated cache ('0 owned objects')
+
+`P2` · **done** · protected: no
+
+`preview_delete`/`dryrun_delete` report `owned_object_count` from a raw `count()` over `CachedMetadata` (`user_management_service.py:713`) with no completeness check, so a truncated metadata cache makes the delete-user safety warning read **"0 owned objects"** for a user who owns 40 worksheets — the admin deletes them and orphans the content. This is the same absence-as-evidence shape S23 guarded at `resolve_downstream`, on the one destructive path S23 deliberately left out of scope
+
+**Acceptance criteria:** `preview_delete`'s owned-object count either refuses (as the five S23 sites do) or is presented as unreliable when the metadata cache is not certified complete; a test seeds a truncated cache plus a user owning only non-cached types and asserts the count is not silently reported as 0
+
+**2026-09-08 (cycle).** Implemented as a **flag**, not a refusal — the criteria
+permitted either. Refusing at `dryrun_delete` would have destroyed `missing_live`
+(live `search_users`), `admin_count` (`UserGroupMembership`) and `unrecognized`
+(`CachedUser`) — three safety signals with no metadata-cache dependency — and
+permanently blocked offboarding on clusters whose metadata sync is PARTIAL
+forever (W3/W6) and on fresh installs. `preview_delete` now returns
+`metadata_cache_authoritative`, read before AND after the count loop in one
+session; the delete modal warns and gates Confirm behind an acknowledgement when
+it is false. Review Board raised 7 CONFIRMED findings on the first
+implementation, all fixed. PR pending human review.
+
+**2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PR #38, commit `148e04d`). `metadata_cache_authoritative` is computed by comparing the sync marker by identity before AND after the count loop in one session (`user_management_service.py:1276`/`:1310`/`:1314`), carried through the dry-run job result (`:1375`) and the API model (`api/users.py:184`); the delete modal treats it tri-state and gates Confirm behind an acknowledgement (`DeleteUsersModal.tsx:139`, `:347-351`). The acceptance test is `tests/unit/test_stale_cache_guard.py:444` `test_the_acceptance_case_a_zero_count_is_never_bare`, proven non-vacuous (the same user reads non-zero certified first), with three further kill tests at `:492`, `:521`, `:552`. Deviation from the criteria's wording: the fixture truncates rows for a user known to own one rather than using a user owning only non-cached types — the same absence-as-evidence shape, and the stronger fixture.
+
+
+### F1 — Connections list page with per-connection object counts
+
+`P3` · Feature · **done** · protected: yes (`tests/integration/test_cluster_isolation.py`)
+
+**Ask:** **Connections list page** — list data connections (Snowflake, Databricks, …) with details and an object count per connection, so empty connections are findable
+
+**Triage + acceptance criteria:** NOT DONE. Today connections appear only as name-only lineage nodes (built from TML `CONNECTS` edges, `lineage_service.py:1339`), so a connection never referenced by TML is invisible. `ts_client.list_connections()` (`client.py:1187`) exists but returns only `{id, name}` and is used solely for lineage GUID resolution. Criteria: a Connections view lists every connection from `connection/search` (synced into a cluster+org-scoped cache table) with type/details and a per-connection object count; zero-object connections are visible; the list endpoint is registered in `READ_ENDPOINTS`
+
+**2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PR #44). All four clauses hold: `search_connections()` → `POST /api/rest/2.0/connection/search` (`ts_client/client.py:1271`, `:1285`), synced by `_sync_connections` (`sync_service.py:615`, registered `:907`) into `CachedConnection` (`models/cache/ts_connection.py:6`, table `ts_connections`) with `cluster_id` FK `:27` and `org_id` `:28`; type/details plus a per-connection object count computed at read time by GROUP BY over `CachedMetadata.connection_guid` (`connection_service.py:80-93`, `:109-120`); zero-object connections are rows, not omissions (`:113-118` defaults to `{}`), with `linked_rows`/`metadata_rows` at `:136-137` preventing an unsynced metadata cache from reporting every connection as unused; endpoint registered in `READ_ENDPOINTS` as `connections-list` (`tests/integration/test_cluster_isolation.py:54-58`).
+
+
+### F3 — 'Created by' on the users list; 'Created' date on the groups list
+
+`P4` · Feature · **done** · protected: no
+
+**Ask:** **"Created by" on the users list; "Created" date on the groups list**
+
+**Triage + acceptance criteria:** PARTIAL — each grid has the inverse of what's asked. Groups already show "Created by" (`groups.tsx:121`) and `created_at` is already synced, serialized, sortable, and typed — the Created column is one ColDef copy of the Modified entry. Users show "Created" but have no creator: `TSUser`/`CachedUser` carry no author field, so first verify live whether `users/search` returns one at all; if yes, mirror the group author chain (model field → sync → self-join name resolution in `group_service.py:87`)
+
+**2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PRs #39 and #46) — both halves. Users 'Created by': `CachedUser.author_guid` (`models/cache/ts_user.py:32`) with a re-sync backfill registered at `database.py:60`, written from `user.author_id` during sync (`sync_service.py:159`, `:173`), resolved by self-join mirroring the group chain (`user_management_service.py:278`, `:286`, GUID fallback `:121-131`), surfaced at `api/users.py:62`, in the CSV at `:281`, and in the grid at `frontend/pages/users.tsx:157`. Groups 'Created' date: `frontend/pages/groups.tsx:126`.
+
+
+### F8 — CSV export for Users and Groups
+
+`P4` · Feature · **done** · protected: no
+
+**Ask:** **CSV export for Users and Groups**
+
+**Triage + acceptance criteria:** NOT DONE, trivial. The existing pattern is frontend-only `gridApi.exportDataAsCsv()` (metadata.tsx:127, archiver, sharing, deleter history); users/groups pages already hold the `gridRef`. Criteria: both pages get the same Export CSV button. Known shared limitation (all four existing sites): infinite row model exports only cached blocks, not the full server-side set — matching existing behavior is in scope, a full-export endpoint is not
+
+**2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PR #39), and shipped a stronger mechanism than the criteria asked for. Rather than the frontend-only `gridApi.exportDataAsCsv()` pattern — which the criteria named while flagging that it exports only cached infinite-model blocks — both pages call a streaming backend endpoint: `ts_admin/api/users.py:288` and `ts_admin/api/groups.py:123` over shared helpers in `ts_admin/api/csv_export.py:29`, `:66`, fronted by `frontend/components/ExportCsvButton.tsx:16` (`exportCsvHref` `:43`) from `users.tsx:243` and `groups.tsx:159`. The known partial-export limitation the criteria accepted as in-scope therefore does not apply. Covered by `tests/integration/test_users_api.py:320-454` and `tests/integration/test_groups_api.py:156-227`. Residue filed as a new row (M15): neither `export.csv` route is in `READ_ENDPOINTS`.
+
+
+### F9 — Export tagged content to TML without deleting
+
+`P3` · Feature · **done** · protected: no
+
+**Ask:** **Export tagged content to TML without deleting** (cs_tools parity — export first, delete later once trusted)
+
+**Triage + acceptance criteria:** NOT DONE. TML export exists only inside the delete pipeline (`deletion_service._execute_delete` → `_export_tml_resilient`); the archiver's `action` literal is tag/untag/delete only, and `download_tml` requires an already-deleted `ArchiveRecord`. Criteria: an export-only action reuses `_export_tml_resilient` without deleting, downloadable as a bundle; export-only `ArchiveRecord`s are distinguishable so restore does not offer to re-import objects that were never deleted; non-destructive, but registered wherever the safety tests require
+
+**2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PR #41). Action literal extended to `export` (`api/archiver.py:82`, re-validated `:415`); `_export_tml_resilient` reused unchanged via the new `export_only` path (`deletion_service.py:428`, param `:270`), returning before Phase B at `:517-524` through `_finish_export_only` (`:179`) which writes the AuditLog and job status; dispatch at `archiver_service.py:538`, `:546-547`; bundle download `GET /archiver/export/{job_id}/download` (`api/archiver.py:603`, cluster-scoped `:627-633`). Export-only records are discriminated by reusing the existing S36 field rather than adding a new one — `tml_export_status == "SUCCESS"` with `deleted_confirmed_at IS NULL` (`models/archive_record.py:55`, rationale `deletion_service.py:511-516`) — and restore genuinely filters on it (`archiver_service.py:867-876`, `is_restorable` `:1272`, crash recovery `main.py:123`, `:148`). No `DRYRUN_ENDPOINTS` row is required: export is non-destructive and runs through the already-registered `/archiver/dryrun` → `/archiver/execute` pair. Covered by `tests/integration/test_archiver_export_api.py`.
+
+
+### F10 — Transfer ownership of selected objects from the Metadata screen
+
+`P3` · Feature · **done** · protected: yes (`tests/integration/test_dryrun_safety.py`)
+
+**Ask:** **Transfer ownership of selected objects from the Metadata screen** (today transfer is all-objects-of-one-user, from the Users screen)
+
+**Triage + acceptance criteria:** NOT DONE, but the client call is object-scoped already: `assign_metadata_owner` (`client.py:943`) takes `object_ids`, and `execute_transfer` chunks it — only the preview/record path is user-shaped. Criteria: metadata grid gains multi-select + a Transfer action (reusing `UserPicker`/the transfer modal); new `POST /metadata/transfer-owner` follows the full write pattern — verify live, dry-run first, audit log after — and is registered in `DRYRUN_ENDPOINTS`
+
+**2026-09-08 (reconcile).** Verified MET on `main` @ `fb0cc0f` (PR #42) — all four sub-criteria. Shipped as `POST /metadata/transfer/{preview,dryrun,execute}` rather than the criteria's `POST /metadata/transfer-owner`: a deliberate mirror of `/users/transfer/*` that reuses `user_management_service` instead of standing up a parallel path. Grid multi-select and Transfer action reuse the existing modal (`frontend/pages/metadata.tsx:313`, `:317`, toolbar `:259-284`, `TransferOwnershipModal` `:340-343`). Verify live: `user_management_service.py:501` `verify_metadata_exists`, with `missing`/`uncached` diffs `:503-505`. Dry-run first: `api/metadata.py:277` → `dryrun_transfer` (`user_management_service.py:442`). Audit log after: `:751-770`, plus one `UserActionRecord` per distinct source owner (`:640`, grouping `:596-618`). Registered in `DRYRUN_ENDPOINTS` as `metadata-transfer-dryrun` (`tests/integration/test_dryrun_safety.py:64-74`). Covered by `tests/integration/test_metadata_api.py:367-456`.
