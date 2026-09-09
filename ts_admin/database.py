@@ -101,7 +101,7 @@ def _drop_outdated_rebuildable_tables() -> None:
 # {index_name: (table, [columns])}
 _BACKFILL_INDEXES: dict[str, tuple[str, list[str]]] = {
     "ix_ts_metadata_cluster_org_guid": ("ts_metadata", ["cluster_id", "org_id", "ts_guid"]),
-    # Backs the per-connection object count on the Connections page.
+    # Backs the per-connection object count behind the Metadata connection picker.
     "ix_ts_metadata_cluster_org_conn": ("ts_metadata", ["cluster_id", "org_id", "connection_guid"]),
 }
 
@@ -137,8 +137,8 @@ _BACKFILL_COLUMNS: dict[str, list[tuple[str, str, str | None]]] = {
     # the metadata sync_log that several guards read as "the cache is
     # authoritative", turning an upgrade into a silent refusal of every
     # transfer and archive until a full re-sync. So these are additive, and
-    # stay empty until the next metadata sync — the Connections page says so
-    # rather than reporting every connection as unused.
+    # stay empty until the next metadata sync, which is also what refreshes
+    # the connection cache the Connection column resolves against.
     "ts_metadata": [
         ("connection_guid", "VARCHAR NOT NULL DEFAULT ''", None),
         ("db_name", "VARCHAR NOT NULL DEFAULT ''", None),
