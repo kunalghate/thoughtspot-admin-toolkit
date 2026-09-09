@@ -71,6 +71,14 @@ def _has_tag(tag_names_json: str, tag: str) -> bool:
 # the dashboard's staleness stats and this module cannot drift apart.
 _ARCHIVABLE_TYPES = ARCHIVABLE_TYPES
 
+# Ceiling on a "select all matching" resolve. The resolved GUID list is
+# persisted whole into Job.parameters and AuditLog.parameters, so an unbounded
+# selection would put a multi-megabyte JSON blob in both — and no admin
+# meaningfully reviews a 50,000-object delete in a confirmation modal anyway.
+# Above this the caller is told to narrow the criteria rather than being handed
+# a truncated list it would silently act on.
+RESOLVE_MAX = 5000
+
 
 def _parse_iso_date(s: str | None) -> datetime | None:
     """Parse YYYY-MM-DD into a naive UTC datetime at start-of-day."""
@@ -384,6 +392,79 @@ class ArchiverService:
             for r in rows
         ]
         return items, total
+
+    @staticmethod
+    def resolve_guids(
+        *,
+        cluster_id: str,
+        org_id: int,
+        excluded_guids: list[str] | None = None,
+        max_results: int | None = None,
+        **filters: Any,
+    ) -> tuple[list[str], int]:
+        """
+        Return every GUID matching the same filters `search` would page through.
+
+        This is what backs "select all N matching" on the grid. AG Grid's
+        infinite row model has no header checkbox — it only ever holds a few
+        cached blocks — so the alternative was paging the whole result set back
+        to the browser just to collect ids.
+
+        Deliberately returns GUIDs rather than letting execute/dryrun take the
+        criteria directly: the dry-run guard, the confirmation modal and the
+        audit row all key on an explicit object list, and criteria-mode versions
+        of each would be a second code path guarding the same delete.
+
+        `excluded_guids` supports "select all, then untick three".
+
+        Raises ValueError above `max_results` (default `RESOLVE_MAX`, read at
+        call time so a test can lower it): the resolved list is persisted whole
+        into Job.parameters and AuditLog.parameters, so it has to stay bounded.
+        """
+        max_results = max_results if max_results is not None else RESOLVE_MAX
+        conditions = _stale_conditions(
+            cluster_id,
+            org_id,
+            filters.get("stale_activity_days", 90),
+            filters.get("stale_modified_days", 90),
+            filters.get("types"),
+            filters.get("exclude_tags"),
+            filters.get("owner_guid"),
+            filters.get("exclude_owner_guids"),
+            filter_tags=filters.get("filter_tags"),
+            search=filters.get("search"),
+            stale_operator=filters.get("stale_operator", "AND"),
+            owner_name_search=filters.get("owner_name_search"),
+            tag_search=filters.get("tag_search"),
+            days_unused_min=filters.get("days_unused_min"),
+            days_unused_max=filters.get("days_unused_max"),
+            views_min=filters.get("views_min"),
+            views_max=filters.get("views_max"),
+            last_accessed_before=filters.get("last_accessed_before"),
+            last_accessed_after=filters.get("last_accessed_after"),
+            modified_before=filters.get("modified_before"),
+            modified_after=filters.get("modified_after"),
+            created_before=filters.get("created_before"),
+            created_after=filters.get("created_after"),
+        )
+        if excluded_guids:
+            conditions.append(col(CachedMetadata.ts_guid).not_in(excluded_guids))
+
+        with Session(_db.get_engine()) as session:
+            matched = session.exec(select(func.count()).select_from(CachedMetadata).where(*conditions)).one()
+            if matched > max_results:
+                raise ValueError(
+                    f"{matched:,} objects match — that is more than the {max_results:,} "
+                    "this action accepts at once. Narrow the criteria and try again."
+                )
+            # Ordered so a resolve is reproducible; the caller only needs the set.
+            guids = list(
+                session.exec(
+                    select(CachedMetadata.ts_guid).where(*conditions).order_by(asc(CachedMetadata.ts_guid))
+                ).all()
+            )
+
+        return guids, matched
 
     @staticmethod
     def list_tags(
