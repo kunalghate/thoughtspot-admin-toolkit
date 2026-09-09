@@ -66,7 +66,16 @@ line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = ["E", "F", "I", "UP", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+# BLE001 is exempted in these two files ONLY because they are CLAUDE.md
+# protected paths: adding an inline `# noqa` there would require a
+# human-approved PR. The handlers are ts_admin/main.py:220 (TML-cleanup at
+# startup) and ts_admin/config.py:378 (keyring probe). Tracked as backlog row
+# M16 — retire this block, do not extend it to any other file.
+"ts_admin/main.py" = ["BLE001"]
+"ts_admin/config.py" = ["BLE001"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

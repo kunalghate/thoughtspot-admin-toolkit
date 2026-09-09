@@ -360,11 +360,20 @@ class DashboardService:
                 entry["timestamp"] = ts
         for entry in deletions.values():
             n = entry["count"]
+            failed = entry["failed"]
+            succeeded = entry["count"] - failed
+            # M14: the zero-success limb must be evaluated FIRST — a two-way
+            # `"PARTIAL" if failed else "SUCCESS"` can never emit FAILED, so a
+            # session where every row failed reads as a partial success. A
+            # `failed` row here is a TML-export failure, which per
+            # ts_admin/models/archive_record.py:18 means the object was NOT
+            # deleted, so "every row failed" is genuinely "nothing was deleted".
+            # Canonical form: ts_admin/services/bulk_sharing_service.py:1049.
             items.append(
                 {
                     "kind": "delete",
                     "label": f"Deleted {n} object{'s' if n != 1 else ''} (TML backed up)",
-                    "status": "PARTIAL" if entry["failed"] else "SUCCESS",
+                    "status": "PARTIAL" if failed and succeeded else ("FAILED" if failed else "SUCCESS"),
                     "timestamp": entry["timestamp"],
                 }
             )
@@ -386,12 +395,15 @@ class DashboardService:
                 {
                     "objects": set(),
                     "principals": set(),
+                    "succeeded": 0,
                     "failed": 0,
                     "timestamp": _naive(rec.executed_at),
                 },
             )
             entry["objects"].add(rec.object_guid)
             entry["principals"].add(rec.principal_guid)
+            if rec.status == "SUCCESS":
+                entry["succeeded"] += 1
             if rec.status == "FAILED":
                 entry["failed"] += 1
             ts = _naive(rec.executed_at)
@@ -399,13 +411,18 @@ class DashboardService:
                 entry["timestamp"] = ts
         for entry in shares.values():
             n, m = len(entry["objects"]), len(entry["principals"])
+            # M14: same three-way form as the deletion feed above. `succeeded`
+            # counts only status == "SUCCESS" (mirroring
+            # bulk_sharing_service.py:1026) so a PENDING row counts as neither
+            # a success nor a failure.
+            failed, succeeded = entry["failed"], entry["succeeded"]
             items.append(
                 {
                     "kind": "share",
                     "label": (
                         f"Updated sharing on {n} object{'s' if n != 1 else ''} for {m} principal{'s' if m != 1 else ''}"
                     ),
-                    "status": "PARTIAL" if entry["failed"] else "SUCCESS",
+                    "status": "PARTIAL" if failed and succeeded else ("FAILED" if failed else "SUCCESS"),
                     "timestamp": entry["timestamp"],
                 }
             )

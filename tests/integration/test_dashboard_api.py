@@ -498,3 +498,98 @@ class TestSyncInFlightFlag:
         body = client.get("/api/v1/dashboard?cluster_id=c1&org_id=0").json()
         assert body["synced"]["metadata"] is True
         assert body["syncing"]["metadata"] is False
+
+
+class TestActivityStatusCanSayFailed:
+    """
+    M14: the activity feed's status was `"PARTIAL" if failed else "SUCCESS"` —
+    a two-way expression that can never emit FAILED. A delete session where
+    every TML export failed (so, per `ts_admin/models/archive_record.py:18`,
+    NOTHING was deleted) rendered as a partial success on the dashboard.
+
+    These tests seed into org 7 so the feed under test contains only the
+    session being asserted on — the `seeded` fixture's own del-1/share-1
+    sessions live in org 0 and would otherwise collapse into these by label
+    (`DashboardService._collapse` folds adjacent identical kind+label rows).
+    """
+
+    URL = "/api/v1/dashboard?cluster_id=c1&org_id=7"
+
+    @staticmethod
+    def _archive(job_id: str, guid: str, status: str) -> ArchiveRecord:
+        return ArchiveRecord(
+            cluster_id="c1",
+            job_id=job_id,
+            ts_guid=guid,
+            name=guid,
+            object_type="LIVEBOARD",
+            owner_guid="u1",
+            owner_name="user-u1",
+            org_id=7,
+            tml_export_status=status,
+        )
+
+    @staticmethod
+    def _share(job_id: str, guid: str, status: str) -> ShareRecord:
+        return ShareRecord(
+            cluster_id="c1",
+            job_id=job_id,
+            org_id=7,
+            object_guid=guid,
+            object_name=guid,
+            object_type="LIVEBOARD",
+            principal_guid="g1",
+            principal_name="Admins",
+            principal_type="USER_GROUP",
+            new_mode="READ_ONLY",
+            status=status,
+        )
+
+    def _entry(self, client, kind: str) -> dict:
+        activity = client.get(self.URL).json()["recent_activity"]
+        # S27 non-vacuity: an empty feed must never read as a green assertion.
+        assert activity, "recent_activity is empty — the status assertion below would be vacuous"
+        matching = [a for a in activity if a["kind"] == kind]
+        assert len(matching) == 1, f"expected exactly one {kind} entry, got {activity}"
+        return matching[0]
+
+    def test_a_delete_session_where_every_tml_export_failed_is_failed(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(self._archive("del-allfail", "x1", "FAILED"))
+            session.add(self._archive("del-allfail", "x2", "FAILED"))
+            session.commit()
+        entry = self._entry(client, "delete")
+        assert entry["status"] == "FAILED"
+        assert entry["status"] != "PARTIAL"
+
+    def test_a_partly_failed_delete_session_is_still_partial(self, client, seeded, in_memory_db):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        with Session(in_memory_db) as session:
+            session.add(self._archive("del-mixed", "x1", "SUCCESS"))
+            session.add(self._archive("del-mixed", "x2", "FAILED"))
+            session.commit()
+        assert self._entry(client, "delete")["status"] == "PARTIAL"
+
+    def test_a_clean_delete_session_is_success(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(self._archive("del-clean", "x1", "SUCCESS"))
+            session.add(self._archive("del-clean", "x2", "SUCCESS"))
+            session.commit()
+        assert self._entry(client, "delete")["status"] == "SUCCESS"
+
+    def test_a_share_session_where_every_row_failed_is_failed(self, client, seeded, in_memory_db):
+        with Session(in_memory_db) as session:
+            session.add(self._share("share-allfail", "x1", "FAILED"))
+            session.add(self._share("share-allfail", "x2", "FAILED"))
+            session.commit()
+        entry = self._entry(client, "share")
+        assert entry["status"] == "FAILED"
+        assert entry["status"] != "PARTIAL"
+
+    def test_a_partly_failed_share_session_is_still_partial(self, client, seeded, in_memory_db):
+        """Non-vacuity: the fix must not collapse PARTIAL into FAILED."""
+        with Session(in_memory_db) as session:
+            session.add(self._share("share-mixed", "x1", "SUCCESS"))
+            session.add(self._share("share-mixed", "x2", "FAILED"))
+            session.commit()
+        assert self._entry(client, "share")["status"] == "PARTIAL"

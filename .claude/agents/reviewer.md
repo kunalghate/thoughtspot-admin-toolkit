@@ -19,6 +19,16 @@ review only through it.
 
 - **correctness** — logic errors, wrong edge-case handling, off-by-one, bad error
   paths, `except Exception` swallowing failures, broken invariants.
+  - Explicit checklist item: a blanket `except Exception` / `except BaseException`
+    wrapping a **batch/chunk loop body** is a CONFIRMED finding unless it is
+    either (a) narrowed to named exception classes, or (b) carries a comment
+    naming exactly what it is permitted to swallow and why the loop cannot report
+    the failure any other way. Lint cannot express this: `BLE001` (now in
+    `select`) catches only the *silent* cases — ruff exempts a handler that
+    re-raises or calls `logger.exception`. So an OUTER handler that logs a
+    traceback and re-reports the job as FAILED is fine and lint stays quiet; a
+    PER-CHUNK handler that converts anything at all into "this chunk failed ->
+    PARTIAL" is not, and lint stays quiet there too. That gap is this lens's job.
 - **security** — SSRF (does `validate_cluster_url` still gate every TS URL?), CORS
   widening, secrets leaking out of keyring, dry-run bypass, audit-log skipped, a
   destructive endpoint missing from `DRYRUN_ENDPOINTS`, cluster-isolation leak.

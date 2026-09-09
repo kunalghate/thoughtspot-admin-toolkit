@@ -25,6 +25,7 @@ from sqlmodel import Session, create_engine
 from ts_admin.models.archive_record import ArchiveRecord
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
+from ts_admin.models.job import Job
 
 
 @pytest.fixture(autouse=True)
@@ -204,3 +205,24 @@ class TestDownloadBundle:
         assert r.status_code == 200
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             assert zf.namelist() == ["Good-guid-Good.tml"]
+
+    def test_a_failed_jobs_tml_bundle_is_still_downloadable(self, client, in_memory_db, seeded, tmp_path):
+        """M14: a job whose terminal status is FAILED still exported real files.
+
+        The bundle is built from ArchiveRecord rows, never from
+        `job.get_result()` — a FAILED job stores no result at all
+        (`job_service.mark_failed`), so gating the download on the job status
+        would strand the very backups an admin needs after a failed run.
+        """
+        _seed_export(in_memory_db, tmp_path, job_id="job-5", cluster_id="c1", name="Alpha")
+        _seed_export(in_memory_db, tmp_path, job_id="job-5", cluster_id="c1", name="Beta")
+        with Session(in_memory_db) as session:
+            job = Job(id="job-5", cluster_id="c1", job_type="archive", status="FAILED", error="boom")
+            session.add(job)
+            session.commit()
+            assert session.get(Job, "job-5").get_result() is None
+
+        r = client.get("/api/v1/archiver/export/job-5/download?cluster_id=c1")
+        assert r.status_code == 200, r.text
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            assert sorted(zf.namelist()) == ["Alpha-guid-Alpha.tml", "Beta-guid-Beta.tml"]
