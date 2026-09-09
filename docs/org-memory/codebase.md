@@ -60,7 +60,9 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   `ts_admin/services/`. Writes go live to ThoughtSpot; reads come from the local
   SQLite cache. Per-entity lazy sync — never force a full sync.
 - 2026-07-15 (BOOT): Convention — never `except Exception`; name the specific
-  exception class. ruff line-length 120, select `E,F,I,UP`, Python ≥3.10.
+  exception class. ruff line-length 120, select `E,F,I,UP,BLE` (BLE added
+  2026-09-09 by M14 — see the BLE section below for what it does and does NOT
+  catch), Python ≥3.10.
 
 ## Frontend testing (vitest)
 
@@ -829,3 +831,99 @@ carrying:
   single-DBAPI-connection in-memory engine and are structurally incapable of proving
   cross-connection visibility (noted in-code at `user_management_service.py:1270-1275`).
   The S31 acceptance test itself (`:444`) is sound and proven non-vacuous.
+## Dashboard activity feed — the four ways a status can lie (M14, 2026-09-09)
+
+Four review rounds, each fix wrong in the branch it had just added, every round
+passing the full five-gate bar. The generalisable lessons:
+
+- **`ArchiveRecord.tml_export_status` is NOT a delete outcome, and `count - failed`
+  is NOT "objects deleted".** It is tri-valued (PENDING|SUCCESS|FAILED,
+  `models/archive_record.py:16-18`); rows are batch-inserted PENDING
+  (`deletion_service.py:367`). The only source of truth for "was this deleted" is
+  `deleted_confirmed_at`, which `archiver_service.py:873`, `:1272` and `main.py:86`
+  already use. Since F9 (export-only), rows with a SUCCESS export and no delete are
+  the *normal* shape, not an edge case.
+- **`failed == 0` is never a success predicate over a tri-valued status column.**
+  The per-chunk reconcile loop that converts unaccounted GUIDs to FAILED
+  (`deletion_service.py:490-499`) is skipped *entirely* when a non-`(TSAdminError,
+  httpx.HTTPError)` exception escapes to the blanket handler at `:715` — e.g.
+  `tml_path.write_text()` raising OSError. A mid-export restart recovered by
+  `_recover_stuck_jobs` lands in the same 0 SUCCESS / 0 FAILED / N PENDING state.
+  Only `exported == total` means success.
+- **`ShareRecord.status` is OPTIMISTIC; `ArchiveRecord.deleted_confirmed_at` is
+  CONFIRMED.** Sole writer `bulk_sharing_service.py:891` commits
+  `"FAILED" if chunk_error else "SUCCESS"` per 50-GUID chunk *inside* the loop,
+  before any read-back; `_verify_share` runs after every row is committed and
+  adjusts only the **Job** (`:920-923`). So the delete feed may trust its rows and
+  the share feed may not — any UI verdict about a share session must consult the
+  `Job` row for terminal statuses, not only for in-flight. Four non-crash writers
+  produce "terminal non-COMPLETE job, 100% SUCCESS rows": the verification
+  read-back, skipped GUIDs (`:915` — which produce *no* row at all), user cancel,
+  and `_recover_stuck_jobs`.
+- **The two audit tables have opposite mid-flight visibility.** `ArchiveRecord` has
+  one row per **requested** GUID inserted up front, so a delete aggregate always
+  sees the true denominator; `ShareRecord` has rows only for **attempted** pairs,
+  so a share aggregate has no denominator and can manufacture a terminal SUCCESS
+  mid-job. A shared "aggregate per session" helper cannot treat them the same way.
+- **An aggregate over a truncated row scan must never emit a terminal claim.** All
+  rows of a delete session share one `archived_at` (`deletion_service.py:350`), so
+  `ORDER BY archived_at DESC LIMIT 300` sampled an arbitrary rowid-ordered subset.
+  Measured: a 400-object session with 300 export failures and 100 clean deletes
+  reported "FAILED — nothing deleted" while 100 objects were gone. Fix shape:
+  `GROUP BY job_id` + `HAVING max(ts) >= cutoff`, limiting **sessions** not rows.
+  The cutoff must stay in `HAVING` — moving it to `WHERE` re-creates a partial
+  session and breaks the exact-count property.
+- **"Worst-wins" over three status values needs an explicit rank.**
+  `if prev == "SUCCESS" and item != "SUCCESS"` is correct for two values and
+  order-dependent for three: FAILED-then-PARTIAL collapsed to PARTIAL, deleting an
+  all-failed session from the feed entirely. `_collapse` now ranks
+  SUCCESS < PENDING < PARTIAL < FAILED, unknown statuses defaulting between SUCCESS
+  and PARTIAL so a future value can neither be swallowed by green nor promoted into
+  a terminal claim. **Whenever a status vocabulary grows, grep every comparison
+  against the old values.**
+- **A status and the label beside it must be computed from the same numbers.** The
+  feed built `f"Deleted {n} objects"` from the row count and the status from a
+  different count, so every export-only run since `6e5e204` told admins objects
+  were deleted when nothing was — through a fully green bar. `RecentActivityCard`
+  (`dashboard.tsx:748`) renders `label` verbatim with no status-dependent wording.
+- `Job.status` ∈ {QUEUED, RUNNING, COMPLETE, FAILED, PARTIAL} only
+  (`job_service.py:36,79,99,138,152`) — never "PENDING". `statusPillColors`
+  (`dashboard.tsx:113-118`) falls through to neutral grey, so the backend can add a
+  non-terminal status with no frontend change.
+
+## Lint gate: ruff BLE is a silent-swallow detector, not an except-Exception detector
+
+- 2026-09-09: `pyproject.toml` now has `select = ["E","F","I","UP","BLE"]` — this
+  **supersedes** the older BOOT-era note that the select list is `["E","F","I","UP"]`.
+  But `BLE001` exempts any handler that re-raises or calls `logger.exception`, so it
+  flagged only 3 of ~26 blanket handlers, and switching `logger.warning` →
+  `logger.exception` makes a blanket `except Exception` lint-clean **without
+  narrowing it**. A green BLE run is NOT evidence that blanket handlers were
+  removed; ~10 remain. `CLAUDE.md`'s rule cannot be enforced by lint — the
+  `reviewer.md` correctness lens is the other half. Residual sites tracked on M16.
+- 2026-09-09: `[tool.ruff.lint.per-file-ignores]` keys match the **full repo-relative
+  path**, not the basename (measured on ruff 0.15.10) — a `ts_admin/main.py`
+  exemption does not leak to `ts_admin/services/main.py`. Use `ruff check --isolated`
+  to see what an exemption is actually hiding; `--select X` alone does not bypass it.
+
+## Mutation-harness hazards (measured this cycle)
+
+- **`git diff --numstat` shape depends on the mutation, not the intent.** A "replace
+  one line with two" records as `1\t0`; a pure deletion as `0\tN`. Only true 1-for-1
+  substitutions give `1\t1`. Pre-compute the expected numstat per *shape* or a
+  misfired mutation reads as a survived mutant.
+- **zsh does not word-split unquoted variables**, so `pytest $TARGETS` with several
+  paths silently reports "no tests ran" — visually identical to a survived mutant.
+  Pass targets literally or use `${=VAR}`.
+- **A boundary mutation on a comparator (`>` → `>=`) is unkillable by an equal-operand
+  test** — assigning a value onto an identical value is a no-op. Killing a rank
+  comparison needs two *distinct* operands that tie in rank.
+- **A column in a `GROUP BY` that is functionally dependent on the grouping key is an
+  unkillable equivalent mutant on SQLite** (bare-column select is permitted and
+  deterministic when one row joins per group).
+- `git archive HEAD | tar -x -C <scratchpad>` is a zero-mutation harness: no worktree
+  registration, no `.git` write; with `PYTHONPATH=<copy> python3 -B` it sidesteps both
+  the editable-install `.pth` trap and the `__pycache__` staleness trap.
+- Scratch-DB gotcha: `SQLModel.metadata.create_all` on a fresh engine needs
+  `ts_admin.models.cluster.Cluster` imported or every `cluster_id` FK raises
+  `NoReferencedTableError`.

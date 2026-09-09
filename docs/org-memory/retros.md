@@ -206,3 +206,27 @@ One line per cycle on process friction. Format:
   reconcile step should walk every row with a merged PR, not just the in-review
   ones; filed as part of this cycle's report rather than silently widened, since
   the skill file is the human's lever.
+- **2026-09-09 · M14 (fix cycle).** The row's code half was already shipped by the
+  very cycle that filed it, so research reframed the work before a line was
+  written — that check is worth its cost. The cycle's real lesson is the failure
+  mode it hit four times: **every fix was wrong in the branch that fix had just
+  added, and every wrong version passed the entire five-gate bar.** Round 1's
+  status expression could never emit FAILED; round 2's replacement inferred
+  "deleted" from a field that does not mean deleted; round 3's new export limb
+  keyed success on `failed == 0` over a tri-valued column, reproducing this row's
+  own defect; round 4's new share limb selected `Job.status` and then consulted it
+  only for the in-flight case. Each round the diff was greener and the bug was
+  newer. Two things caught all four, and neither was a gate: an adversarial lens
+  told to REFUTE, and mutation evidence demanded per finding. **The generalisable
+  rule: when a fix adds a branch, the new branch is the least-reviewed code in the
+  diff and deserves the most hostile reading** — "assume the fix is wrong" must be
+  re-applied to every round, not just the first. Also paid for: the org's own
+  vacuity standard caught a fixture no writer could produce (a hand-seeded
+  `ShareRecord(status="PENDING")`), and applying that same standard in round 4
+  revealed the anchor test for the OUTER-join case did not exist at all — a
+  mutation would have survived the whole suite. **Friction:** the earlier
+  `reviewer.md` draft this cycle wrote would have blessed a blanket `except
+  Exception` that `CLAUDE.md` forbids unconditionally — an agent brief is an
+  unprotected file and is therefore the one route by which a protected rule can
+  soften without a human-approved PR. Rewritten mid-cycle to escalate rather than
+  grant. Agent briefs must never grant a carve-out the constitution withholds.
