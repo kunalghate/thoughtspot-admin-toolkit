@@ -20,6 +20,7 @@ import { TransferOwnershipModal } from "@/components/Users/TransferOwnershipModa
 import { TransferSharingModal } from "@/components/Users/TransferSharingModal";
 import { DeleteUsersModal } from "@/components/Users/DeleteUsersModal";
 import { UsersHistoryTab } from "@/components/Users/HistoryTab";
+import { ExportCsvButton, exportCsvHref } from "@/components/ExportCsvButton";
 import UserDetailDrawer from "@/components/Users/UserDetailDrawer";
 import { usersApi } from "@/lib/api";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
@@ -233,6 +234,17 @@ function UsersContent({ syncVersion }: { syncVersion: number }) {
             <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
               {total == null ? "Loading…" : `${total.toLocaleString()} user${total === 1 ? "" : "s"}`}
             </span>
+            <ExportCsvButton
+              href={exportCsvHref("/api/v1/users/export.csv", {
+                cluster_id: activeCluster.id,
+                org_id: activeOrg?.org_id,
+                status: status || undefined,
+                search: search.trim() || undefined,
+                sort_field: sortField,
+                sort_order: sortOrder,
+              })}
+              title="Download every user matching the current search and status filter"
+            />
           </div>
 
           {error && (

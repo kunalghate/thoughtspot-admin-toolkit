@@ -2,6 +2,7 @@
 Group Management API (v1 is read-only — CS Tools precedent).
 
   GET  /api/v1/groups             — paginated group grid (cluster + org scoped)
+  GET  /api/v1/groups/export.csv  — every matching group as a CSV download
   GET  /api/v1/groups/{ts_guid}   — single group detail with member users
 
 Data comes from the local cache; run a groups sync to refresh it.
@@ -13,8 +14,10 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ts_admin.api.csv_export import csv_response, paged_rows
 from ts_admin.services import group_service as svc
 
 logger = logging.getLogger(__name__)
@@ -99,6 +102,52 @@ def list_groups(
         record_offset=record_offset,
         page_size=page_size,
     )
+
+
+# Column order mirrors the Groups grid, plus the GUID an admin needs to act on a
+# row outside the UI.
+_CSV_COLUMNS = [
+    ("name", "Name"),
+    ("display_name", "Display name"),
+    ("description", "Description"),
+    ("privileges", "Privileges"),
+    ("member_count", "Members"),
+    ("created_by", "Created by"),
+    ("created_at", "Created"),
+    ("modified_at", "Modified"),
+    ("ts_guid", "GUID"),
+    ("org_id", "Org ID"),
+]
+
+
+@router.get("/export.csv")
+def export_groups_csv(
+    cluster_id: str | None = Query(default=None),
+    org_id: int | None = Query(default=None),
+    search: str | None = Query(default=None),
+    sort_field: str = Query(default="name"),
+    sort_order: Literal["asc", "desc"] = Query(default="asc"),
+) -> StreamingResponse:
+    """
+    Every group matching the current filters, as a CSV download.
+
+    Deliberately not paginated: the grid's own CSV button would only ever export
+    the rows AG Grid had cached. Takes the same filter/sort params as the list
+    endpoint so the file matches what is on screen.
+    """
+    resolved = _resolve_cluster_id(cluster_id)
+    rows = paged_rows(
+        lambda offset, size: svc.list_groups(
+            cluster_id=resolved,
+            org_id=org_id,
+            search=search,
+            sort_field=sort_field,
+            sort_order=sort_order,
+            record_offset=offset,
+            page_size=size,
+        )
+    )
+    return csv_response(filename_stem="groups", columns=_CSV_COLUMNS, rows=rows)
 
 
 @router.get("/{ts_guid}", response_model=GroupDetail)

@@ -12,6 +12,7 @@ import "ag-grid-community/styles/ag-grid.css";
 import "ag-grid-community/styles/ag-theme-alpine.css";
 
 import AppShell, { useShell } from "@/components/Shell";
+import { ExportCsvButton, exportCsvHref } from "@/components/ExportCsvButton";
 import GroupDetailDrawer from "@/components/Groups/GroupDetailDrawer";
 import { groupsApi } from "@/lib/api";
 import { createGuardedDatasource } from "@/lib/gridDatasource";
@@ -122,6 +123,10 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
       valueFormatter: (p) => (p.value as string | null) ?? "—",
     },
     {
+      field: "created_at", headerName: "Created", width: 140,
+      valueFormatter: (p) => formatDay(p.value as string),
+    },
+    {
       field: "modified_at", headerName: "Modified", width: 140,
       valueFormatter: (p) => formatDay(p.value as string),
     },
@@ -151,6 +156,16 @@ function GroupsContent({ syncVersion }: { syncVersion: number }) {
         <span style={{ fontSize: 12, color: theme.color.textMuted, fontFamily: theme.font.sans }}>
           {total == null ? "Loading…" : `${total.toLocaleString()} group${total === 1 ? "" : "s"}`}
         </span>
+        <ExportCsvButton
+          href={exportCsvHref("/api/v1/groups/export.csv", {
+            cluster_id: activeCluster.id,
+            org_id: activeOrg?.org_id,
+            search: search.trim() || undefined,
+            sort_field: sortField,
+            sort_order: sortOrder,
+          })}
+          title="Download every group matching the current search"
+        />
       </div>
 
       {error && (
