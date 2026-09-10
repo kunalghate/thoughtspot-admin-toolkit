@@ -98,7 +98,7 @@ gate to make it pass** — a red gate means "fix it or hand to a human," not
 "relax the gate."
 
 **A green bar is necessary but not sufficient.** Passing every gate below
-proves conformance to the acceptance criteria; it never by itself authorises
+proves conformance to the acceptance criteria; it never by itself authorizes
 shipping. The Review Board stays mandatory — even when every gate is green —
 for any change that deletes rows, alters a purge/retention rule, or adds a
 correlated subquery or join. Any such change must also include `EXPLAIN QUERY
