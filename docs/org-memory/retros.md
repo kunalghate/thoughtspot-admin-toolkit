@@ -243,3 +243,15 @@ One line per cycle on process friction. Format:
   identical tree, which turns a full re-verification into a one-line check. If the
   trees differ (a merge commit, or edits made in the GitHub UI), the criteria must
   be re-driven properly.
+
+- 2026-09-10 (M5): No friction. A pure documentation change still ran the full
+  pipeline (researcher → architect → implementer → Review Board × 3 + QA, all in
+  isolated detached worktrees) and it paid off in a small way: the simplicity
+  lens caught a British/American spelling inconsistency ("authorises" vs the
+  file's established "organization"/"color") that a doc-only fast-path would have
+  shipped. The regression lens also caught a real gap one level out — the new
+  CLAUDE.md rule requiring `EXPLAIN QUERY PLAN` for correlated subqueries isn't
+  threaded into `reviewer.md`'s own performance-lens checklist, so today it's
+  enforced only by the reviewer independently reading CLAUDE.md in full. Filed as
+  M17 rather than fixed inline, per B3 (one row for an unrelated finding tripped
+  over mid-cycle).
