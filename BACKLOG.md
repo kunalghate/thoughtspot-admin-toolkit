@@ -131,7 +131,7 @@ Ordered by priority, then ID.
 
 ### M5 — A green verification bar is necessary but not sufficient
 
-`P2` · **open** · protected: yes (`CLAUDE.md`)
+`P2` · **in-progress** · protected: yes (`CLAUDE.md`)
 
 The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan)
 
