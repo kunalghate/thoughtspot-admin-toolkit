@@ -97,6 +97,14 @@ Every change an agent hands back must pass these, in order. **Never weaken a
 gate to make it pass** — a red gate means "fix it or hand to a human," not
 "relax the gate."
 
+**A green bar is necessary but not sufficient.** Passing every gate below
+proves conformance to the acceptance criteria; it never by itself authorizes
+shipping. The Review Board stays mandatory — even when every gate is green —
+for any change that deletes rows, alters a purge/retention rule, or adds a
+correlated subquery or join. Any such change must also include `EXPLAIN QUERY
+PLAN` output, run against a realistically-sized database (not an empty or tiny
+test fixture), for the new correlated subquery or join.
+
 1. **Lint + format** — `ruff check ts_admin/ tests/` && `ruff format --check ts_admin/ tests/`
 2. **Backend tests** — `pytest tests/unit/ -v` && `pytest tests/integration/ -v`
 3. **Frontend typecheck** — `cd frontend && npx tsc --noEmit`

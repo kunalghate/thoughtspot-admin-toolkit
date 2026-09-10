@@ -30,6 +30,7 @@ only when a human promotes them.
 | 2026-09-09 · M14 (fix cycle) | 0 | 1 | 43 open · 1 in-review · 2 feedback |
 | 2026-09-09 · craft pass (human-directed) | 0 | 2 | 45 open · 1 in-review · 2 feedback |
 | 2026-09-09 · reconcile (B1, post-merge) | 1 | 0 | 45 open · 0 in-review · 2 feedback |
+| 2026-09-10 · M5 (fix cycle) | 0 | 1 | 45 open · 1 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -61,7 +62,6 @@ an item reaches `done`, move its index line and detail entry to
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
-| M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
 | M8 | P2 | Gate serialization violated by file writes into the shared checkout | yes (`CLAUDE.md`) |
 | M2 | P2 | PR #14 silently reverted the vitest wiring | yes (`.github/workflows/*` for the CI half) |
 | M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
@@ -105,11 +105,14 @@ an item reaches `done`, move its index line and detail entry to
 | W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M16 | P3 | Blanket except Exception survives the BLE gate: keyring residue + column-map site | yes (`ts_admin/config.py`, `ts_admin/main.py`) |
+| M17 | P3 | Performance-review lens doesn't name EXPLAIN QUERY PLAN/correlated-subquery as a checklist item | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (0)
+### In review (1)
 
-_Nothing in review._
+| ID | P | Item | Protected |
+|----|---|------|-----------|
+| M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
 
 ### Done
 
@@ -131,11 +134,13 @@ Ordered by priority, then ID.
 
 ### M5 — A green verification bar is necessary but not sufficient
 
-`P2` · **open** · protected: yes (`CLAUDE.md`)
+`P2` · **in-review** · protected: yes (`CLAUDE.md`)
 
 The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan)
 
 **Acceptance criteria:** CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins
+
+**2026-09-10.** Shipped in branch `improve/M5-green-bar-not-sufficient` (`bbf04ea`, `102d981`): inserted one paragraph into CLAUDE.md's Verification bar section stating all three required facts verbatim. Doc-only change — no code, no tests. Full gate bar green (ruff, 616 unit + 279 integration, tsc, build). Review Board (correctness/regression/simplicity, run in isolated detached worktrees) and QA all reported clean; simplicity flagged one cosmetic British/American spelling mismatch ("authorises" vs the file's established American spelling), fixed and re-verified. Regression lens surfaced a PLAUSIBLE follow-up — `reviewer.md`'s performance lens doesn't yet name `EXPLAIN QUERY PLAN`/correlated-subquery explicitly as a checklist item — filed as **M17**. Touches a protected path (`CLAUDE.md`); PR needs the `human-approved` label.
 
 ### M8 — Gate serialization violated by file writes into the shared checkout
 
@@ -308,6 +313,14 @@ A "spares X" guard test placed on a code path that full-rebuilds X is vacuous �
 Enabling BLE buys less than it appears: ruff BLE001 exempts ANY handler that re-raises or calls `logger.exception`, so all ~10 remaining blanket handlers in `ts_admin/` are silent under the new gate. That includes `ts_admin/services/sync_service.py:876` (the dependencies column-map pass), which the M14 review escalated — round 3 changed its `logger.warning` to `logger.exception`, which made it lint-clean WITHOUT narrowing it. It still swallows e.g. a `TypeError` from our own `build_column_map` into a `column_error` string while the job goes on to `mark_complete` — a COMPLETE dependencies sync with an empty column map. **A green BLE run is NOT evidence that blanket handlers were removed.**
 
 **Acceptance criteria:** `_delete_secret` names the exception classes it tolerates (`keyring.errors.KeyringError` / `PasswordDeleteError`), logs each failure with the key it could not delete, and surfaces a residue signal to the caller so cluster deletion can report "credentials may remain in the OS keychain" instead of silently succeeding; the `[tool.ruff.lint.per-file-ignores]` block in `pyproject.toml` is removed (or narrowed to a single `# noqa: BLE001` with a reason) so BLE001 is live on every file; a unit test stubs the keyring to raise and asserts the failure is reported, not swallowed; the `sync_service.py` column-map handler either names the exception classes it tolerates or its comment states exactly WHAT it is permitted to swallow (it currently argues only WHY it is blind), and the job does not report COMPLETE when the column tier is empty because of a swallowed error. Touches protected paths — needs the `human-approved` label.
+
+### M17 — Performance-review lens doesn't name EXPLAIN QUERY PLAN/correlated-subquery as a checklist item
+
+`P3` · **open** · protected: no
+
+Found during the M5 review (regression lens): CLAUDE.md's Verification bar now requires `EXPLAIN QUERY PLAN` evidence on a realistically-sized DB for any new correlated subquery or join, and requires the Review Board even when every gate is green for such a change — but `.claude/agents/reviewer.md`'s performance-lens bullet only mentions "N+1 or repeated calls... missing pagination", not correlated-subquery/`EXPLAIN QUERY PLAN` by name. Enforcement today depends entirely on the reviewer independently reading CLAUDE.md in full rather than on an explicit checklist item in its own brief — the exact gap class M13's "library-contract blindness" lesson warns about (a rule that exists but isn't threaded into the agent that's supposed to apply it)
+
+**Acceptance criteria:** `.claude/agents/reviewer.md`'s performance-lens description explicitly names "new correlated subquery or join → demand `EXPLAIN QUERY PLAN` output against a realistically-sized DB" as a checklist item, not only inferable from a CLAUDE.md read-through; a future cycle that adds a correlated subquery without that evidence is caught by the reviewer brief itself
 
 ### S2 — Add a /health smoke check to CI
 
