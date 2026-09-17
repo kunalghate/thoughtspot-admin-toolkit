@@ -255,3 +255,17 @@ One line per cycle on process friction. Format:
   enforced only by the reviewer independently reading CLAUDE.md in full. Filed as
   M17 rather than fixed inline, per B3 (one row for an unrelated finding tripped
   over mid-cycle).
+
+- 2026-09-16 (M10): Two things misled this cycle, both now filed. (1) **The
+  shared checkout was three commits behind `main`** and its `BACKLOG.md` showed
+  M5 as `open` when PR #56 had already merged it; the B1 reconcile was run
+  against the stale tree and had to be redone. Lesson: reconcile against a
+  worktree at `origin/main`, never against whatever branch the human left
+  checked out. (2) **The gate-evidence hook captured nothing** — it writes
+  per-branch under the primary checkout, but M8 requires gates to run in
+  detached worktrees, so the skill's "a gate you cannot find in the log did not
+  run in this cycle" rule is inert for exactly the runs it polices. Filed as
+  **M18**. Also worth keeping: the CEO's own proposed mechanism (an AST ordering
+  check) was refuted by the architect and then disproved by measurement
+  (Mutation D) — the S33 lesson held, routing a CEO-authored design through the
+  pipeline caught it before it shipped as a false gate.

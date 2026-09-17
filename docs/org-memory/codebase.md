@@ -369,7 +369,7 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   non-rebuildable cache model requires explicit `CREATE INDEX IF NOT EXISTS` DDL
   in `init_db()`, or existing user DBs silently keep the old plan.
 - 2026-08-14 (S6, performance): **Sync background tasks run ON the event loop, not
-  a threadpool.** `api/sync.py:113` is `background_tasks.add_task(run_sync, ...)`
+  a threadpool.** `api/sync.py:163` and `:211` are `background_tasks.add_task(run_sync, ...)` (was `:113`; re-verified 2026-09-16)
   with an `async def` target, which Starlette awaits inline; `_persist_column_map`
   (`lineage_service.py:701`) is a plain `def` called synchronously. Nothing uses
   `to_thread`/`run_in_executor`. Any slow blocking DB work in a sync freezes ALL
@@ -404,6 +404,10 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   cannot see this** — calling the coroutine directly makes the raise observable,
   which is exactly what production cannot do. All 241 unit tests passed on the
   broken guard; only a TestClient test asserting "no `Job` row created" pins it.
+  **2026-09-16 (M10): this rule now lives in `docs/dev/TESTING.md` → "Refusals on a
+  202 endpoint (S23 / M10)", which is the canonical statement — amend it there, not
+  here. The defect itself is CLOSED at all 17 dispatch sites (see the M10 entries
+  below).**
 - 2026-08-15 (S23): `_write_sync_log` **upserts** the single
   `(cluster_id, org_id, entity_type)` row, so writing any non-terminal status
   mid-flight destroys the last completed sync's `synced_at`/`record_count`. It now
@@ -927,3 +931,51 @@ passing the full five-gate bar. The generalisable lessons:
 - Scratch-DB gotcha: `SQLModel.metadata.create_all` on a fresh engine needs
   `ts_admin.models.cluster.Cluster` imported or every `cluster_id` FK raises
   `NoReferencedTableError`.
+
+- 2026-09-16 (M10): **The S23 defect class is closed at all 17
+  `background_tasks.add_task` sites on `main`.** Every router-level refusal
+  precedes `create_job`, and all 12 background targets wrap their body in
+  `try/except Exception → mark_failed`. Inventory: `sync` 2, `users` 5,
+  `metadata` 2, `sharing` 2, `archiver` 3, `deleter` 2, `relationships` 1 —
+  locked by `tests/unit/test_background_dispatch_sites.py` (NOT protected;
+  appending a row needs no `human-approved` label). Note it is **not** in the CI
+  `guard` regex (`.github/workflows/ci.yml:90` lists only `test_dryrun_safety`,
+  `test_cluster_isolation`, `test_audit_log_writes`, `test_cluster_service`).
+- 2026-09-16 (M10): **"Fail-silent" is a property of the MECHANISM, not the
+  LOCATION.** A target-side guard that `raise`s strands the job at
+  `QUEUED`/`error=None`; one that `mark_failed(job_id, exc); return`s is correct
+  and visible — the FAILED `Job` row is the operator's only signal. **Four
+  refusals are reachable ONLY in the background target and must never be
+  hoisted:** `user_management_service.py:954` (`_is_admin` on a transfer target),
+  `:1455` (`_delete_refusal`), `bulk_sharing_service.py:809` ("0 of N resolved"),
+  `archiver_service.py:580` ("tag not found" — needs a live `tags/search`, which
+  is the work the 202 exists to defer). Verified: `users.delete_execute`
+  (`api/users.py:637`) has no router-side copy, so any rule phrased as
+  "target-only copy ⇒ CONFIRMED" fires on it wrongly.
+- 2026-09-16 (M10, measured on pinned starlette 1.0.0 / fastapi 0.135.3): a
+  `raise HTTPException` **after** `background_tasks.add_task` in a router returns
+  the **correct status** and the task **never runs** (FastAPI attaches
+  `background` to the `Response` only on normal return). So a post-`create_job`
+  refusal is purely an **orphaned QUEUED `Job` row**, never a wrong status code.
+  The fail-*silent* case is strictly a `raise` inside the target. Two different
+  defects, one rule. TestClient runs background tasks **inline**, which is why a
+  TestClient test can see this class and a service-level test cannot.
+- 2026-09-16 (M10, process): **a static check whose predicate is "wrong
+  placement" cannot see "no placement at all."** An AST "no refusal after
+  `create_job`" check passes trivially on the real S23 shape, because moving the
+  guard into the service leaves the router with zero raises — measured, not
+  argued. Generalises: when designing a mechanical guard, first apply the
+  *historical* bug to the *current* code and confirm the guard goes red.
+- 2026-09-16 (M10, process): **an AST guard keyed on bare-name matching
+  (`ast.Name`) is one import-style change away from silently skipping its
+  subject.** `create_job(...)` vs `job_service.create_job(...)` measurably flipped
+  a guard from RED to GREEN on the identical defect, and module-qualified calls
+  are already house style in those routers. Match `ast.Attribute` too. Any loop
+  with a `continue` needs a **per-subject** S27 anchor (assert the number of
+  subjects actually asserted over), not only a global "found anything" anchor.
+- 2026-09-16 (M10, process): **a rule written into `.claude/agents/*.md` is read
+  standalone.** Reviewers boot on CLAUDE.md + `codebase.md` + their own brief;
+  `docs/dev/TESTING.md` is NOT in that boot sequence. A caveat that lives only in
+  TESTING.md will not reach the agent whose brief states the uncaveated rule —
+  every brief bullet must be correct without its reference. Caught as a CONFIRMED
+  regression finding on M10's own diff.
