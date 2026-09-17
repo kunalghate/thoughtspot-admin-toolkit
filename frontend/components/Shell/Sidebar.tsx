@@ -114,14 +114,11 @@ export default function Sidebar({ activeCluster, onSwitchCluster }: SidebarProps
         </p>
       </div>
 
-      {/* Credit + running version */}
+      {/* Running version */}
       <div style={{
         padding: "8px 12px", borderTop: `1px solid ${theme.color.border}`,
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+        display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8,
       }}>
-        <p style={{ fontSize: 10, color: theme.color.textMuted, margin: 0, fontFamily: theme.font.sans }}>
-          Built by Bibek Shrestha &amp; Kunal Ghate
-        </p>
         <AppVersion />
       </div>
     </aside>
