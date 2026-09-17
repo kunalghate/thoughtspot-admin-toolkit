@@ -40,6 +40,16 @@ report back rather than improvise.
   `READ_ENDPOINTS` (`tests/integration/test_cluster_isolation.py`). These are
   protected files — note in your hand-back that the PR will need the
   `human-approved` label.
+  New 202 endpoint calling `background_tasks.add_task` → put any refusal *that
+  must reach the caller* — i.e. decidable from the request body and the local
+  cache — in the router *before* `create_job` (keep the service-layer copy, but
+  it must `mark_failed(job_id, exc); return`, never `raise`), and cover it with a
+  TestClient test asserting the status code AND that no `Job` row was created. A
+  refusal that needs a live ThoughtSpot call stays in the target and
+  `mark_failed`s — the FAILED `Job` row is the operator's signal. Either way,
+  append your `(module, function)` row to `BACKGROUND_DISPATCH_SITES`
+  (`tests/unit/test_background_dispatch_sites.py` — not protected, no label
+  needed). See "Refusals on a 202 endpoint" in `docs/dev/TESTING.md`.
 - **Never weaken a gate or a guard test** to make things pass. Never touch a
   protected path beyond the additive registry rows the plan calls for.
 - **Every write op** must: verify live before executing, dry-run first, audit log

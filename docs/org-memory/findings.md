@@ -244,3 +244,31 @@ the dashboard aggregate on a 100k-row DB is bounded (single-digit ms) rather
 than scaling with table size.
 
 **Status:** unpromoted
+
+---
+
+## 2026-09-16 (M10 cycle) — `test_background_dispatch_sites.py` is a fifth registry-style guard outside the CI `guard` job
+
+**Graded:** CONFIRMED (regression lens, M10 review).
+
+`BACKGROUND_DISPATCH_SITES` in `tests/unit/test_background_dispatch_sites.py`
+joins `DRYRUN_ENDPOINTS`, `READ_ENDPOINTS`, `test_audit_log_writes.py` and
+`test_cluster_service.py` as a registry whose whole value is that it cannot be
+quietly edited — but it is NOT in the CI `guard` regex
+(`.github/workflows/ci.yml:90`, verified 2026-09-16). An agent can delete rows,
+or narrow the walker until the suite is green, with the `guard` job passing and
+no human in the loop. That is the exact hole the other four registries are
+protected against.
+
+Deliberately NOT filed as a backlog row this cycle: adding the path to the
+regex edits `.github/workflows/*`, a protected path, so the fix needs a
+`human-approved` PR — and B3 caps a non-discovery cycle at one row for an
+unrelated finding (spent on S49) plus the mandated process row (M18).
+
+**Drafted acceptance criteria:** `tests/unit/test_background_dispatch_sites\.py`
+is added to the `PROTECTED` regex at `.github/workflows/ci.yml:90`, and
+CLAUDE.md's protected-paths "Guard tests + registries" bullet names it alongside
+the other four. Proven by a PR touching only that file failing the `guard` job
+without the `human-approved` label. Needs the `human-approved` label itself.
+
+**Status:** unpromoted

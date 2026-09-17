@@ -9,7 +9,7 @@ detail entry here.
 
 ## Index
 
-### Done items (35)
+### Done items (36)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -28,6 +28,7 @@ detail entry here.
 | S22 | P2 | Ghost lineage nodes rendered as normal nodes | — |
 | S25 | P2 | No composite index on (cluster_id, org_id, ts_guid) | — |
 | W2 | P2 | ruff format drift from unbounded pin | — |
+| M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
 | S24 | P3 | POST /sync/{entity} has no concurrency guard | — |
 | S34 | P2 | Concurrent dependency syncs for the same (cluster, org) | — |
 | F4 | P2 | Lineage zoom controls near-invisible in dark mode | — |
@@ -489,3 +490,12 @@ handlers because ruff exempts any handler that re-raises or calls
 `CLAUDE.md`'s unconditional rule — that remains the reviewer lens's job. Tracked
 on M16.
 
+### M5 — A green verification bar is necessary but not sufficient
+
+`P2` · **done** · protected: yes (`CLAUDE.md`)
+
+The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan)
+
+**Acceptance criteria:** CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins
+
+**2026-09-10.** Shipped in branch `improve/M5-green-bar-not-sufficient` (`bbf04ea`, `102d981`): inserted one paragraph into CLAUDE.md's Verification bar section stating all three required facts verbatim. Doc-only change — no code, no tests. Full gate bar green (ruff, 616 unit + 279 integration, tsc, build). Review Board (correctness/regression/simplicity, run in isolated detached worktrees) and QA all reported clean; simplicity flagged one cosmetic British/American spelling mismatch ("authorises" vs the file's established American spelling), fixed and re-verified. Regression lens surfaced a PLAUSIBLE follow-up — `reviewer.md`'s performance lens doesn't yet name `EXPLAIN QUERY PLAN`/correlated-subquery explicitly as a checklist item — filed as **M17**. Touches a protected path (`CLAUDE.md`); PR needs the `human-approved` label.

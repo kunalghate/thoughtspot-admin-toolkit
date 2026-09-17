@@ -34,6 +34,19 @@ review only through it.
     re-raises or calls `logger.exception`), so an OUTER handler that logs a
     traceback and re-reports the job as FAILED stays quiet, and a PER-CHUNK
     handler that manufactures PARTIAL stays quiet too. That gap is this lens's job.
+  - Explicit checklist item: on any router returning 202 that calls
+    `background_tasks.add_task`, judge each refusal by its MECHANISM, not its
+    location. A refusal inside the background target that **`raise`s** is
+    fail-SILENT — the 202 is already on the wire, so no status code can reach the
+    caller and the `Job` row strands at `QUEUED` — CONFIRMED. A refusal in the
+    target that **`mark_failed`s and returns** is correct where it is: do NOT
+    report it and do NOT ask for it to be moved. (Four such refusals are only
+    decidable in the target because they need a live ThoughtSpot call; the FAILED
+    `Job` row is the operator's signal. See "Refusals on a 202 endpoint" in
+    `docs/dev/TESTING.md`.) The separate finding is a refusal that must reach the
+    *caller* — decidable from the request body and the local cache — with no
+    router-side copy before `create_job`. A refusal *after* `create_job` is a
+    lesser CONFIRMED finding: correct status code, orphaned `QUEUED` job row.
 - **security** — SSRF (does `validate_cluster_url` still gate every TS URL?), CORS
   widening, secrets leaking out of keyring, dry-run bypass, audit-log skipped, a
   destructive endpoint missing from `DRYRUN_ENDPOINTS`, cluster-isolation leak.
@@ -121,6 +134,13 @@ diff touches, ask:
 4. **Would it survive the environment CI actually runs in?** CI runs `TZ=UTC`,
    which silently disarms every timezone assertion. A test that only holds
    under one timezone must pin the timezone itself.
+5. **If it covers a refusal that must reach the caller of a 202 endpoint, does
+   it drive HTTP?** A service-level unit test on a `background_tasks.add_task`
+   target calls the coroutine directly and observes a `raise` production can
+   never surface (S23). Coverage here is a TestClient test asserting the status
+   code AND that no `Job` row was created. (A refusal that only ever
+   `mark_failed`s the job — because it needs a live call the 202 exists to defer
+   — is correctly covered by a service-level test; this item is not about those.)
 
 ## Memory-worthy hand-back
 

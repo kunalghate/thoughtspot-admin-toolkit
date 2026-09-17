@@ -31,6 +31,7 @@ only when a human promotes them.
 | 2026-09-09 · craft pass (human-directed) | 0 | 2 | 45 open · 1 in-review · 2 feedback |
 | 2026-09-09 · reconcile (B1, post-merge) | 1 | 0 | 45 open · 0 in-review · 2 feedback |
 | 2026-09-10 · M5 (fix cycle) | 0 | 1 | 45 open · 1 in-review · 2 feedback |
+| 2026-09-16 · M10 (fix cycle, incl. B1 close of M5) | 1 | 2 | 46 open · 1 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -58,13 +59,12 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (45)
+### Open (46)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
 | M8 | P2 | Gate serialization violated by file writes into the shared checkout | yes (`CLAUDE.md`) |
 | M2 | P2 | PR #14 silently reverted the vitest wiring | yes (`.github/workflows/*` for the CI half) |
-| M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
 | M11 | P2 | A silently-degraded best-effort pass reports success at every level | — |
 | M12 | P2 | Frontend vitest executes on zero automated entry points | yes (`.github/workflows/*`, `CLAUDE.md`) |
 | M13 | P2 | Library-contract blindness: dead grid sorting graded 'clean' twice | — |
@@ -105,6 +105,8 @@ an item reaches `done`, move its index line and detail entry to
 | W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M16 | P3 | Blanket except Exception survives the BLE gate: keyring residue + column-map site | yes (`ts_admin/config.py`, `ts_admin/main.py`) |
+| S49 | P2 | Background targets strand jobs on non-refusal exceptions (pre-mark_running windows) | — |
+| M18 | P2 | Gate-evidence hook captures nothing for gates run in the worktrees M8 mandates | — |
 | M17 | P3 | Performance-review lens doesn't name EXPLAIN QUERY PLAN/correlated-subquery as a checklist item | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
@@ -112,7 +114,7 @@ an item reaches `done`, move its index line and detail entry to
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
-| M5 | P2 | A green verification bar is necessary but not sufficient | yes (`CLAUDE.md`) |
+| M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
 
 ### Done
 
@@ -132,16 +134,6 @@ Completed items live in [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md).
 
 Ordered by priority, then ID.
 
-### M5 — A green verification bar is necessary but not sufficient
-
-`P2` · **in-review** · protected: yes (`CLAUDE.md`)
-
-The verification bar proves *conformance to the criteria*, not that the change is safe — in the S6 cycle it went fully green (ruff, 181 unit + 129 integration, tsc, build, vitest) on a change that three review lenses then proved causes permanent data loss. Nothing in the bar can catch "this shouldn't be built at all", and the unit suite is also structurally blind to query-plan regressions (small in-memory fixtures pass in ms regardless of an O(n²) plan)
-
-**Acceptance criteria:** CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins
-
-**2026-09-10.** Shipped in branch `improve/M5-green-bar-not-sufficient` (`bbf04ea`, `102d981`): inserted one paragraph into CLAUDE.md's Verification bar section stating all three required facts verbatim. Doc-only change — no code, no tests. Full gate bar green (ruff, 616 unit + 279 integration, tsc, build). Review Board (correctness/regression/simplicity, run in isolated detached worktrees) and QA all reported clean; simplicity flagged one cosmetic British/American spelling mismatch ("authorises" vs the file's established American spelling), fixed and re-verified. Regression lens surfaced a PLAUSIBLE follow-up — `reviewer.md`'s performance lens doesn't yet name `EXPLAIN QUERY PLAN`/correlated-subquery explicitly as a checklist item — filed as **M17**. Touches a protected path (`CLAUDE.md`); PR needs the `human-approved` label.
-
 ### M8 — Gate serialization violated by file writes into the shared checkout
 
 `P2` · **open** · protected: yes (`CLAUDE.md`)
@@ -149,14 +141,6 @@ The verification bar proves *conformance to the criteria*, not that the change i
 Gate serialization is violated in practice by **file writes**, not just ports: during the S7 review, reviewer/QA agents wrote five scratch repro files into `tests/unit/` of the **shared** checkout, flipping `pytest tests/unit/` from green to red mid-verification and making QA's gate result untrustworthy. CLAUDE.md serializes port-bound gates but says nothing about agents writing into the working tree they share
 
 **Acceptance criteria:** The agent briefs (and CLAUDE.md's gate-serialization note) require review/QA repro artifacts to live in a `git worktree` or the scratchpad, never in `tests/` of the shared checkout; QA reports the working tree state it observed so a polluted run is visible rather than silent
-
-### M10 — Fail-closed guard inside a background task is fail-silent
-
-`P2` · **open** · protected: no
-
-A fail-closed guard placed inside a Starlette background-task target is fail-**silent**, and the org's review/test conventions do not catch it: S23 shipped guards in `execute_share`/`execute_transfer` that raise after the 202 is already on the wire, so the 409 never reaches the caller and the `Job` row strands at `QUEUED`/`error=None` until a restart. All 241 unit tests passed on the broken guard because service-level tests call the coroutine directly — the one thing production cannot do
-
-**Acceptance criteria:** The `reviewer`/`implementer` briefs (or `docs/dev/TESTING.md`) require that any refusal on a `background_tasks.add_task`-dispatched endpoint is (a) checked in the router before `create_job` and (b) covered by a TestClient test asserting the status code AND that no `Job` row was created; a service-level unit test alone is documented as insufficient for this class
 
 ### M11 — A silently-degraded best-effort pass reports success at every level
 
@@ -534,11 +518,39 @@ Every font size in `frontend/` is a hardcoded px integer and `body` in `frontend
 
 **Acceptance criteria:** The type ladder resolves through `rem` off a `:root` font-size that inherits the browser default; control heights and shell dimensions that must track the text scale with it (`em`/`rem`), and the ones that must not (grid row height, icon sizes) are explicitly documented as fixed in `docs/dev/DESIGN.md`; the app is legible and un-clipped at a 125% browser text setting in both themes, shown with a screenshot
 
+### S49 — Background targets strand jobs on non-refusal exceptions (pre-mark_running windows)
+
+`P2` · **open** · protected: no
+
+Found during the M10 research sweep of all 17 `background_tasks.add_task` sites. The S23 *refusal* class is closed, but three windows still strand a `Job` on a **non-refusal** exception (e.g. a local sqlite `OperationalError`), because they run outside the target's `try`. `bulk_sharing_service.py:758-799` runs outside any `try` **and before** `mark_running` at `:800`, so a failure there leaves the row at `QUEUED` / `error=None` — the exact S23 symptom from a different cause, with the UI polling forever. `user_management_service.py:590-658` and `:945-978` are outside their `try` but after `mark_running`, so they strand at `RUNNING`. The only recovery is `_recover_stuck_jobs` (`ts_admin/main.py:79-169`) at the next restart, which is also the delete-cache reconciler and must not be disturbed.
+
+**Acceptance criteria:** A non-refusal exception raised anywhere in a background target marks the job FAILED with the exception recorded, rather than leaving it `QUEUED`/`RUNNING` until a restart — i.e. the preamble before `mark_running` is inside the target's error handling. A test raises inside the `bulk_sharing_service.execute_share` preamble (before `mark_running`) and asserts the `Job` row ends FAILED with a non-null `error`; the non-vacuity twin asserts the same test fixture yields a normal SUCCESS/COMPLETE when nothing raises. `_recover_stuck_jobs` is left unchanged.
+
+### M18 — Gate-evidence hook captures nothing for gates run in the worktrees M8 mandates
+
+`P2` · **open** · protected: no
+
+Two org rules contradict each other. The `/improve-cycle` skill's QA BAR step says the `PostToolUse` hook (`.claude/hooks/gate_evidence.py`) appends every gate command and exit code to `.claude/evidence/<branch>.log`, and that **"a gate you cannot find in the log did not run in this cycle"** — the CEO is told to quote that file rather than an agent's recollection. But M8 requires review/QA agents to run gates in a **detached `git worktree`**, and the hook writes per-branch under the primary checkout, so it captured **zero** lines for the M10 cycle even though the full bar ran four times. Verified 2026-09-16: `.claude/evidence/` has no `improve__M10-background-refusal-rule.log` while QA reported a complete green bar. The effect is that the one anti-self-report mechanism the skill defines is silently inert for exactly the runs it was written to police, and a CEO following the rule literally would conclude no gate ran.
+
+**Acceptance criteria:** Gate runs executed inside a detached worktree land in the same evidence log as runs in the primary checkout (e.g. the hook resolves the log path from `git rev-parse --git-common-dir` / the worktree's branch rather than the cwd), OR the skill's QA BAR step is corrected to state that worktree runs are not captured and names what the CEO should quote instead. Proven by running one gate inside a detached worktree and showing the line appears in the expected log; the non-vacuity twin shows the log is empty for that branch beforehand.
+
 ## In review
 
 _Rows sit here only while their PR is open; the
 next cycle's reconcile step moves merged rows to
 [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md)._
+
+### M10 — Fail-closed guard inside a background task is fail-silent
+
+`P2` · **in-review** · protected: no
+
+A fail-closed guard placed inside a Starlette background-task target is fail-**silent**, and the org's review/test conventions do not catch it: S23 shipped guards in `execute_share`/`execute_transfer` that raise after the 202 is already on the wire, so the 409 never reaches the caller and the `Job` row strands at `QUEUED`/`error=None` until a restart. All 241 unit tests passed on the broken guard because service-level tests call the coroutine directly — the one thing production cannot do
+
+**Acceptance criteria:** The `reviewer`/`implementer` briefs (or `docs/dev/TESTING.md`) require that any refusal on a `background_tasks.add_task`-dispatched endpoint is (a) checked in the router before `create_job` and (b) covered by a TestClient test asserting the status code AND that no `Job` row was created; a service-level unit test alone is documented as insufficient for this class
+
+**2026-09-16.** Shipped in branch `improve/M10-background-refusal-rule` (`8943791`, `22200b6`). Research established the row is a **docs/process** item, not a code fix: the S23 defect is already closed at all 17 `background_tasks.add_task` sites on `main` (every router refusal precedes `create_job`; all 12 targets wrap their body in `try/except → mark_failed`). The rule previously lived only in source comments and one test docstring. Recorded in `docs/dev/TESTING.md` (new "Refusals on a 202 endpoint (S23 / M10)" section) and both agent briefs, plus a new unprotected tripwire `tests/unit/test_background_dispatch_sites.py` locking the 17-site inventory.
+
+The design was re-cut mid-cycle: the CEO's proposed AST "no refusal after `create_job`" check was refuted by the architect and then **measured** — applying the real S23 shape (guard deleted from the router, `raise` at the top of `execute_share`) leaves that check GREEN, because the router then holds zero raises. The inventory lock became the primary gate and the ordering check is demoted and documented as not covering the S23 class. The Review Board returned three CONFIRMED findings, all fixed in `22200b6`: the new `reviewer.md` bullet keyed "fail-silent" on **location** rather than **mechanism**, so read standalone it would have manufactured CONFIRMED findings on the four refusals that are load-bearing inside their targets; the TESTING.md heading stated unconditionally what is only true of `raise`; and a leftover comment told the next agent to narrow the walker rather than append a row. Mutations F/G/H (module-qualified `create_job`, module-qualified guard call, and a `raise` inside an `except`) were green on the first test and are red on the fixed one. Touches no protected path — no `human-approved` label needed.
 
 
 ## Feedback (user-reported)
