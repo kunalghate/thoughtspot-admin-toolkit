@@ -221,10 +221,12 @@ Refusing *after* `create_job` still returns the right status (a router's respons
 has not started yet, and the background task never runs), but it leaves an
 orphaned `QUEUED` `Job` row the UI polls forever.
 
-**In the background target — fail-closed here is fail-SILENT.** The target runs
-after the 202 is on the wire, so `error_handlers._STATUS_BY_TYPE` cannot apply
-(Starlette: "Caught handled exception, but response already started") and the
-`Job` row strands at `QUEUED` / `error=None` until the next restart.
+**In the background target, a refusal that `raise`s is fail-SILENT.** The target
+runs after the 202 is on the wire, so `error_handlers._STATUS_BY_TYPE` cannot
+apply (Starlette: "Caught handled exception, but response already started") and
+the `Job` row strands at `QUEUED` / `error=None` until the next restart. A
+refusal that `mark_failed`s in the target is correct and visible — the FAILED
+`Job` row is the operator's signal.
 
 The rule is **both, not either.** Add the check to the router *in addition*; the
 service-layer copy stays as defence in depth and must
@@ -238,18 +240,18 @@ resolved (`bulk_sharing_service.py:809`), tag not found
 `Job` row is the only thing the operator ever sees; deleting it would also break
 the S36 kill table below.
 
-**A service-level unit test is not coverage for this class.** Calling the
-coroutine directly makes the `raise` observable, which is exactly what
-production cannot do — all 241 unit tests passed on the broken S23 guard. The
-covering test is a **TestClient** test asserting the status code **and** that no
-`Job` row was created. Anchor it with the mirror-image case that *does* 202 and
-*does* create exactly one row, or the "no rows" assertion also passes on a
-broken fixture. Pattern:
-[tests/integration/test_stale_cache_endpoints.py](../../tests/integration/test_stale_cache_endpoints.py)
-(helper `_jobs` at `:137`, anti-vacuity anchor at `:197`). To drive a 202
-endpoint without doing the work, `monkeypatch` the target to a no-op coroutine —
-Starlette's TestClient runs background tasks **inline**
-(`test_dryrun_safety.py:150-193`).
+**A service-level unit test is not coverage for a refusal that must reach the
+caller**: it calls the coroutine directly and so observes a `raise` production
+can never surface — all 241 unit tests passed on the broken S23 guard (full
+autopsy in the docstring of
+[tests/integration/test_stale_cache_endpoints.py](../../tests/integration/test_stale_cache_endpoints.py)).
+The covering test is a **TestClient** test asserting the status code **and** that
+no `Job` row was created. Anchor it with the mirror-image case that *does* 202
+and *does* create exactly one row, or the "no rows" assertion also passes on a
+broken fixture (helper `_jobs` at `:137`, anti-vacuity anchor at `:198`). To
+drive a 202 endpoint without doing the work, `monkeypatch` the target to a no-op
+coroutine — Starlette's TestClient runs background tasks **inline**
+(`test_dryrun_safety.py:178-196`).
 
 [tests/unit/test_background_dispatch_sites.py](../../tests/unit/test_background_dispatch_sites.py)
 locks the inventory of dispatch sites so a new one cannot land without this
