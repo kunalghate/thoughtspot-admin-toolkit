@@ -34,6 +34,14 @@ review only through it.
     re-raises or calls `logger.exception`), so an OUTER handler that logs a
     traceback and re-reports the job as FAILED stays quiet, and a PER-CHUNK
     handler that manufactures PARTIAL stays quiet too. That gap is this lens's job.
+  - Explicit checklist item: on any router returning 202 that calls
+    `background_tasks.add_task`, check WHERE each refusal lives. A fail-closed
+    guard inside the background target is fail-SILENT (the 202 is already on the
+    wire) — CONFIRMED if that is the only copy; the fix is a check in the router
+    *before* `create_job`, keeping the service copy but changing it to
+    `mark_failed(job_id, exc); return`. A refusal *after* `create_job` is a
+    lesser CONFIRMED finding: correct status code, orphaned `QUEUED` job row.
+    See "Refusals on a 202 endpoint" in `docs/dev/TESTING.md`.
 - **security** — SSRF (does `validate_cluster_url` still gate every TS URL?), CORS
   widening, secrets leaking out of keyring, dry-run bypass, audit-log skipped, a
   destructive endpoint missing from `DRYRUN_ENDPOINTS`, cluster-isolation leak.
@@ -121,6 +129,11 @@ diff touches, ask:
 4. **Would it survive the environment CI actually runs in?** CI runs `TZ=UTC`,
    which silently disarms every timezone assertion. A test that only holds
    under one timezone must pin the timezone itself.
+5. **If it covers a refusal on a 202 endpoint, does it drive HTTP?** A
+   service-level unit test on a `background_tasks.add_task` target calls the
+   coroutine directly and observes a `raise` production can never surface (S23).
+   Coverage here is a TestClient test asserting the status code AND that no
+   `Job` row was created.
 
 ## Memory-worthy hand-back
 

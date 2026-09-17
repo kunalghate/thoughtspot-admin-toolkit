@@ -45,6 +45,10 @@ and `tests/integration/`.
 - If the router has a list/read endpoint that takes `cluster_id` as a query
   param, register it in `READ_ENDPOINTS` in
   [tests/integration/test_cluster_isolation.py](../../tests/integration/test_cluster_isolation.py).
+- If the endpoint returns 202 and dispatches work with
+  `background_tasks.add_task`, read [Refusals on a 202 endpoint](#refusals-on-a-202-endpoint-s23--m10)
+  below and append your `(module, function)` row to `BACKGROUND_DISPATCH_SITES`
+  in [tests/unit/test_background_dispatch_sites.py](../../tests/unit/test_background_dispatch_sites.py).
 
 ### New SQLModel table (`ts_admin/models/foo.py`)
 
@@ -205,6 +209,53 @@ binds function objects at import time, so `monkeypatch.setattr(module,
 original — the test then silently exercises the real handler. Measured: hoisting
 `run_sync`'s handler dict to a constant broke 4 tests this way. Dispatch tables
 that tests patch must be built per call (`sync_service.sync_handlers()`).
+
+## Refusals on a 202 endpoint (S23 / M10)
+
+An endpoint that returns 202 and dispatches `background_tasks.add_task` has two
+places a refusal can live, and only one of them can reach the caller.
+
+**In the router, before `create_job`** — this is where a refusal that must reach
+the caller belongs. The caller gets the real status code and no `Job` row exists.
+Refusing *after* `create_job` still returns the right status (a router's response
+has not started yet, and the background task never runs), but it leaves an
+orphaned `QUEUED` `Job` row the UI polls forever.
+
+**In the background target — fail-closed here is fail-SILENT.** The target runs
+after the 202 is on the wire, so `error_handlers._STATUS_BY_TYPE` cannot apply
+(Starlette: "Caught handled exception, but response already started") and the
+`Job` row strands at `QUEUED` / `error=None` until the next restart.
+
+The rule is **both, not either.** Add the check to the router *in addition*; the
+service-layer copy stays as defence in depth and must
+`mark_failed(job_id, exc); return` — never `raise`
+(`bulk_sharing_service.py:747-757`). **Do not "move" a refusal out of a
+background target.** Four of them are only reachable there and are load-bearing
+where they are — a transfer target who is a cluster admin
+(`user_management_service.py:954`), `_delete_refusal` (`:1455`), 0 of N objects
+resolved (`bulk_sharing_service.py:809`), tag not found
+(`archiver_service.py:580`). Each correctly `mark_failed`s, and that FAILED
+`Job` row is the only thing the operator ever sees; deleting it would also break
+the S36 kill table below.
+
+**A service-level unit test is not coverage for this class.** Calling the
+coroutine directly makes the `raise` observable, which is exactly what
+production cannot do — all 241 unit tests passed on the broken S23 guard. The
+covering test is a **TestClient** test asserting the status code **and** that no
+`Job` row was created. Anchor it with the mirror-image case that *does* 202 and
+*does* create exactly one row, or the "no rows" assertion also passes on a
+broken fixture. Pattern:
+[tests/integration/test_stale_cache_endpoints.py](../../tests/integration/test_stale_cache_endpoints.py)
+(helper `_jobs` at `:137`, anti-vacuity anchor at `:197`). To drive a 202
+endpoint without doing the work, `monkeypatch` the target to a no-op coroutine —
+Starlette's TestClient runs background tasks **inline**
+(`test_dryrun_safety.py:150-193`).
+
+[tests/unit/test_background_dispatch_sites.py](../../tests/unit/test_background_dispatch_sites.py)
+locks the inventory of dispatch sites so a new one cannot land without this
+being read. It is a tripwire, not a proof: it cannot tell whether a given
+endpoint *needs* a refusal, and its ordering check passes trivially on the S23
+shape.
 
 ## Timestamps
 
