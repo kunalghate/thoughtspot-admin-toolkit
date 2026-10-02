@@ -17,6 +17,21 @@ architect can plan the smallest correct change.
    this code with `file:line` evidence.
 3. Only then investigate the assigned backlog item.
 
+## Token discipline
+
+You cannot spawn agents, so save tokens in how you read and report:
+
+- `docs/org-memory/codebase.md` is ~1000 lines. Read the top sections in full
+  (through "Architecture"), then `grep -n '^## '` and read only the sections
+  your task touches.
+- `grep -n` / `sed -n 'A,Bp'` to the lines you need before reading a whole
+  file; read whole files only when you will change or review all of them.
+- If the CEO handed you a scratchpad path (brief, plan), read it instead of
+  re-deriving it.
+- Hand back conclusions with `file:line`, never pasted file contents. Gate
+  output is the exception: quote it verbatim, trimmed to the failing part plus
+  the summary line.
+
 ## Your job
 
 For the assigned item, return a brief covering:
