@@ -529,13 +529,15 @@ Found during the M10 research sweep of all 17 `background_tasks.add_task` sites.
 
 ### M18 — Gate-evidence hook captures nothing for gates run in the worktrees M8 mandates
 
-`P2` · **open** · protected: no
+`P2` · **in-review** · protected: no
 
 Two org rules contradict each other. The `/improve-cycle` skill's QA BAR step says the `PostToolUse` hook (`.claude/hooks/gate_evidence.py`) appends every gate command and exit code to `.claude/evidence/<branch>.log`, and that **"a gate you cannot find in the log did not run in this cycle"** — the CEO is told to quote that file rather than an agent's recollection. But M8 requires review/QA agents to run gates in a **detached `git worktree`**, and the hook writes per-branch under the primary checkout, so it captured **zero** lines for the M10 cycle even though the full bar ran four times. Verified 2026-09-16: `.claude/evidence/` has no `improve__M10-background-refusal-rule.log` while QA reported a complete green bar. The effect is that the one anti-self-report mechanism the skill defines is silently inert for exactly the runs it was written to police, and a CEO following the rule literally would conclude no gate ran.
 
 **Acceptance criteria:** Gate runs executed inside a detached worktree land in the same evidence log as runs in the primary checkout (e.g. the hook resolves the log path from `git rev-parse --git-common-dir` / the worktree's branch rather than the cwd), OR the skill's QA BAR step is corrected to state that worktree runs are not captured and names what the CEO should quote instead. Proven by running one gate inside a detached worktree and showing the line appears in the expected log; the non-vacuity twin shows the log is empty for that branch beforehand.
 
 **2026-10-02 (`/improve-cycle 3`):** researched + planned (hook-only fix: log root from `git rev-parse --git-common-dir`, branch from `git branch --points-at HEAD` for detached worktrees, `detached-<sha>` fallback, leading-`cd` parsing; plan in branch improve/M18-worktree-evidence@0aec0fd notes). Implementation BLOCKED: the auto-mode permission classifier denies agent edits to `.claude/hooks/*` as Self-Modification. Needs a human to allow the edit or apply the patch. Every gate run this cycle (all in worktrees) again landed in no evidence log.
+
+**2026-10-02 (unblocked).** Human retried with auto mode off; the hook edit went through. Shipped in branch `improve/M18-worktree-evidence` (`c245dd9`, `323a976`): log root from `git rev-parse --git-common-dir`, detached-HEAD branch from `git branch --points-at HEAD` (`main` wins and is skipped; one other branch → it; else `detached-<sha>`; never `HEAD.log`), leading `cd X &&`, `cd X ;` and `cd X;` parsing, and `GATE` now matches quoted executables (`".../ruff" check`). Live check: a gate run in a detached worktree landed in the primary checkout's `improve__M18-worktree-evidence.log`, which did not exist beforehand. Review Board found one CONFIRMED misattribution (`cd X; gate`), fixed with a test.
 
 ## In review
 
