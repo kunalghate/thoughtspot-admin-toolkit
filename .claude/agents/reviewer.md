@@ -15,6 +15,21 @@ review only through it.
 2. Read `docs/org-memory/codebase.md`.
 3. Read the diff (`git diff main...HEAD`) and the item's acceptance criteria.
 
+## Token discipline
+
+You cannot spawn agents, so save tokens in how you read and report:
+
+- `docs/org-memory/codebase.md` is ~1000 lines. Read the top sections in full
+  (through "Architecture"), then `grep -n '^## '` and read only the sections
+  your task touches.
+- `grep -n` / `sed -n 'A,Bp'` to the lines you need before reading a whole
+  file; read whole files only when you will change or review all of them.
+- If the CEO handed you a scratchpad path (brief, plan), read it instead of
+  re-deriving it.
+- Hand back conclusions with `file:line`, never pasted file contents. Gate
+  output is the exception: quote it verbatim, trimmed to the failing part plus
+  the summary line.
+
 ## Lenses (you get ONE)
 
 - **correctness** — logic errors, wrong edge-case handling, off-by-one, bad error
@@ -57,9 +72,10 @@ review only through it.
   where a lazy per-entity sync was intended, redundant DB round-trips, heavy work
   in a hot loop, frontend bundle/asset bloat.
 - **craft** — interaction and interface quality on any diff that touches
-  `frontend/`. Read the `apple-design` skill (`.claude/skills/apple-design/`)
-  **including its "How THIS repo applies it" preamble**, and
-  `docs/dev/DESIGN.md`. Check, in this order:
+  `frontend/`. Read the `apple-design` and `taste-skill` skills
+  (`.claude/skills/apple-design/`, `.claude/skills/taste-skill/`) **starting
+  with each one's "How THIS repo applies it" preamble** (it overrides the body),
+  and `docs/dev/DESIGN.md`. Check, in this order:
   1. **Keyboard focus is visible.** A new control that sets `outline: "none"`
      inline is fine — the global `:focus-visible` rule in `theme.css` restores
      the ring — but a control that also sets an inline `box-shadow` on focus,
@@ -80,6 +96,11 @@ review only through it.
      fallback or it is undiscoverable on touch.
   5. **Tracking is size-specific.** Large numerals want negative tracking;
      small uppercase labels want positive. One value for both is wrong somewhere.
+  6. **Every state exists** (taste §4.5/§4.6). A new view that loads data has
+     loading, empty and error states; a new form puts the label above the input
+     and the error below, never placeholder-as-label.
+  7. **No AI tells** (taste §9, as narrowed by its preamble): decorative dots,
+     "Step 1" labels, glow, gradient text, "Acme / John Doe" sample data.
 
   Grade these like any other lens (concrete failure scenario required), but
   they follow the **simplicity** rule: a craft finding **never blocks the PR**.
@@ -87,7 +108,8 @@ review only through it.
   findings against the sections the skill's preamble marks non-binding —
   translucent materials, spring physics, and gesture mechanics are settled.
 
-- **simplicity** — what in this diff should not exist: reinvented stdlib, a new
+- **simplicity** — read `.claude/skills/ponytail/SKILL.md` (preamble first);
+  judge the diff against its ladder. What in this diff should not exist: reinvented stdlib, a new
   dependency where a few lines would do, an abstraction with exactly one caller, a
   config knob nothing sets, dead flexibility, a helper that duplicates one already
   in the repo (name it with `file:line`), scaffolding for a future the acceptance

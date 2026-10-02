@@ -26,7 +26,63 @@ server-bound gates at a time. Parallel worktree implementers run only the cheap
 lint/typecheck gate; the port-bound gates run serially at the end.
 
 **Read first, always:** [CLAUDE.md](../../../CLAUDE.md) (constitution, verification
-bar, protected paths) and `docs/org-memory/codebase.md` (verified facts).
+bar, protected paths) and `docs/org-memory/codebase.md` (verified facts) — the
+top sections in full, the rest by topic (see Token economy).
+
+---
+
+## Token economy
+
+Tokens are spent once per agent, so a cycle of 8–10 agents multiplies every
+habit. Delegate to save context; never to skip a gate.
+
+- **Delegate sweeps, read single facts yourself.** Anything that means reading
+  across several files goes to `researcher` / `Explore`, and you keep the
+  conclusion. A lookup where you already know the file and symbol is one
+  `grep`, not a spawn.
+- **Pick the model per desk.** Pass `model` on the `Agent` call. Use `sonnet`
+  for mechanical desks: `qa-verifier` (runs commands, reports verbatim),
+  `Explore` lookups, a `researcher` on a P3/P4 row, and the B1 reconcile
+  sweep. Keep the default model for `architect`, `implementer`, `bug-hunter`
+  and the correctness / security / regression lenses. Escalate a cheap desk to
+  the default model the moment its report is thin or contradicts another.
+- **Brief by reference, not by paste.** Write the research brief and the
+  approved plan to the scratchpad and hand agents the path plus the row ID.
+  Lenses read `git diff main...HEAD` themselves; never paste a diff into six
+  prompts.
+- **Continue, don't respawn.** Fix-loops go back to the same `implementer`
+  with `SendMessage`, so it keeps its context. A fresh spawn re-reads the
+  whole boot sequence.
+- **Size the board to the diff.** Craft runs only on `frontend/`. A records-
+  or docs-only diff gets correctness + simplicity only. Performance may be
+  skipped when the diff touches no query, loop, sync or bundle path. Name every
+  skipped lens and why in the PR body. Never skip correctness / security /
+  regression on product code, nor for any change `CLAUDE.md` says always needs
+  the Review Board (deletes rows, alters purge/retention, adds a correlated
+  subquery or join).
+- **Background by default.** Launch agents in the background and do the next
+  independent step (records, PR body draft) while they run.
+- **Department agents cannot spawn agents.** Their discipline is in their own
+  boot sequence: read `codebase.md` by section, `grep`/`sed -n` before whole
+  files, hand back conclusions with `file:line`, not file dumps.
+
+---
+
+## Skills the org uses
+
+Department agents have no `Skill` tool, so each skill they need is vendored
+under `.claude/skills/` with a "How THIS repo applies it" preamble that says
+which sections bind. Read the preamble first; it overrides the body.
+
+| Skill | Who | Used for |
+|---|---|---|
+| `ponytail` | `architect`, `implementer`, simplicity lens; CEO runs `/ponytail-review` and `/ponytail-debt` | the smallest diff that meets the criteria |
+| `taste-skill` | `architect` + `implementer` on `frontend/`, craft lens | catching AI-default UI ("AI tells") and state/layout gaps in admin screens |
+| `apple-design` | craft lens, `implementer` on `frontend/` | interaction feedback, motion, reduced-motion |
+| `test` | CEO, QA feature check | the coverage-aware test slice |
+
+Precedence when they disagree: `CLAUDE.md` > `docs/dev/DESIGN.md` > a skill's
+preamble > the skill's body.
 
 **The CEO writes no product code.** A diff you authored yourself — including one
 written before the cycle started — is the riskiest diff in the cycle, because no
@@ -141,12 +197,12 @@ correctness / security / regression / performance / **simplicity**, plus
 **craft** whenever the diff touches `frontend/`, each told to REFUTE) **and**
 `qa-verifier` together. Also run `/code-review`,
 `/security-review` and `/ponytail-review` on the diff. Fix every **CONFIRMED**
-finding (re-dispatch `implementer`), then **re-run QA** — a diff that changed
+finding (re-dispatch the same `implementer` via `SendMessage`), then **re-run QA** — a diff that changed
 after verification is unverified.
 
 - **Craft findings never block the PR either.** Same rule as simplicity:
   apply the cheap ones in the diff, file the rest as `S` rows. The craft lens
-  reads the `apple-design` skill and `DESIGN.md`; it is scoped by that skill's
+  reads the `apple-design` and `taste-skill` skills and `DESIGN.md`; it is scoped by each skill's
   "How THIS repo applies it" preamble and may not re-litigate the settled
   no-materials / no-spring-library decisions.
 
