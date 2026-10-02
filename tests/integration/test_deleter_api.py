@@ -266,6 +266,42 @@ class TestDryRunEndpoint:
         assert r.status_code == 422
 
 
+class TestDryRunObjectsEndpoint:
+    def test_null_and_set_last_accessed_sort_without_500(self, client, seeded, in_memory_db):
+        """W7: sqlmodel>=0.0.45 reads last_accessed_at aware UTC, so the NULL
+        sort fallback must be aware too — a naive datetime.min raised TypeError
+        (500) on any page mixing NULL and non-NULL. NULL sorts first (most stale)."""
+        from ts_admin.services.job_service import create_job
+
+        with Session(in_memory_db) as session:
+            for guid, accessed in (("dr-set", datetime(2020, 1, 1, tzinfo=timezone.utc)), ("dr-null", None)):
+                session.add(
+                    CachedMetadata(
+                        cluster_id="c1",
+                        org_id=0,
+                        ts_guid=guid,
+                        name=guid,
+                        object_type="LIVEBOARD",
+                        owner_guid="u1",
+                        owner_name="Alice",
+                        tag_names="[]",
+                        last_accessed_at=accessed,
+                        synced_at=datetime.now(tz=timezone.utc),
+                    )
+                )
+            session.commit()
+        job_id = create_job(
+            job_type="bulk_delete_dryrun",
+            parameters={"object_ids": ["dr-set", "dr-null"], "org_id": 0},
+            cluster_id="c1",
+        )
+
+        for path in ("/api/v1/deleter", "/api/v1/archiver"):
+            r = client.get(f"{path}/dryrun/{job_id}/objects?cluster_id=c1")
+            assert r.status_code == 200, (path, r.text)
+            assert [i["ts_guid"] for i in r.json()["items"]] == ["dr-null", "dr-set"], path
+
+
 class TestExecuteEndpoint:
     def test_creates_job_with_bulk_delete_type(self, client, seeded, monkeypatch):
         from ts_admin.services import deletion_service
