@@ -342,3 +342,20 @@ or normalise to UTC on parse; a test feeding an offset-less ISO string syncs
 successfully.
 
 **Status:** unpromoted
+
+## 2026-10-02 (M18 review) — gate-evidence hook crashes on a non-string command
+
+**Graded:** CONFIRMED (pre-existing on `main`; not introduced by M18).
+
+`.claude/hooks/gate_evidence.py` calls `GATE.search(command)` on whatever
+`tool_input.command` holds. A non-str value (e.g. a list) raises `TypeError`, and a
+`null` `tool_input` raises `AttributeError` at `.get`. Neither is in the caught tuple
+(`JSONDecodeError, OSError, ValueError`), so the hook exits 1 with a traceback after
+that Bash call, breaking its "never blocks, invisible to the session" contract.
+Reproduced by the M18 correctness reviewer by feeding a list.
+
+**Drafted acceptance criteria:** The hook exits 0 and writes nothing when
+`tool_input` is null or `command` is not a string; a subprocess test in
+`tests/unit/test_gate_evidence_hook.py` covers both shapes.
+
+**Status:** unpromoted
