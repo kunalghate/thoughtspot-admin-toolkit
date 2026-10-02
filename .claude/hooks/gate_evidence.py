@@ -17,7 +17,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-GATE = re.compile(r"\b(ruff check|ruff format|pytest|npx tsc|npm run build|npm test|playwright|make test|mypy)\b")
+# `"?` admits a quoted executable path (this repo's path has a space): `".../ruff" check`.
+GATE = re.compile(r'\b(ruff"?\s+(check|format)|pytest|npx"?\s+tsc|npm run build|npm test|playwright|make test|mypy)\b')
 TAIL_CHARS = 600
 
 
@@ -36,6 +37,8 @@ def _effective_dir(payload: dict, command: str) -> Path:
         return base
     if len(tokens) >= 3 and tokens[0] == "cd" and tokens[2] in ("&&", ";"):
         return base / tokens[1]
+    if len(tokens) >= 2 and tokens[0] == "cd" and tokens[1].endswith(";"):  # shlex keeps `cd X; gate`'s ";" on X
+        return base / tokens[1][:-1]
     return base
 
 

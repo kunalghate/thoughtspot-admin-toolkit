@@ -76,6 +76,36 @@ def test_leading_cd_into_worktree_resolves_its_branch(repo: Path) -> None:
     assert f"$ cd {wt} && pytest" in (_evidence(repo) / "improve__x.log").read_text()
 
 
+def test_leading_cd_semicolon_resolves_worktree_branch_not_payload_cwd(repo: Path) -> None:
+    wt = repo / "tmp" / "wt"
+    _git(repo, "worktree", "add", "--detach", str(wt), "improve/x")
+    _git(repo, "checkout", "-q", "-b", "improve/z")
+
+    run_hook(_payload(repo, f"cd {wt}; pytest"))
+
+    assert f"$ cd {wt}; pytest" in (_evidence(repo) / "improve__x.log").read_text()
+    assert not (_evidence(repo) / "improve__z.log").exists()
+
+
+def test_main_wins_over_other_branch_at_same_tip(repo: Path) -> None:
+    _git(repo, "branch", "improve/fresh", "main")
+    wt = repo / "tmp" / "wt"
+    _git(repo, "worktree", "add", "--detach", str(wt), "main")
+
+    run_hook(_payload(wt, "pytest -q"))
+
+    assert not _evidence(repo).exists()
+
+
+def test_quoted_executable_path_is_a_gate(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "improve/x")
+    command = '"/Users/a b/.venv/bin/ruff" check ts_admin/'
+
+    run_hook(_payload(repo, command))
+
+    assert f"$ {command}" in (_evidence(repo) / "improve__x.log").read_text()
+
+
 def test_worktree_detached_at_main_is_skipped(repo: Path) -> None:
     wt = repo / "tmp" / "wt"
     _git(repo, "worktree", "add", "--detach", str(wt), "main")
