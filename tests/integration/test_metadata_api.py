@@ -152,6 +152,49 @@ class TestListMetadata:
         assert value.endswith("+00:00"), value
         assert datetime.fromisoformat(value) == seeded_at
 
+    def test_date_range_filters_bind_through_a_real_query(self, client, in_memory_db):
+        """W7: the YYYY-MM-DD filters go through parse_iso_date and are bound as
+        SQL parameters — a naive value raises on sqlmodel>=0.0.45. "before" is
+        inclusive of its whole day. Drives both the Metadata list and the
+        Archiver grid, which build these conditions separately."""
+        with Session(in_memory_db) as session:
+            session.add(
+                Cluster(id="c1", name="Prod", url="https://prod.thoughtspot.cloud", username="admin", auth_type="basic")
+            )
+            for guid, accessed in (
+                ("lb-jan", datetime(2020, 1, 10, tzinfo=timezone.utc)),
+                ("lb-feb", datetime(2020, 2, 1, 12, 0, tzinfo=timezone.utc)),
+                ("lb-mar", datetime(2020, 3, 10, tzinfo=timezone.utc)),
+            ):
+                session.add(
+                    CachedMetadata(
+                        cluster_id="c1",
+                        org_id=0,
+                        ts_guid=guid,
+                        name=guid,
+                        object_type="LIVEBOARD",
+                        owner_guid="u1",
+                        owner_name="Alice",
+                        tag_names="[]",
+                        last_accessed_at=accessed,
+                        synced_at=datetime.now(tz=timezone.utc),
+                    )
+                )
+            session.commit()
+
+        def guids(url: str) -> set[str]:
+            r = client.get(url)
+            assert r.status_code == 200, r.text
+            return {i["ts_guid"] for i in r.json()["items"]}
+
+        base = "/api/v1/metadata?cluster_id=c1&org_id=0"
+        assert guids(f"{base}&last_accessed_before=2020-02-01") == {"lb-jan", "lb-feb"}
+        assert guids(f"{base}&last_accessed_after=2020-02-02") == {"lb-mar"}
+
+        grid = "/api/v1/archiver/results?cluster_id=c1&org_id=0"
+        assert guids(f"{grid}&last_accessed_before=2020-02-01") == {"lb-jan", "lb-feb"}
+        assert guids(f"{grid}&last_accessed_after=2020-02-02") == {"lb-mar"}
+
     def test_filter_stale_90d(self, client, seeded):
         r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0&stale_days=90")
         assert r.status_code == 200
