@@ -1577,6 +1577,7 @@ class TestPreambleExceptionsMarkFailed:
 
     def test_execute_transfer_preamble(self, in_memory_db, patched_env, seeded, monkeypatch):
         # Kill line: move execute_transfer's outer `try:` back below the record loop.
+        # Also kills: record_ids bound inside the try (handler UnboundLocalError).
         from ts_admin.services import user_management_service as svc
 
         monkeypatch.setattr(svc, "_resolve_user", _raise_boom)
@@ -1602,8 +1603,7 @@ class TestPreambleExceptionsMarkFailed:
         """Records are committed one owner at a time. If the loop dies on the
         second owner, the first owner's record must not be left PENDING forever.
 
-        Kill line: move the outer `try:` back below the record loop, or bind
-        `record_ids` inside the try (the handler then sees an empty dict).
+        Kill line: move the outer `try:` back below the record loop.
         """
         from ts_admin.services import user_management_service as svc
 
