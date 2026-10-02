@@ -233,11 +233,10 @@ class TestRestoreDoesNotReArchive:
         assert row.created_at is not None
         assert row.modified_at is not None
         assert row.last_accessed_at is not None
-        # Read back from SQLite as naive UTC (SQLAlchemy's SQLite DATETIME drops
-        # tzinfo), so compare against naive UTC — not local naive.
-        now_naive_utc = datetime.now(tz=timezone.utc).replace(tzinfo=None)
-        assert row.last_accessed_at > now_naive_utc - timedelta(minutes=5)
-        assert row.modified_at > now_naive_utc - timedelta(minutes=5)
+        # sqlmodel>=0.0.45 reads aware UTC, so compare against aware UTC now.
+        now = datetime.now(timezone.utc)
+        assert row.last_accessed_at > now - timedelta(minutes=5)
+        assert row.modified_at > now - timedelta(minutes=5)
 
     def test_pre_fix_row_shape_is_a_delete_candidate(self, in_memory_db, cluster_row):
         """

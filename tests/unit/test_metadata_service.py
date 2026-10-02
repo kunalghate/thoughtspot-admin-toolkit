@@ -391,3 +391,29 @@ class TestMetadataCacheAuthoritative:
         _make_obj(session, guid="a", name="A")
         _sync_log(session, status="SUCCESS", cluster_id="other-cluster")
         assert MetadataService.stats(cluster_id="test-cluster", org_id=0)["cache_authoritative"] is False
+
+
+def test_parse_iso_date_is_utc_midnight_not_local(monkeypatch):
+    """W7: the date filters' day boundary is UTC midnight, aware — never local
+    time and never naive (sqlmodel>=0.0.45 rejects naive binds). CI runs in UTC,
+    which would hide a local-time bug, so pin a zone far from UTC."""
+    import os
+    import time
+
+    from ts_admin.services.metadata_service import parse_iso_date
+
+    original_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "Pacific/Kiritimati")  # UTC+14
+    time.tzset()
+    try:
+        parsed = parse_iso_date("2026-03-01")
+        assert parsed == datetime(2026, 3, 1, tzinfo=timezone.utc)
+        assert parsed.tzinfo is timezone.utc
+        assert parse_iso_date("bad") is None
+        assert parse_iso_date(None) is None
+    finally:
+        if original_tz is None:
+            monkeypatch.delenv("TZ")
+        else:
+            monkeypatch.setenv("TZ", original_tz)
+        time.tzset()

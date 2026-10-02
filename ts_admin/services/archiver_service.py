@@ -28,7 +28,7 @@ from ts_admin.services.deletion_service import (
     _chunks,
     _fetch_objects_by_guids,
 )
-from ts_admin.services.metadata_service import ARCHIVABLE_TYPES
+from ts_admin.services.metadata_service import ARCHIVABLE_TYPES, parse_iso_date
 from ts_admin.ts_client.exceptions import (
     TSAdminError,
     TSAuthenticationError,
@@ -80,16 +80,6 @@ _ARCHIVABLE_TYPES = ARCHIVABLE_TYPES
 RESOLVE_MAX = 5000
 
 
-def _parse_iso_date(s: str | None) -> datetime | None:
-    """Parse YYYY-MM-DD into a naive UTC datetime at start-of-day."""
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(s[:10])
-    except ValueError:
-        return None
-
-
 def _stale_conditions(
     cluster_id: str,
     org_id: int,
@@ -122,8 +112,8 @@ def _stale_conditions(
       - last_accessed_at < cutoff_activity  (or NULL — never accessed)
       - modified_at      < cutoff_modified  (or NULL — never modified)
     """
-    # Use naive UTC datetimes — SQLite stores datetimes without tzinfo
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # aware UTC — sqlmodel>=0.0.45 rejects naive binds
+    now = datetime.now(timezone.utc)
     cutoff_activity = now - timedelta(days=stale_activity_days)
     cutoff_modified = now - timedelta(days=stale_modified_days)
 
@@ -196,22 +186,22 @@ def _stale_conditions(
     if views_max is not None:
         conditions.append(col(CachedMetadata.view_count) <= views_max)
 
-    last_acc_before_dt = _parse_iso_date(last_accessed_before)
-    last_acc_after_dt = _parse_iso_date(last_accessed_after)
+    last_acc_before_dt = parse_iso_date(last_accessed_before)
+    last_acc_after_dt = parse_iso_date(last_accessed_after)
     if last_acc_before_dt is not None:
         conditions.append(col(CachedMetadata.last_accessed_at) <= last_acc_before_dt + timedelta(days=1))
     if last_acc_after_dt is not None:
         conditions.append(col(CachedMetadata.last_accessed_at) >= last_acc_after_dt)
 
-    modified_before_dt = _parse_iso_date(modified_before)
-    modified_after_dt = _parse_iso_date(modified_after)
+    modified_before_dt = parse_iso_date(modified_before)
+    modified_after_dt = parse_iso_date(modified_after)
     if modified_before_dt is not None:
         conditions.append(col(CachedMetadata.modified_at) <= modified_before_dt + timedelta(days=1))
     if modified_after_dt is not None:
         conditions.append(col(CachedMetadata.modified_at) >= modified_after_dt)
 
-    created_before_dt = _parse_iso_date(created_before)
-    created_after_dt = _parse_iso_date(created_after)
+    created_before_dt = parse_iso_date(created_before)
+    created_after_dt = parse_iso_date(created_after)
     if created_before_dt is not None:
         conditions.append(col(CachedMetadata.created_at) <= created_before_dt + timedelta(days=1))
     if created_after_dt is not None:
@@ -1189,8 +1179,8 @@ def all_archive_records(
     if owner_name_search:
         conditions.append(col(ArchiveRecord.owner_name).ilike(f"%{owner_name_search}%"))
 
-    archived_before_dt = _parse_iso_date(archived_before)
-    archived_after_dt = _parse_iso_date(archived_after)
+    archived_before_dt = parse_iso_date(archived_before)
+    archived_after_dt = parse_iso_date(archived_after)
     if archived_before_dt is not None:
         conditions.append(col(ArchiveRecord.archived_at) <= archived_before_dt + timedelta(days=1))
     if archived_after_dt is not None:

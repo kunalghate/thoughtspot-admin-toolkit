@@ -24,7 +24,7 @@ dependencies = [
     "pydantic-settings>=2.3.0",
 
     # Database
-    "sqlmodel>=0.0.19",
+    "sqlmodel>=0.0.45",
     "alembic>=1.13.0",
 
     # Config + credential storage

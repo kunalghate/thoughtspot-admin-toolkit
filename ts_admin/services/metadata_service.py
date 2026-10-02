@@ -45,6 +45,16 @@ ARCHIVABLE_TYPES = ("LIVEBOARD", "ANSWER")
 SYSTEM_OWNER_NAME = "System User"
 
 
+def parse_iso_date(s: str | None) -> datetime | None:
+    """Parse YYYY-MM-DD into an aware UTC datetime at midnight (start-of-day)."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s[:10]).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 class MetadataService:
     # ── Search / filter ────────────────────────────────────────────────────────
 
@@ -113,8 +123,8 @@ class MetadataService:
             conditions.append(col(CachedMetadata.name).ilike(f"%{search}%"))
 
         if stale_days is not None:
-            # Use naive UTC — SQLite stores datetimes without tzinfo
-            cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=stale_days)
+            # aware UTC — sqlmodel>=0.0.45 rejects naive binds
+            cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
             conditions.append(
                 or_(
                     CachedMetadata.last_accessed_at == None,  # noqa: E711
@@ -139,30 +149,22 @@ class MetadataService:
         if views_max is not None:
             conditions.append(col(CachedMetadata.view_count) <= views_max)
 
-        def _parse_iso(s: str | None) -> datetime | None:
-            if not s:
-                return None
-            try:
-                return datetime.fromisoformat(s[:10])
-            except ValueError:
-                return None
-
-        last_acc_before_dt = _parse_iso(last_accessed_before)
-        last_acc_after_dt = _parse_iso(last_accessed_after)
+        last_acc_before_dt = parse_iso_date(last_accessed_before)
+        last_acc_after_dt = parse_iso_date(last_accessed_after)
         if last_acc_before_dt is not None:
             conditions.append(col(CachedMetadata.last_accessed_at) <= last_acc_before_dt + timedelta(days=1))
         if last_acc_after_dt is not None:
             conditions.append(col(CachedMetadata.last_accessed_at) >= last_acc_after_dt)
 
-        modified_before_dt = _parse_iso(modified_before)
-        modified_after_dt = _parse_iso(modified_after)
+        modified_before_dt = parse_iso_date(modified_before)
+        modified_after_dt = parse_iso_date(modified_after)
         if modified_before_dt is not None:
             conditions.append(col(CachedMetadata.modified_at) <= modified_before_dt + timedelta(days=1))
         if modified_after_dt is not None:
             conditions.append(col(CachedMetadata.modified_at) >= modified_after_dt)
 
-        created_before_dt = _parse_iso(created_before)
-        created_after_dt = _parse_iso(created_after)
+        created_before_dt = parse_iso_date(created_before)
+        created_after_dt = parse_iso_date(created_after)
         if created_before_dt is not None:
             conditions.append(col(CachedMetadata.created_at) <= created_before_dt + timedelta(days=1))
         if created_after_dt is not None:
@@ -283,8 +285,8 @@ class MetadataService:
             never_accessed   — archivable objects with no access date at all
             last_synced      — ISO timestamp of last successful metadata sync
         """
-        # Use naive UTC datetime for comparison — SQLite stores datetimes without tzinfo
-        cutoff_90d = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=90)
+        # aware UTC — sqlmodel>=0.0.45 rejects naive binds
+        cutoff_90d = datetime.now(timezone.utc) - timedelta(days=90)
 
         with Session(_db.get_engine()) as session:
             scope = [

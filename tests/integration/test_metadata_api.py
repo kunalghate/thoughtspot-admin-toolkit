@@ -122,6 +122,36 @@ class TestListMetadata:
         assert r.json()["total"] == 1
         assert r.json()["items"][0]["ts_guid"] == "lb-1"
 
+    def test_timestamps_serialize_with_utc_offset(self, client, in_memory_db):
+        """W7: sqlmodel>=0.0.45 reads datetimes back aware UTC, so API strings
+        carry "+00:00". Pins the format the frontend's parseUtc consumes."""
+        seeded_at = datetime(2026, 3, 1, 12, 30, tzinfo=timezone.utc)
+        with Session(in_memory_db) as session:
+            session.add(
+                Cluster(id="c1", name="Prod", url="https://prod.thoughtspot.cloud", username="admin", auth_type="basic")
+            )
+            session.add(
+                CachedMetadata(
+                    cluster_id="c1",
+                    org_id=0,
+                    ts_guid="lb-ts",
+                    name="Stamped",
+                    object_type="LIVEBOARD",
+                    owner_guid="u1",
+                    owner_name="Alice",
+                    tag_names="[]",
+                    last_accessed_at=seeded_at,
+                    synced_at=seeded_at,
+                )
+            )
+            session.commit()
+
+        r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0")
+        assert r.status_code == 200
+        value = r.json()["items"][0]["last_accessed_at"]
+        assert value.endswith("+00:00"), value
+        assert datetime.fromisoformat(value) == seeded_at
+
     def test_filter_stale_90d(self, client, seeded):
         r = client.get("/api/v1/metadata?cluster_id=c1&org_id=0&stale_days=90")
         assert r.status_code == 200
