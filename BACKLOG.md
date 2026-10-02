@@ -520,7 +520,7 @@ Every font size in `frontend/` is a hardcoded px integer and `body` in `frontend
 
 ### S49 — Background targets strand jobs on non-refusal exceptions (pre-mark_running windows)
 
-`P2` · **open** · protected: no
+`P2` · **in-progress** · protected: no
 
 Found during the M10 research sweep of all 17 `background_tasks.add_task` sites. The S23 *refusal* class is closed, but three windows still strand a `Job` on a **non-refusal** exception (e.g. a local sqlite `OperationalError`), because they run outside the target's `try`. `bulk_sharing_service.py:758-799` runs outside any `try` **and before** `mark_running` at `:800`, so a failure there leaves the row at `QUEUED` / `error=None` — the exact S23 symptom from a different cause, with the UI polling forever. `user_management_service.py:590-658` and `:945-978` are outside their `try` but after `mark_running`, so they strand at `RUNNING`. The only recovery is `_recover_stuck_jobs` (`ts_admin/main.py:79-169`) at the next restart, which is also the delete-cache reconciler and must not be disturbed.
 
