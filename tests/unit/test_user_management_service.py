@@ -498,6 +498,8 @@ class TestExecuteTransferSharing:
         )
         with Session(in_memory_db) as s:
             job = s.get(Job, job_id)
+            # The refusal comes before the record write (S49 pin).
+            assert s.exec(select(UserActionRecord)).all() == []
         assert job.status == "FAILED"
         assert "admin" in (job.error or "").lower()
 
@@ -747,6 +749,9 @@ class TestExecuteDelete:
             assert job.status == "FAILED"
             assert "admin-user" in (job.error or "")
             assert "confirm_admin_delete" in (job.error or "")
+            # mark_running precedes the refusal (S49 pin).
+            assert job.started_at is not None
+            assert job.total == 1
             # No UserActionRecord written for a refusal
             assert s.exec(select(UserActionRecord)).all() == []
             # Still in the cache
@@ -1550,3 +1555,164 @@ class TestTransferPreflight:
         job_id = self._run()
         with Session(in_memory_db) as s:
             assert s.get(Job, job_id).status == "FAILED"
+
+
+# ── S49: an exception in the preamble fails the job, never strands it ─────────
+
+
+def _raise_boom(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
+class TestPreambleExceptionsMarkFailed:
+    """A non-refusal exception raised before a target's main work must end the
+    Job FAILED with the exception recorded — not leave it RUNNING until
+    `_recover_stuck_jobs` reaps it at the next restart."""
+
+    def _assert_failed_with_boom(self, job_id: str) -> None:
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.error is not None
+        assert job.error_type == "RuntimeError"
+
+    def test_execute_transfer_preamble(self, in_memory_db, patched_env, seeded, monkeypatch):
+        # Kill line: move execute_transfer's outer `try:` back below the record loop.
+        # Also kills: record_ids bound inside the try (handler UnboundLocalError).
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "_resolve_user", _raise_boom)
+        job_id = _create_job("transfer_ownership", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            svc.execute_transfer(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+                object_ids=["lb-1", "ans-1"],
+            )
+        )
+
+        self._assert_failed_with_boom(job_id)
+        with Session(in_memory_db) as s:
+            assert s.exec(select(UserActionRecord)).all() == []
+
+    def test_execute_transfer_record_loop_failure_fails_the_records_already_written(
+        self, in_memory_db, patched_env, seeded, monkeypatch
+    ):
+        """Records are committed one owner at a time. If the loop dies on the
+        second owner, the first owner's record must not be left PENDING forever.
+
+        Kill line: move the outer `try:` back below the record loop.
+        """
+        from ts_admin.services import user_management_service as svc
+
+        TestMultiOwnerTransfer()._seed_bob_object(in_memory_db)
+        real_set_affected = UserActionRecord.set_affected
+        calls = {"n": 0}
+
+        def _set_affected_then_boom(self, items):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("boom")
+            real_set_affected(self, items)
+
+        monkeypatch.setattr(UserActionRecord, "set_affected", _set_affected_then_boom)
+        job_id = _create_job("metadata_transfer_ownership", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            svc.execute_transfer(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid=None,
+                to_user_identifier="admin-user",
+                object_ids=["lb-1", "ans-1", "lb-2"],
+            )
+        )
+
+        self._assert_failed_with_boom(job_id)
+        with Session(in_memory_db) as s:
+            records = s.exec(select(UserActionRecord)).all()
+        # Non-vacuity: the first owner's record really was committed.
+        assert [r.from_user_guid for r in records] == ["u-alice"]
+        assert records[0].status == "FAILED"
+        assert "boom" in (records[0].error or "")
+        assert _FakeClient.assign_calls == []
+
+    # Without the handler's `record_id is not None` guard, session.get(..., None)
+    # only warns — promoted to an error here so dropping the guard goes red.
+    @pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning")
+    def test_execute_transfer_sharing_preamble(self, in_memory_db, patched_env, seeded, monkeypatch):
+        # Kill line: move the outer `try:` back below the record write, or drop
+        # the handler's `record_id is not None` guard.
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "_resolve_user", _raise_boom)
+        job_id = _create_job("transfer_sharing", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            svc.execute_transfer_sharing(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                from_user_guid="u-alice",
+                to_user_identifier="bob",
+            )
+        )
+
+        self._assert_failed_with_boom(job_id)
+        with Session(in_memory_db) as s:
+            assert s.exec(select(UserActionRecord)).all() == []
+
+    @pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning")  # see the transfer-sharing twin
+    def test_execute_delete_preamble(self, in_memory_db, patched_env, seeded, monkeypatch):
+        # Kill line: move execute_delete's outer `try:` back below the record
+        # write, or drop the handler's `record_id is not None` guard.
+        from ts_admin.services import user_management_service as svc
+
+        monkeypatch.setattr(svc, "_delete_refusal", _raise_boom)
+        job_id = _create_job("delete_users", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            svc.execute_delete(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                user_guids=["u-bob"],
+                user_identifiers=["bob"],
+            )
+        )
+
+        self._assert_failed_with_boom(job_id)
+        assert _FakeClient.delete_attempts == {}
+        with Session(in_memory_db) as s:
+            assert s.exec(select(UserActionRecord)).all() == []
+
+    def test_dryrun_transfer_preamble(self, in_memory_db, patched_env, seeded, monkeypatch):
+        # Kill line: move dryrun_transfer's `try:` back below mark_running. A
+        # non-StaleCacheError from the guard escapes its narrow inner except.
+        from ts_admin.services import sync_status
+        from ts_admin.services.user_management_service import dryrun_transfer
+
+        monkeypatch.setattr(sync_status, "require_authoritative_metadata", _raise_boom)
+        job_id = _create_job("metadata_transfer_dryrun", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(
+            dryrun_transfer(
+                job_id=job_id,
+                cluster_id="c1",
+                org_id=0,
+                to_user_identifier="bob",
+                object_ids=["lb-1"],
+            )
+        )
+
+        self._assert_failed_with_boom(job_id)
+
+    def test_dryrun_delete_preamble(self, in_memory_db, patched_env, seeded, monkeypatch):
+        # Kill line: move dryrun_delete's `try:` back below mark_running.
+        from ts_admin.services import job_service
+        from ts_admin.services.user_management_service import dryrun_delete
+
+        monkeypatch.setattr(job_service, "mark_running", _raise_boom)
+        job_id = _create_job("user_delete_dryrun", {"cluster_id": "c1", "org_id": 0})
+        asyncio.run(dryrun_delete(job_id=job_id, cluster_id="c1", org_id=0, user_guids=["u-bob"]))
+
+        self._assert_failed_with_boom(job_id)
