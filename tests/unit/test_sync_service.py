@@ -2189,3 +2189,37 @@ async def test_metadata_sync_survives_a_connection_refresh_the_admin_cannot_make
         rows = session.exec(select(CachedMetadata).where(CachedMetadata.cluster_id == "c1")).all()
     assert len(rows) == 1
     assert _sync_log_status("metadata") == "SUCCESS"
+
+
+@pytest.mark.anyio
+async def test_metadata_sync_rows_are_counted_stale_by_stats(monkeypatch, in_memory_db, patched_config):
+    """W7: a real writer -> reader round-trip under sqlmodel>=0.0.45, which
+    rejects a naive datetime bound as a query parameter. The sync writes aware
+    UTC; stats() binds an aware UTC cutoff against it. The stored text stays
+    offset-free, so rows an older sqlmodel wrote compare the same way."""
+    import re
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+
+    from ts_admin.database import get_session
+    from ts_admin.services.metadata_service import MetadataService
+    from ts_admin.services.sync_service import run_sync
+
+    now = datetime.now(timezone.utc)
+    old = _meta_obj("lb-old", "LIVEBOARD")
+    old.last_accessed = now - timedelta(days=120)
+    new = _meta_obj("lb-new", "LIVEBOARD")
+    new.last_accessed = now - timedelta(days=10)
+    _install_metadata_client(monkeypatch, [[old, new]])
+
+    job_id = _make_job("metadata")
+    await run_sync(entity_type="metadata", org_id=0, job_id=job_id)
+    assert _job_status(job_id)[0] == "COMPLETE"
+
+    assert MetadataService.stats(cluster_id=CLUSTER_ID, org_id=0)["stale_90d"] == 1
+
+    with get_session() as session:
+        stored = session.exec(text("SELECT last_accessed_at FROM ts_metadata WHERE ts_guid = 'lb-old'")).one()[0]
+    # Same offset-free TEXT shape every prior sqlmodel wrote (criterion 4).
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(\.\d+)?", stored), stored

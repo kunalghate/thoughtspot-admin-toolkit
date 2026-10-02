@@ -900,8 +900,9 @@ def dryrun_objects(
     with Session(_db.get_engine()) as session:
         rows = _fetch_objects_by_guids(session, page_ids, cluster_id, org_id)
 
-    # Sort by last_accessed_at ASC (None first = most stale)
-    rows.sort(key=lambda r: r.last_accessed_at or datetime.min)
+    # Sort by last_accessed_at ASC (None first = most stale). Aware fallback:
+    # sqlmodel>=0.0.45 reads aware UTC, and aware vs naive raises TypeError.
+    rows.sort(key=lambda r: r.last_accessed_at or datetime.min.replace(tzinfo=timezone.utc))
 
     items = [
         {

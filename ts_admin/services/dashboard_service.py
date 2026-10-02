@@ -208,7 +208,7 @@ class DashboardService:
 
             # COUNT over the whole window, not a slice of the newest N jobs —
             # a busy cluster can push failures out of any fixed-size page.
-            week_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+            week_ago = datetime.now(timezone.utc) - timedelta(days=7)
             failed_jobs_7d = session.exec(
                 select(func.count())
                 .select_from(Job)
@@ -429,7 +429,7 @@ class DashboardService:
         state — and identical adjacent entries are collapsed, so four
         single-object deletes become one "×4" line instead of four.
         """
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=ACTIVITY_MAX_AGE_DAYS)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=ACTIVITY_MAX_AGE_DAYS)
         items: list[dict] = []
 
         # Content deletions (Archiver / Bulk Delete) — one row per object,
