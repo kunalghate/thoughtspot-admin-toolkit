@@ -529,7 +529,7 @@ Found during the M10 research sweep of all 17 `background_tasks.add_task` sites.
 
 ### M18 — Gate-evidence hook captures nothing for gates run in the worktrees M8 mandates
 
-`P2` · **open** · protected: no
+`P2` · **in-progress** · protected: no
 
 Two org rules contradict each other. The `/improve-cycle` skill's QA BAR step says the `PostToolUse` hook (`.claude/hooks/gate_evidence.py`) appends every gate command and exit code to `.claude/evidence/<branch>.log`, and that **"a gate you cannot find in the log did not run in this cycle"** — the CEO is told to quote that file rather than an agent's recollection. But M8 requires review/QA agents to run gates in a **detached `git worktree`**, and the hook writes per-branch under the primary checkout, so it captured **zero** lines for the M10 cycle even though the full bar ran four times. Verified 2026-09-16: `.claude/evidence/` has no `improve__M10-background-refusal-rule.log` while QA reported a complete green bar. The effect is that the one anti-self-report mechanism the skill defines is silently inert for exactly the runs it was written to police, and a CEO following the rule literally would conclude no gate ran.
 
