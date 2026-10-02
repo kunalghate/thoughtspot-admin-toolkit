@@ -272,3 +272,73 @@ the other four. Proven by a PR touching only that file failing the `guard` job
 without the `human-approved` label. Needs the `human-approved` label itself.
 
 **Status:** unpromoted
+
+---
+
+## 2026-10-02 (`/improve-cycle 3`) — S49 follow-on: `mark_running` still outside the `try` in four targets
+
+**Graded:** CONFIRMED pattern, low practical risk.
+
+`mark_running` is still outside the target's `try` in
+`deletion_service._execute_delete` (:337) and `.dryrun` (:743),
+`archiver_service.execute` (:562) and `.restore` (:846) (main@536b2bc). A failure
+there strands the Job at QUEUED. In practice it needs a dead DB, and then
+`mark_failed` fails too.
+
+**Drafted acceptance criteria:** Same S49 pattern: outer `try` right after the
+function-local imports; refusals nested as `mark_failed` + `return`;
+handler-read names pre-bound. One test per target raises a non-DB exception in
+the preamble and asserts the Job ends FAILED.
+
+**Status:** unpromoted
+
+---
+
+## 2026-10-02 (`/improve-cycle 3`) — S49 escalation: background-target last-resort `except Exception` handlers (needs human decision)
+
+**Graded:** CONFIRMED (needs a human decision, not a code fix).
+
+S49 widened the existing blanket `except Exception` last-resort handlers in 7
+background targets to cover the preamble (`bulk_sharing_service.py:543`, `:1005`;
+`user_management_service.py:531`, `:809`, `:1125`, `:1395`, `:1648`). Each logs
+via `logger.exception` and then `mark_failed`. CLAUDE.md forbids `except
+Exception`; these are the documented last-resort exception, but no backlog row
+tracks them (M16 covers `config.py`/`main.py` only).
+
+**Drafted acceptance criteria:** A human decides whether background-target
+last-resort handlers are a sanctioned exception (documented in CLAUDE.md) or must
+be narrowed to named exception classes.
+
+**Status:** unpromoted
+
+---
+
+## 2026-10-02 (`/improve-cycle 3`) — S30 D4: the answer tier has no failed-export test
+
+**Graded:** PLAUSIBLE, confirmed as a real gap; out of S30's scope.
+
+Mutating `in_(rebuilt_guids)` to `in_(answer_guids)` at `lineage_service.py:1309`
+survives the suite. A `_export_tml_resilient` failure (:464/:499) would then
+delete preserved ANSWER usage rows.
+
+**Drafted acceptance criteria:** A test where one answer's TML export fails
+asserts its previously-certified usage rows survive the pass.
+
+**Status:** unpromoted
+
+---
+
+## 2026-10-02 (`/improve-cycle 3`) — W7: offset-less ISO strings from ThoughtSpot would fail the sync
+
+**Graded:** PLAUSIBLE.
+
+`ts_client/models.py:116,148,225` declare `created/modified/last_accessed:
+datetime | None`. An offset-less ISO string from ThoughtSpot would parse naive and
+raise sqlmodel>=0.0.45's bind `ValueError` at `sync_service.py:160-175,309-325,503-505`,
+failing the sync. No such path is seen today (epoch-ms values parse aware).
+
+**Drafted acceptance criteria:** Annotate the fields as pydantic `AwareDatetime`
+or normalise to UTC on parse; a test feeding an offset-less ISO string syncs
+successfully.
+
+**Status:** unpromoted

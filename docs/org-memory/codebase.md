@@ -144,9 +144,12 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
   `Record<SyncStatus, SyncLog>` fixture map matters: a new union member is a
   `tsc` TS2741 error, and `tsconfig.json` includes `**/*.tsx`. Filed as M12.
 - 2026-08-18 (S33): **CI runs `TZ=UTC`, which disarms every timezone assertion.**
-  The backend returns `synced_at` naive (`ts_admin/api/sync.py:91` re-attaches
-  `tzinfo=timezone.utc`), so `Topbar.helpers.ts:62,78` must parse
-  `new Date(log.synced_at + "Z")`. Under UTC, deleting that `+ "Z"` leaves the
+  (Amended 2026-10-02: the "naive `synced_at` + appended `Z`" mechanism below is
+  stale — Topbar now uses `parseUtc` and timestamps carry `+00:00`; the lesson that
+  UTC disarms timezone assertions still holds.)
+  The backend used to return `synced_at` naive (`ts_admin/api/sync.py:91` re-attaches
+  `tzinfo=timezone.utc`), so `Topbar.helpers.ts:62,78` had to parse
+  `new Date(log.synced_at + "Z")`. Under UTC, deleting that `+ "Z"` left the
   whole suite green while rendering a 3h50m-old sync as "Synced just now" in
   green — the S23 fail-open. `frontend/vitest.config.mts` therefore pins
   `TZ=America/New_York` (non-UTC on purpose) + `en_US.UTF-8`.
@@ -259,7 +262,7 @@ with `file:line` evidence and the originating cycle/PR. Prune to ~120 lines.
 - 2026-08-15 (S27): Mutation-harness rules (full recipe in
   [docs/dev/TESTING.md](../dev/TESTING.md)): mutate **by line** and confirm
   `git diff --numstat` prints `1\t1` BEFORE running pytest — the `_changed` line is
-  byte-identical at `lineage_service.py:559` and `:897`, so a replace-all hits both
+  (amended 2026-10-02: now `:709` and `:1252`, which "share the disjunct substring" rather than being byte-identical) at `lineage_service.py:559` and `:897`, so a replace-all hits both
   and a failed replace looks like "mutation survived". Work in a throwaway
   `git worktree` and run it with `PYTHONPATH=<worktree> python3 -m pytest`, or the
   editable-install `.pth` silently points at the main checkout and you test
@@ -934,7 +937,7 @@ passing the full five-gate bar. The generalisable lessons:
 
 - 2026-09-16 (M10): **The S23 defect class is closed at all 17
   `background_tasks.add_task` sites on `main`.** Every router-level refusal
-  precedes `create_job`, and all 12 background targets wrap their body in
+  precedes `create_job`, and all 13 background targets (corrected 2026-10-02, was 12; list in the 2026-10-02 section below) wrap their body in
   `try/except Exception → mark_failed`. Inventory: `sync` 2, `users` 5,
   `metadata` 2, `sharing` 2, `archiver` 3, `deleter` 2, `relationships` 1 —
   locked by `tests/unit/test_background_dispatch_sites.py` (NOT protected;
@@ -979,3 +982,21 @@ passing the full five-gate bar. The generalisable lessons:
   TESTING.md will not reach the agent whose brief states the uncaveated rule —
   every brief bullet must be correct without its reference. Caught as a CONFIRMED
   regression finding on M10's own diff.
+
+## Datetime convention (W7, 2026-10-02)
+
+- sqlmodel>=0.0.45 maps every `datetime` field/comparison to UTCDateTime: naive bind params raise `ValueError`; reads return aware UTC. SQLite stores offset-free `YYYY-MM-DD HH:MM:SS.ffffff` text on all versions; aware-UTC params bind identical text, so pre-upgrade rows compare identically. Convention after W7 (PR #61): every bound/written datetime is aware UTC; never `.replace(tzinfo=None)` a bound cutoff; any Python-side fallback compared against a DB read must be aware (`datetime.min.replace(tzinfo=timezone.utc)`). Sweeps must grep `tzinfo=None|utcnow|datetime\.now\(\)|datetime\.(min|max)|or datetime`.
+- Deliberate naive spots: `dashboard_service._naive` (output only; makes the `:664` `or datetime.min` sort safe — if `_naive` is removed, that sort must go aware) and `archiver_service._compute_days_unused` (strips tz both sides).
+- `parse_iso_date` is single-sourced in `metadata_service.py` (returns aware UTC midnight); archiver imports it.
+- No lockfile: CI resolves latest deps on every run; last green CI on main (2026-09-17) used sqlmodel 0.0.42. The local `.venv` was rebuilt 2026-10-02 with uv (Python 3.12) after its interpreter (Homebrew python@3.12) disappeared.
+- `session.get(Model, None)` on SQLAlchemy 2.0.x returns None and emits an SAWarning only; tests relying on it failing need `@pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning")`.
+
+## Background targets and answer index (2026-10-02, main@536b2bc)
+
+- Background targets (13, not 12): run_sync; dryrun_share, execute_share; dryrun_transfer, execute_transfer, execute_transfer_sharing, dryrun_delete, execute_delete; archiver.execute, archiver.restore; deletion.dryrun, deletion._execute_delete; lineage.run_deep_index. After S49 (PR #60) the 7 in bulk_sharing/user_management open their outer try right after function-local imports; handler-read names are pre-bound (`record_ids`, `record_id: str | None` + `is not None` guard). A dead DB still strands a job (mark_failed writes the same DB); `_recover_stuck_jobs` stays the backstop and never reconciles UserActionRecord.
+- Answer index (`lineage_service.py` @536b2bc): build_answer_index :1205; universe :1223-1225; watermark :1232-1235; certified :1241-1244; `_changed` :1250/:1252; early return :1256; delete scoping :1306-1309; stamp :1314. It is NOT byte-identical to build_column_map's `_changed` (:709) any more (PR #31); B1 (`last_built is None`) is an equivalent mutant (certified and last_built share WHERE). The watermark's `consumer_type == "ANSWER"` is load-bearing because `_persist_column_map` stamps LIVEBOARD usage synced_at (~:960). Kill table in TESTING.md "Answer-index kill table (S30)".
+
+## Agent tooling hazards (2026-10-02)
+
+- Agents in auto mode cannot edit `.claude/hooks/*` (Self-Modification denial).
+- Worktree-isolated agents: absolute paths with spaces in command names are refused (use relative `../../../.venv/bin/python`); `git -C` outside the worktree is refused; compound commands with `cd`/git may be refused — one git command per call. In a worktree, `python -m pytest` from the worktree root makes the worktree's `ts_admin` shadow the editable install.
