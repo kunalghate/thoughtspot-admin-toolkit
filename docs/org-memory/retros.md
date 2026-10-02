@@ -269,3 +269,5 @@ One line per cycle on process friction. Format:
   check) was refuted by the architect and then disproved by measurement
   (Mutation D) — the S33 lesson held, routing a CEO-authored design through the
   pipeline caught it before it shipped as a false gate.
+
+- 2026-10-02 · /improve-cycle 3 (W7, S49, S30; M18 blocked): the venv silently pointed at a deleted interpreter, so the cycle's first real finding was dependency drift (sqlmodel 0.0.45 naive-datetime ValueError) — CI had last resolved 0.0.42 on 2026-09-17 with no lockfile; agents can't edit `.claude/hooks/*` (Self-Modification), so hook rows need a human; the plan's datetime sweep regex missed `x or datetime.min` and only the Review Board caught the resulting 500 — sweeps for a type-semantics change must grep sentinels (`datetime\.(min|max)`) too; S30's criteria were stale (code rewritten in PR #31) and named an equivalent mutant.

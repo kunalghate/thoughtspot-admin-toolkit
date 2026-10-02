@@ -32,6 +32,7 @@ only when a human promotes them.
 | 2026-09-09 · reconcile (B1, post-merge) | 1 | 0 | 45 open · 0 in-review · 2 feedback |
 | 2026-09-10 · M5 (fix cycle) | 0 | 1 | 45 open · 1 in-review · 2 feedback |
 | 2026-09-16 · M10 (fix cycle, incl. B1 close of M5) | 1 | 2 | 46 open · 1 in-review · 2 feedback |
+| 2026-10-02 · /improve-cycle 3 (W7, S49, S30; M18 blocked; incl. B1 close of M10) | 1 | 1 | 44 open · 3 in-review · 2 feedback |
 
 ## ID taxonomy (mirrors the three standing goals)
 
@@ -59,7 +60,7 @@ an item reaches `done`, move its index line and detail entry to
 
 ## Index
 
-### Open (46)
+### Open (44)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -73,7 +74,6 @@ an item reaches `done`, move its index line and detail entry to
 | S26 | P2 | Sync background tasks block the FastAPI event loop | — |
 | S28 | P2 | Bare-timestamp watermark cannot express 'not yet crawled' | — |
 | S29 | P2 | _persist_column_map delete-commit crash window | — |
-| S30 | P2 | build_answer_index incremental predicates have zero mutation coverage | — |
 | S37 | P2 | BearerTokenAuth silently discards org_id | yes (`ts_admin/config.py`) |
 | S46 | P2 | Delete modal implies admin-status is certified when only metadata synced | — |
 | S38 | P2 | delete-tag-only is destructive with no dry-run | yes (`tests/integration/test_dryrun_safety.py`) |
@@ -105,16 +105,17 @@ an item reaches `done`, move its index line and detail entry to
 | W4 | P3 | permission_type silently ignored below 10.3 (DEFINED vs EFFECTIVE) | — |
 | W5 | P3 | metadata/search paginated outside the documented contract | — |
 | M16 | P3 | Blanket except Exception survives the BLE gate: keyring residue + column-map site | yes (`ts_admin/config.py`, `ts_admin/main.py`) |
-| S49 | P2 | Background targets strand jobs on non-refusal exceptions (pre-mark_running windows) | — |
 | M18 | P2 | Gate-evidence hook captures nothing for gates run in the worktrees M8 mandates | — |
 | M17 | P3 | Performance-review lens doesn't name EXPLAIN QUERY PLAN/correlated-subquery as a checklist item | — |
 | M1 | P4 | Single-source the protected-path list | yes (`.github/workflows/*`, `CLAUDE.md`) |
 
-### In review (1)
+### In review (3)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
-| M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
+| W7 | P1 | sqlmodel ≥0.0.45 rejects naive datetimes — every fresh install crashes on cache queries | — |
+| S49 | P2 | Background targets strand jobs on non-refusal exceptions (pre-mark_running windows) | — |
+| S30 | P2 | build_answer_index incremental predicates have zero mutation coverage | — |
 
 ### Done
 
@@ -534,23 +535,46 @@ Two org rules contradict each other. The `/improve-cycle` skill's QA BAR step sa
 
 **Acceptance criteria:** Gate runs executed inside a detached worktree land in the same evidence log as runs in the primary checkout (e.g. the hook resolves the log path from `git rev-parse --git-common-dir` / the worktree's branch rather than the cwd), OR the skill's QA BAR step is corrected to state that worktree runs are not captured and names what the CEO should quote instead. Proven by running one gate inside a detached worktree and showing the line appears in the expected log; the non-vacuity twin shows the log is empty for that branch beforehand.
 
+**2026-10-02 (`/improve-cycle 3`):** researched + planned (hook-only fix: log root from `git rev-parse --git-common-dir`, branch from `git branch --points-at HEAD` for detached worktrees, `detached-<sha>` fallback, leading-`cd` parsing; plan in branch improve/M18-worktree-evidence@0aec0fd notes). Implementation BLOCKED: the auto-mode permission classifier denies agent edits to `.claude/hooks/*` as Self-Modification. Needs a human to allow the edit or apply the patch. Every gate run this cycle (all in worktrees) again landed in no evidence log.
+
 ## In review
 
 _Rows sit here only while their PR is open; the
 next cycle's reconcile step moves merged rows to
 [BACKLOG_COMPLETED.md](BACKLOG_COMPLETED.md)._
 
-### M10 — Fail-closed guard inside a background task is fail-silent
+### W7 — sqlmodel ≥0.0.45 rejects naive datetimes — every fresh install crashes on cache queries
 
-`P2` · **in-review** · protected: no
+`P1` · **in-review** · protected: no
 
-A fail-closed guard placed inside a Starlette background-task target is fail-**silent**, and the org's review/test conventions do not catch it: S23 shipped guards in `execute_share`/`execute_transfer` that raise after the 202 is already on the wire, so the 409 never reaches the caller and the `Job` row strands at `QUEUED`/`error=None` until a restart. All 241 unit tests passed on the broken guard because service-level tests call the coroutine directly — the one thing production cannot do
 
-**Acceptance criteria:** The `reviewer`/`implementer` briefs (or `docs/dev/TESTING.md`) require that any refusal on a `background_tasks.add_task`-dispatched endpoint is (a) checked in the router before `create_job` and (b) covered by a TestClient test asserting the status code AND that no `Job` row was created; a service-level unit test alone is documented as insufficient for this class
+**Evidence (measured 2026-10-02, Python 3.12, fresh `pip install -e ".[dev]"`):**
+- `pyproject.toml:27` pins `sqlmodel>=0.0.19` (no upper bound, no lockfile).
+- CI's last run on main (2026-09-17) resolved sqlmodel 0.0.42 → green.
+- Bisect against `pytest tests/unit tests/integration`: 0.0.42 → 897 passed;
+  0.0.43, 0.0.44 → `test_metadata_api.py` 30 passed; 0.0.45, 0.0.46 → 4 failed there;
+  0.0.47 (today's latest) → **78 failed, 819 passed** on the full suite.
+- Every failure is the same: `sqlmodel/sql/sqltypes.py:34` raises
+  `ValueError: Datetime values must have timezone information` when a NAIVE
+  datetime is bound as a query parameter, e.g. `ts_metadata.last_accessed_at < ?`
+  in the metadata stats / archiver-candidate count queries (75 of 77 hits) and a
+  `modified_at < ?` variant (6).
+- Consequence for users: `pip install` today pulls 0.0.47, so the Metadata
+  stats endpoint and Archiver queries 500. CI on the next PR will go red too.
 
-**2026-09-16.** Shipped in branch `improve/M10-background-refusal-rule` (`8943791`, `22200b6`). Research established the row is a **docs/process** item, not a code fix: the S23 defect is already closed at all 17 `background_tasks.add_task` sites on `main` (every router refusal precedes `create_job`; all 12 targets wrap their body in `try/except → mark_failed`). The rule previously lived only in source comments and one test docstring. Recorded in `docs/dev/TESTING.md` (new "Refusals on a 202 endpoint (S23 / M10)" section) and both agent briefs, plus a new unprotected tripwire `tests/unit/test_background_dispatch_sites.py` locking the 17-site inventory.
+**Acceptance criteria (draft, provisional until a human confirms):**
+1. `pytest tests/unit tests/integration` is green on the latest sqlmodel (0.0.47)
+   AND on the oldest version the pin allows.
+2. Fresh installs cannot resolve a sqlmodel that breaks the app: either the code
+   works on ≥0.0.45, or the pin excludes the breaking range — the PR states which
+   and why.
+3. If the code path is fixed (not only pinned): stored/compared datetimes have
+   one documented convention (naive-UTC vs aware-UTC) and a test drives a real
+   writer → reader round-trip under the new sqlmodel, not a hand-seeded row.
+4. No existing SQLite cache becomes unreadable: rows already written by the
+   prior version (naive values in SQLite) still compare correctly after upgrade.
 
-The design was re-cut mid-cycle: the CEO's proposed AST "no refusal after `create_job`" check was refuted by the architect and then **measured** — applying the real S23 shape (guard deleted from the router, `raise` at the top of `execute_share`) leaves that check GREEN, because the router then holds zero raises. The inventory lock became the primary gate and the ordering check is demoted and documented as not covering the S23 class. The Review Board returned three CONFIRMED findings, all fixed in `22200b6`: the new `reviewer.md` bullet keyed "fail-silent" on **location** rather than **mechanism**, so read standalone it would have manufactured CONFIRMED findings on the four refusals that are load-bearing inside their targets; the TESTING.md heading stated unconditionally what is only true of `raise`; and a leftover comment told the next agent to narrow the walker rather than append a row. Mutations F/G/H (module-qualified `create_job`, module-qualified guard call, and a `raise` inside an `except`) were green on the first test and are red on the fixed one. Touches no protected path — no `human-approved` label needed.
+**2026-10-02.** Shipped in PR #61 (branch `improve/W7-sqlmodel-aware-datetimes`): a fix, not a pin; floor raised to `sqlmodel>=0.0.45`. Review Board CONFIRMED and fixed a `datetime.min` sort 500 in `deletion_service.dryrun_objects`. Criteria above remain provisional until a human confirms.
 
 
 ## Feedback (user-reported)

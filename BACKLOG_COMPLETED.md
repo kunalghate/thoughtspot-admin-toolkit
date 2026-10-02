@@ -9,7 +9,7 @@ detail entry here.
 
 ## Index
 
-### Done items (36)
+### Done items (37)
 
 | ID | P | Item | Protected |
 |----|---|------|-----------|
@@ -38,6 +38,7 @@ detail entry here.
 | S27 | P1 | Lineage unit suite is mutation-vacuous | — |
 | S36 | P1 | Startup crash-recovery purges cache rows for never-deleted objects | yes (`ts_admin/main.py`) |
 | S23 | P2 | Interrupted metadata sync reads as fully synced | — |
+| M10 | P2 | Fail-closed guard inside a background task is fail-silent | — |
 | S33 | P3 | Topbar sync label/color has no test | — |
 | M6 | P2 | No REJECT route when acceptance criteria are themselves the bug | — |
 | M9 | P2 | Criteria-prescribed mechanisms are never soundness-checked before build | — |
@@ -499,3 +500,17 @@ The verification bar proves *conformance to the criteria*, not that the change i
 **Acceptance criteria:** CLAUDE.md's verification bar states explicitly that a green bar is necessary but NOT sufficient and never authorises shipping on its own; the Review Board stays mandatory for any change that deletes rows, alters a purge/retention rule, or adds a correlated subquery or join, **even when every gate is green**; the same section requires `EXPLAIN QUERY PLAN` on a realistically-sized DB for new correlated subqueries/joins
 
 **2026-09-10.** Shipped in branch `improve/M5-green-bar-not-sufficient` (`bbf04ea`, `102d981`): inserted one paragraph into CLAUDE.md's Verification bar section stating all three required facts verbatim. Doc-only change — no code, no tests. Full gate bar green (ruff, 616 unit + 279 integration, tsc, build). Review Board (correctness/regression/simplicity, run in isolated detached worktrees) and QA all reported clean; simplicity flagged one cosmetic British/American spelling mismatch ("authorises" vs the file's established American spelling), fixed and re-verified. Regression lens surfaced a PLAUSIBLE follow-up — `reviewer.md`'s performance lens doesn't yet name `EXPLAIN QUERY PLAN`/correlated-subquery explicitly as a checklist item — filed as **M17**. Touches a protected path (`CLAUDE.md`); PR needs the `human-approved` label.
+
+### M10 — Fail-closed guard inside a background task is fail-silent
+
+`P2` · **done** · protected: no
+
+A fail-closed guard placed inside a Starlette background-task target is fail-**silent**, and the org's review/test conventions do not catch it: S23 shipped guards in `execute_share`/`execute_transfer` that raise after the 202 is already on the wire, so the 409 never reaches the caller and the `Job` row strands at `QUEUED`/`error=None` until a restart. All 241 unit tests passed on the broken guard because service-level tests call the coroutine directly — the one thing production cannot do
+
+**Acceptance criteria:** The `reviewer`/`implementer` briefs (or `docs/dev/TESTING.md`) require that any refusal on a `background_tasks.add_task`-dispatched endpoint is (a) checked in the router before `create_job` and (b) covered by a TestClient test asserting the status code AND that no `Job` row was created; a service-level unit test alone is documented as insufficient for this class
+
+**2026-09-16.** Shipped in branch `improve/M10-background-refusal-rule` (`8943791`, `22200b6`). Research established the row is a **docs/process** item, not a code fix: the S23 defect is already closed at all 17 `background_tasks.add_task` sites on `main` (every router refusal precedes `create_job`; all 12 targets wrap their body in `try/except → mark_failed`). The rule previously lived only in source comments and one test docstring. Recorded in `docs/dev/TESTING.md` (new "Refusals on a 202 endpoint (S23 / M10)" section) and both agent briefs, plus a new unprotected tripwire `tests/unit/test_background_dispatch_sites.py` locking the 17-site inventory.
+
+The design was re-cut mid-cycle: the CEO's proposed AST "no refusal after `create_job`" check was refuted by the architect and then **measured** — applying the real S23 shape (guard deleted from the router, `raise` at the top of `execute_share`) leaves that check GREEN, because the router then holds zero raises. The inventory lock became the primary gate and the ordering check is demoted and documented as not covering the S23 class. The Review Board returned three CONFIRMED findings, all fixed in `22200b6`: the new `reviewer.md` bullet keyed "fail-silent" on **location** rather than **mechanism**, so read standalone it would have manufactured CONFIRMED findings on the four refusals that are load-bearing inside their targets; the TESTING.md heading stated unconditionally what is only true of `raise`; and a leftover comment told the next agent to narrow the walker rather than append a row. Mutations F/G/H (module-qualified `create_job`, module-qualified guard call, and a `raise` inside an `except`) were green on the first test and are red on the fixed one. Touches no protected path — no `human-approved` label needed.
+
+**2026-10-02 (B1 close).** PR #58 merged (`bcd39dc`). Criteria re-verified on main: TESTING.md "Refusals on a 202 endpoint (S23 / M10)" section plus the `reviewer.md`/`implementer.md` rule; `tests/integration/test_stale_cache_endpoints.py` asserts 409 and no Job row (`test_no_job_row_is_created`) with a 202 twin; `tests/unit/test_background_dispatch_sites.py` locks the 17-site inventory; `pytest tests/unit/test_background_dispatch_sites.py tests/integration/test_stale_cache_endpoints.py` gives 13 passed.
