@@ -79,11 +79,11 @@ three-file lineage set (`test_lineage_columns.py`, `test_lineage_service.py`,
 
 ### The harness (four rules, all learned the hard way)
 
-1. **Mutate by LINE, never by string replace.** The `_changed` predicate
-   `return not incremental or last_built is None or modified_at is None or modified_at > last_built`
-   is **byte-identical** at `lineage_service.py:559` (`build_column_map`) and
-   `:897` (`build_answer_index`). A replace-all hits both and you learn nothing
-   about either.
+1. **Mutate by LINE, never by string replace.** The `_changed` predicates in
+   `build_column_map` (`lineage_service.py:709`) and `build_answer_index`
+   (`:1252`) **share the disjunct substring**
+   `last_built is None or modified_at is None or modified_at > last_built`. A
+   replace-all hits both and you learn nothing about either.
 2. **Prove the edit landed before you run pytest.** After every mutation:
 
    ```bash
@@ -133,10 +133,14 @@ pre-S27 suite was blind to it.
 | H2 | 559 | drop the `modified_at is None` disjunct | KILLED (only by new file, **via `TypeError`**) | `test_liveboard_with_null_modified_at_is_always_recrawled` |
 | H3 | 569 | remove the empty-universe early return (`if False:`) | KILLED (only by new file) | `test_empty_metadata_universe_returns_early_and_touches_nothing` |
 | H4 | 564 | remove the `has_lb_edges` self-heal (`if False:`) | KILLED | `test_self_heal_probe_ignores_other_scopes` + pre-existing `test_column_map_self_heals_missing_liveboard_edges` |
-| H1b | **897** | H1 applied to the byte-identical twin in `build_answer_index` | **SURVIVED** | nothing — see gaps below |
+| H1b | 897 (now `:1252`) | H1 applied to the twin in `build_answer_index` | SURVIVED (expected) | **equivalent mutant** — same as S30's B1; see the S30 kill table |
 | K3 | 766 | scoped usage delete loses `consumer_type == "LIVEBOARD"` | SURVIVED | not killable with realistic data — see gaps |
 | K4 | 758 | scoped edge delete loses `source_type == "LIVEBOARD"` | SURVIVED | not killable with realistic data — see gaps |
 | EQ1 | 752 | `if lb_guids:` → `if True:` | SURVIVED (expected) | equivalent mutant — see gaps |
+
+Line numbers in this table are as measured on 2026-08-15; `lineage_service.py`
+has moved since (the `build_column_map` `_changed` predicate is now `:709`).
+Locate a predicate by its text, not by these numbers, before re-running a row.
 
 Two fixture facts fell out of the measurement and are load-bearing; don't
 "simplify" them away:
@@ -152,12 +156,77 @@ Two fixture facts fell out of the measurement and are load-bearing; don't
 
 | ID | What | Why it is not killed |
 |---|---|---|
-| M10 | the `not incremental` disjunct at `:559` | Dead code — no production caller passes `incremental=False` (`api/relationships.py` → `run_deep_index` → `incremental=True`). Killing it would require a test-only entry point. |
+| M10 | the `not incremental` disjunct at `:709` (`build_column_map`; was `:559`) | Dead code — no production caller passes `incremental=False`. Killing it would require a test-only entry point. |
+| A1 | the `not incremental` disjunct at `:1250` (`build_answer_index`) | Same dead code as M10: `api/relationships.py` → `run_deep_index` → `build_answer_index(incremental=True)` is the only caller. Recorded, not removed (S30 scope). |
 | P08 / P26 | purge predicates that only differ on physically-impossible rows | Only killable by seeding rows the writers cannot produce. |
 | K3 / K4 | `consumer_type`/`source_type` on the **scoped** (`in_(lb_guids)`) deletes | Same family as P08/P26: those deletes are already keyed on a liveboard GUID, and no ANSWER usage row or object-tier edge can carry a liveboard GUID in that position (`_edges_from_dependents` skips liveboard dependents by design). |
 | EQ1 / P17b | `if lb_guids:` → `if True:` | **Equivalent mutant.** `in_([])` is always false, so the guarded deletes are no-ops when `lb_guids` is empty. Confirmed by measurement (survived, as expected). Do not try to kill it. |
-| H1b | the `_changed` twin in `build_answer_index` (`:897`) | **Genuine gap, not equivalent.** `build_answer_index`'s incremental predicate has no pinning test at all. S27 scoped only `build_column_map`; file a backlog row before touching the answer index. |
+| H1b | `last_built is None` in `build_answer_index`'s `_changed` (`:1252`, was `:897`) | **Equivalent mutant** (reclassified by S30, where it is B1). S27 recorded it as a genuine gap because the answer predicate then had no pinning test; S30 proved it unkillable — see the B1 proof under the S30 kill table. |
 | O1 | removing the delete-phase `commit()` at `:770` | Only observable via crash injection between the delete and the insert. Deferred — owned by BACKLOG S29. |
+
+### Answer-index kill table (S30)
+
+Measured 2026-10-02 on `improve/S30-answer-index-mutation-coverage` against
+`build_answer_index` (`lineage_service.py:1205`), full `tests/unit` +
+`tests/integration` run per mutant, by-line edit with the `1	1` numstat check
+(harness above). "Before" = the suite as of `main@536b2bc` (897 tests); "after" =
+plus the four S30 tests in `tests/unit/test_answer_index.py` (901 tests). Unmutated
+run green both times. Result: **13 → 24 killed of 31**; all 7 survivors are
+recorded below with a reason.
+
+| ID | Line | Mutation | Before | After | Killed by (S30 test, where one is the target) |
+|---|---|---|---|---|---|
+| Q2 | 1223 | answer universe: drop `cluster_id` | SURVIVED | KILLED | `test_deep_index_is_scoped_to_one_cluster_and_org` |
+| Q1 | 1224 | answer universe: drop `org_id` | SURVIVED | KILLED | same |
+| Q3 | 1225 | answer universe: drop `object_type == "ANSWER"` | KILLED | KILLED | five pre-existing tests + all four S30 tests |
+| W2 | 1232 | watermark: drop `cluster_id` | SURVIVED | KILLED | `test_deep_index_is_scoped_to_one_cluster_and_org` |
+| W1 | 1233 | watermark: drop `org_id` | SURVIVED | KILLED | same |
+| W3 | 1234 | watermark: drop `consumer_type == "ANSWER"` | SURVIVED | KILLED | `test_column_map_stamps_do_not_move_the_answer_watermark` |
+| W4 | 1235 | watermark: drop `synced_at IS NOT NULL` | SURVIVED | SURVIVED | **equivalent** — proof below |
+| C2 | 1241 | certified set: drop `cluster_id` | SURVIVED | KILLED | `test_deep_index_is_scoped_to_one_cluster_and_org` |
+| C1 | 1242 | certified set: drop `org_id` | SURVIVED | KILLED | same |
+| C3 | 1243 | certified set: drop `consumer_type == "ANSWER"` | SURVIVED | SURVIVED | **impossible row** — proof below |
+| C4 | 1244 | certified set: drop `synced_at IS NOT NULL` | SURVIVED | KILLED | `test_lazily_opened_late_answer_is_still_deep_crawled` |
+| A1 | 1250 | drop `not incremental or` | SURVIVED | SURVIVED | dead code — see A1 under Known non-kills |
+| A2 | 1250 | drop `or guid not in certified` | KILLED | KILLED | `test_deep_index_heals_a_watermark_poisoned_before_the_fix` (+2 S30) |
+| A3 | 1250 | `guid not in certified` → `guid in certified` | KILLED | KILLED | heal + skip + recrawl tests (+4 S30) |
+| B1 | 1252 | drop `last_built is None or` (was H1b) | SURVIVED | SURVIVED | **equivalent** — proof below |
+| B2 | 1252 | drop `or modified_at is None` | SURVIVED | KILLED (`TypeError`) | `test_answer_with_null_modified_at_is_recrawled_not_crashed` |
+| B3 | 1252 | drop `or modified_at > last_built` | KILLED | KILLED | `test_a_modified_answer_is_recrawled_after_a_full_pass` (+2 S30) |
+| B4 | 1252 | `>` → `>=` | SURVIVED | SURVIVED | out of scope — only differs on an exact `modified_at == last_built` tie |
+| B5 | 1252 | `>` → `<` | KILLED | KILLED | heal + skip + recrawl tests (+4 S30) |
+| B6 | 1252 | whole return → `return True` | KILLED | KILLED | same |
+| B7 | 1252 | whole return → `return False` | KILLED | KILLED | recrawl test (+3 S30) |
+| B8 | 1251 | uncertified branch `return True` → `return False` | KILLED | KILLED | 4 pre-existing (+4 S30) |
+| E1 | 1256 | empty-set early return → `if False:` | KILLED | KILLED | skip + no-answers-cached tests |
+| E2 | 1256 | empty-set early return → `if True:` | KILLED | KILLED | 4 pre-existing (+4 S30) |
+| D2 | 1306 | delete: drop `cluster_id` | SURVIVED | KILLED | `test_deep_index_is_scoped_to_one_cluster_and_org` |
+| D1 | 1307 | delete: drop `org_id` | SURVIVED | KILLED | same |
+| D3 | 1308 | delete: drop `consumer_type == "ANSWER"` | SURVIVED | SURVIVED | **impossible row** — proof below |
+| D4 | 1309 | delete `in_(rebuilt_guids)` → `in_(answer_guids)` (failed-export preservation) | SURVIVED | SURVIVED | out of scope — ledgered separately |
+| D5 | 1309 | delete GUID filter → `True` | KILLED | KILLED | heal test |
+| S1 | 1314 | certification stamp `row.synced_at = now` → `None` | KILLED | KILLED | 3 pre-existing (+3 S30) |
+| S2 | 1302 | `g not in failed_set` → `g in failed_set` | KILLED | KILLED | 2 pre-existing (+2 S30) |
+
+Why each survivor is not chased:
+
+- **B1 (`last_built is None`) is equivalent.** `_changed` only reaches the
+  return when `guid in certified`. `certified` (`:1240-1244`) and `last_built`
+  (`:1231-1235`) read the SAME rows under the SAME `WHERE` — so a GUID in
+  `certified` proves at least one stamped row exists, and `MAX(synced_at)` over
+  a non-empty set of non-NULL values is non-NULL. `last_built is None` is
+  therefore always false where it is evaluated. (It becomes live only if C4 is
+  also mutated, which C4's own test kills.)
+- **W4 (watermark `synced_at IS NOT NULL`) is equivalent.** SQL `MAX` ignores
+  NULLs, so dropping the filter cannot change the aggregate.
+- **C3 / D3 (`consumer_type == "ANSWER"` in certified / delete) need an
+  impossible row.** Both are keyed on an answer GUID (`guid in certified` for an
+  answer in the universe; `consumer_guid in rebuilt_guids`). The only writer of
+  LIVEBOARD usage (`_persist_column_map`, built at `:833`) sets `consumer_guid`
+  to a GUID whose TML classified as a liveboard, so no LIVEBOARD usage row can
+  carry an answer GUID. Same family as P08/P26 and K3/K4.
+- **B4, D4, A1** — see the rows; B4 needs an exact timestamp tie, D4
+  (failed-export preservation) is tracked outside S30, A1 is dead code.
 
 ## How to run
 

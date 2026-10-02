@@ -31,11 +31,13 @@ from sqlmodel import Session, select
 
 from tests.unit.test_lineage_columns import (
     CLUSTER_ID,
+    _FakeTMLClient,
     _make_job,
     _seed,
     in_memory_db,  # noqa: F401 — pytest fixture, bound by argument name
     patched_config,  # noqa: F401 — pytest fixture, bound by argument name
 )
+from tests.unit.test_lineage_incremental import OLD, SHADOW_SCOPES, _seed_shadow, _shadow_snapshot
 
 # `_seed` already writes answer-1; these are its siblings, so a poisoned
 # watermark has a population to hide (a single answer cannot show the bug).
@@ -332,3 +334,231 @@ async def test_a_modified_answer_is_recrawled_after_a_full_pass(
     written = await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
     assert fake.exported == ["answer-3"]
     assert written == 1
+
+
+# ── S30: one falsifiable test per surviving `build_answer_index` predicate ───────
+#
+# Each test names the mutant(s) it was measured to kill; the full kill table is
+# in docs/dev/TESTING.md §"Answer-index kill table (S30)". W7-safe: every
+# timestamp written here is tz-aware UTC, and no assertion compares a Python
+# datetime against a value read back from SQLite (those come back naive) — the
+# only datetime comparisons are the builder's own, naive-to-naive.
+
+
+def _set_answer_modified(engine, guid: str, modified_at: datetime | None) -> None:
+    """Rewrite one c1/org-0 answer's `modified_at` — what a metadata re-sync leaves behind."""
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+
+    with Session(engine) as session:
+        row = session.exec(
+            select(CachedMetadata).where(
+                CachedMetadata.cluster_id == CLUSTER_ID,
+                CachedMetadata.org_id == 0,
+                CachedMetadata.ts_guid == guid,
+            )
+        ).one()
+        row.modified_at = modified_at
+        session.add(row)
+        session.commit()
+
+
+async def test_answer_with_null_modified_at_is_recrawled_not_crashed(
+    monkeypatch,
+    in_memory_db,  # noqa: F811
+    patched_config,  # noqa: F811
+):
+    """
+    `CachedMetadata.modified_at` is nullable. A certified answer whose metadata
+    lost its timestamp must be re-crawled (we cannot prove it unchanged) — and,
+    above all, must not take the whole deep index down.
+
+    Kills B2 (drop the `modified_at is None` disjunct): `None > datetime` raises
+    `TypeError`, which `run_deep_index` turns into a FAILED job for every answer.
+    """
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    _seed_answers(in_memory_db)
+    fake = _fake_client(monkeypatch)
+
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    fake.exported.clear()
+    _set_answer_modified(in_memory_db, "answer-3", None)
+
+    job_id = _make_job()
+    assert await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=job_id) == 1
+    assert fake.exported == ["answer-3"]
+    assert _job_result(in_memory_db, job_id)["answers_crawled"] == 1
+
+
+async def test_lazily_opened_late_answer_is_still_deep_crawled(
+    monkeypatch,
+    in_memory_db,  # noqa: F811
+    patched_config,  # noqa: F811
+):
+    """
+    An answer that arrived AFTER the last deep pass carries an old `modified_at`
+    (it was created long ago, merely synced late). If the user opens it, the lazy
+    `index_answer` writes an UNSTAMPED row — that row must not count as
+    "certified", or the old `modified_at` sails under the watermark and the
+    answer is never deep-crawled.
+
+    Kills C4 (drop `synced_at IS NOT NULL` from the certified set).
+    """
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    fake = _fake_client(monkeypatch)
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    _seed_answers(in_memory_db, modified_at=OLD)
+    assert await lineage_service.index_answer(cluster_id=CLUSTER_ID, org_id=0, guid="answer-2") == 1
+    lazy = [r for r in _usage_rows(in_memory_db) if r.consumer_guid == "answer-2"]
+    # Anti-vacuity: the lazy row must exist AND be unstamped, or this test is
+    # just a copy of the "never-certified answer is crawled" test.
+    assert len(lazy) == 1 and lazy[0].synced_at is None
+    fake.exported.clear()
+
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    assert set(fake.exported) == set(EXTRA_ANSWERS)
+    rows = [r for r in _usage_rows(in_memory_db) if r.consumer_guid == "answer-2"]
+    assert rows and all(r.synced_at is not None for r in rows)
+
+
+async def test_column_map_stamps_do_not_move_the_answer_watermark(
+    monkeypatch,
+    in_memory_db,  # noqa: F811
+    patched_config,  # noqa: F811
+):
+    """
+    `build_column_map` stamps LIVEBOARD usage rows in the SAME table with
+    `synced_at = now`. Those stamps say nothing about answers: a column-map
+    build run after a deep pass must not lift the ANSWER watermark over an
+    answer edited in between.
+
+    Kills W3 (drop `consumer_type == "ANSWER"` from the watermark).
+    """
+    from ts_admin.models.cache.ts_column_usage import CachedColumnUsage
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    _seed_answers(in_memory_db, modified_at=OLD)
+    _fake_client(monkeypatch)
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    # The deep pass happened two days ago; answer-3 was edited one day ago.
+    now = datetime.now(tz=timezone.utc)
+    with Session(in_memory_db) as session:
+        for row in session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_type == "ANSWER")).all():
+            row.synced_at = now - timedelta(days=2)
+            session.add(row)
+        session.commit()
+    _set_answer_modified(in_memory_db, "answer-1", OLD)
+    _set_answer_modified(in_memory_db, "answer-3", now - timedelta(days=1))
+
+    # Today: a column-map build stamps LIVEBOARD usage with `now`.
+    monkeypatch.setattr("ts_admin.ts_client.ThoughtSpotClient", lambda *a, **k: _FakeTMLClient())
+    await lineage_service.build_column_map(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    with Session(in_memory_db) as session:
+        lb_usage = session.exec(select(CachedColumnUsage).where(CachedColumnUsage.consumer_type == "LIVEBOARD")).all()
+    # Anti-vacuity: without stamped LIVEBOARD rows there is nothing to leak.
+    assert lb_usage and all(r.synced_at is not None for r in lb_usage)
+
+    fake = _fake_client(monkeypatch)
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+    assert fake.exported == ["answer-3"]
+
+
+async def test_deep_index_is_scoped_to_one_cluster_and_org(
+    monkeypatch,
+    in_memory_db,  # noqa: F811
+    patched_config,  # noqa: F811
+):
+    """
+    A deep pass for c1/org-0 must neither read, certify against, nor delete a row
+    of either neighbouring scope (`SHADOW_SCOPES` — one sibling org, one sibling
+    cluster; see `test_lineage_incremental` for why both are needed).
+
+    Each shadow holds a CERTIFIED, future-stamped usage row for the SAME GUID
+    c1 has never crawled (`answer-1`), plus an ANSWER only that scope has:
+
+    * Q1/Q2 (universe unscoped)  → the scope-unique answer is exported, and
+      answer-1 is exported twice;
+    * W1/W2 (watermark unscoped) → the shadow's future stamp hides c1's
+      genuinely edited answer-3;
+    * C1/C2 (certified unscoped) → the shadow certifies c1's never-crawled
+      answer-1, so it is skipped;
+    * D1/D2 (delete unscoped)    → the shadow's answer-1 usage row is deleted.
+    """
+    from ts_admin.models.cache.ts_metadata import CachedMetadata
+    from ts_admin.services import lineage_service
+
+    _seed(in_memory_db)
+    with Session(in_memory_db) as session:
+        session.delete(
+            session.exec(
+                select(CachedMetadata).where(
+                    CachedMetadata.cluster_id == CLUSTER_ID,
+                    CachedMetadata.ts_guid == "answer-1",
+                )
+            ).one()
+        )
+        session.commit()
+    _seed_answers(in_memory_db, modified_at=OLD)
+    fake = _fake_client(monkeypatch)
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=_make_job())
+
+    now = datetime.now(tz=timezone.utc)
+    with Session(in_memory_db) as session:
+        # answer-1 arrives late in c1: old, and never certified by a deep pass.
+        session.add(
+            CachedMetadata(
+                cluster_id=CLUSTER_ID,
+                org_id=0,
+                ts_guid="answer-1",
+                name="Rev answer",
+                object_type="ANSWER",
+                owner_name="Alice",
+                modified_at=OLD,
+                synced_at=now,
+            )
+        )
+        session.commit()
+    for shadow_cluster, shadow_org in SHADOW_SCOPES:
+        _seed_shadow(in_memory_db, cluster_id=shadow_cluster, org_id=shadow_org, synced_at=now + timedelta(days=400))
+        with Session(in_memory_db) as session:
+            session.add(
+                CachedMetadata(
+                    cluster_id=shadow_cluster,
+                    org_id=shadow_org,
+                    ts_guid=f"answer-only-{shadow_cluster}-{shadow_org}",
+                    name="Scope-local answer",
+                    object_type="ANSWER",
+                    owner_name="Bob",
+                    modified_at=OLD,
+                    synced_at=now,
+                )
+            )
+            session.commit()
+    # c1's answer-3 genuinely changed — but strictly BEFORE the shadows' watermark.
+    _set_answer_modified(in_memory_db, "answer-3", now + timedelta(days=365))
+
+    before = {s: _shadow_snapshot(in_memory_db, cluster_id=s[0], org_id=s[1]) for s in SHADOW_SCOPES}
+    # Anti-vacuity: each shadow must hold the certified answer-1 usage row the
+    # certified/delete mutants act on.
+    for s in SHADOW_SCOPES:
+        assert any(u[0] == "answer-1" and u[1] == "ANSWER" for u in before[s]["usage"]), (
+            f"shadow {s} has no answer-1 usage row — this test guards nothing"
+        )
+
+    fake.exported.clear()
+    job_id = _make_job()
+    await lineage_service.build_answer_index(cluster_id=CLUSTER_ID, org_id=0, job_id=job_id)
+
+    assert sorted(fake.exported) == ["answer-1", "answer-3"]
+    assert not [g for g in fake.exported if g.startswith("answer-only-")]
+    assert fake.exported.count("answer-1") == 1
+    assert _job_result(in_memory_db, job_id)["answers_total"] == len(ALL_ANSWERS)
+    after = {s: _shadow_snapshot(in_memory_db, cluster_id=s[0], org_id=s[1]) for s in SHADOW_SCOPES}
+    assert after == before

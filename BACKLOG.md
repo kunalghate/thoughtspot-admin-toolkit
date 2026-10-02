@@ -210,7 +210,7 @@ The liveboard incremental watermark is a bare timestamp, which cannot express "n
 
 ### S30 — build_answer_index incremental predicates have zero mutation coverage
 
-`P2` · **open** · protected: no
+`P2` · **in-review** · protected: no
 
 `build_answer_index`'s `_changed` twin (`lineage_service.py:897`) is byte-identical to `build_column_map`'s but has **zero** mutation coverage: dropping its `last_built is None` disjunct leaves the entire 37-test lineage suite green, while the same mutation at `:559` is now killed by S27. Answer-index incrementality is unpinned, and `build_answer_index` carries the same watermark shape S7 was rejected over (`max(CachedColumnUsage.synced_at)` over *surviving* rows, so partial deletion is permanent)
 
