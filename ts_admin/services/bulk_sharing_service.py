@@ -511,8 +511,8 @@ async def dryrun_share(
     """
     from ts_admin.services.job_service import mark_complete, mark_failed, mark_running
 
-    mark_running(job_id, len(object_guids) * len(principal_guids))
     try:
+        mark_running(job_id, len(object_guids) * len(principal_guids))
         preview = await preview_share(
             cluster_id=cluster_id,
             org_id=org_id,
@@ -744,87 +744,87 @@ async def execute_share(
     from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.ts_client.models import SharePermission
 
-    # Defense in depth. The REAL refusal is in `api/sharing.py::execute`, which
-    # returns 409 before any Job row exists — this function only ever runs as a
-    # background task, so it is unreachable in practice. It is kept because it
-    # is the layer that owns the invariant, but it must NOT raise: an exception
-    # escaping a background task is invisible to the caller and would leave the
-    # job QUEUED forever. Mark the job FAILED instead, BEFORE mark_running.
     try:
-        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
-    except StaleCacheError as exc:
-        mark_failed(job_id, exc)
-        return
+        # Defense in depth. The REAL refusal is in `api/sharing.py::execute`, which
+        # returns 409 before any Job row exists — this function only ever runs as a
+        # background task, so it is unreachable in practice. It is kept because it
+        # is the layer that owns the invariant, but it must NOT raise: an exception
+        # escaping a background task is invisible to the caller and would leave the
+        # job QUEUED forever. Mark the job FAILED instead, BEFORE mark_running.
+        try:
+            require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+        except StaleCacheError as exc:
+            mark_failed(job_id, exc)
+            return
 
-    # Resolve to display data for ShareRecord — and to the exact set the preview
-    # showed. Anything not in the cache is dropped here, before any live call.
-    with Session(_db.get_engine()) as session:
-        obj_map, skipped = _resolve_object_map(
-            session,
-            cluster_id=cluster_id,
-            org_id=org_id,
-            object_guids=object_guids,
-        )
-        users = session.exec(
-            select(CachedUser).where(
-                CachedUser.cluster_id == cluster_id,
-                col(CachedUser.ts_guid).in_(principal_guids),
+        # Resolve to display data for ShareRecord — and to the exact set the preview
+        # showed. Anything not in the cache is dropped here, before any live call.
+        with Session(_db.get_engine()) as session:
+            obj_map, skipped = _resolve_object_map(
+                session,
+                cluster_id=cluster_id,
+                org_id=org_id,
+                object_guids=object_guids,
             )
-        ).all()
-        groups = session.exec(
-            select(CachedGroup).where(
-                CachedGroup.cluster_id == cluster_id,
-                CachedGroup.org_id == org_id,
-                col(CachedGroup.ts_guid).in_(principal_guids),
+            users = session.exec(
+                select(CachedUser).where(
+                    CachedUser.cluster_id == cluster_id,
+                    col(CachedUser.ts_guid).in_(principal_guids),
+                )
+            ).all()
+            groups = session.exec(
+                select(CachedGroup).where(
+                    CachedGroup.cluster_id == cluster_id,
+                    CachedGroup.org_id == org_id,
+                    col(CachedGroup.ts_guid).in_(principal_guids),
+                )
+            ).all()
+
+        principal_meta: dict[str, dict] = {}
+        for u in users:
+            principal_meta[u.ts_guid] = {
+                "name": u.display_name or u.username,
+                "type": "USER",
+            }
+        for g in groups:
+            principal_meta[g.ts_guid] = {
+                "name": g.display_name or g.name,
+                "type": "USER_GROUP",
+            }
+        for pid in principal_guids:
+            principal_meta.setdefault(pid, {"name": pid, "type": "USER"})
+
+        # The resolved set — identical to the preview rows' object_guids.
+        resolved_guids = [guid for guid in object_guids if guid in obj_map]
+        requested_pairs = len(object_guids) * len(principal_guids)
+        total_pairs = len(resolved_guids) * len(principal_guids)
+        mark_running(job_id, total_pairs)
+
+        if skipped:
+            logger.warning(
+                "execute_share job=%s: %d of %d GUIDs are not in the metadata cache — excluded from the share",
+                job_id,
+                len(skipped),
+                len(object_guids),
             )
-        ).all()
+        if not resolved_guids:
+            mark_failed(
+                job_id,
+                f"0 of {len(object_guids)} objects resolved in the metadata cache — nothing was shared",
+            )
+            return
 
-    principal_meta: dict[str, dict] = {}
-    for u in users:
-        principal_meta[u.ts_guid] = {
-            "name": u.display_name or u.username,
-            "type": "USER",
-        }
-    for g in groups:
-        principal_meta[g.ts_guid] = {
-            "name": g.display_name or g.name,
-            "type": "USER_GROUP",
-        }
-    for pid in principal_guids:
-        principal_meta.setdefault(pid, {"name": pid, "type": "USER"})
+        succeeded_pairs = 0
+        failed_records: list[dict] = []
+        shared_guids: list[str] = []  # GUIDs whose share call returned without error
+        cancelled = False
 
-    # The resolved set — identical to the preview rows' object_guids.
-    resolved_guids = [guid for guid in object_guids if guid in obj_map]
-    requested_pairs = len(object_guids) * len(principal_guids)
-    total_pairs = len(resolved_guids) * len(principal_guids)
-    mark_running(job_id, total_pairs)
+        try:
+            enum_mode = SharePermission(mode)
+        except ValueError:
+            mark_failed(job_id, f"Invalid share mode {mode!r}")
+            return
 
-    if skipped:
-        logger.warning(
-            "execute_share job=%s: %d of %d GUIDs are not in the metadata cache — excluded from the share",
-            job_id,
-            len(skipped),
-            len(object_guids),
-        )
-    if not resolved_guids:
-        mark_failed(
-            job_id,
-            f"0 of {len(object_guids)} objects resolved in the metadata cache — nothing was shared",
-        )
-        return
-
-    succeeded_pairs = 0
-    failed_records: list[dict] = []
-    shared_guids: list[str] = []  # GUIDs whose share call returned without error
-    cancelled = False
-
-    try:
-        enum_mode = SharePermission(mode)
-    except ValueError:
-        mark_failed(job_id, f"Invalid share mode {mode!r}")
-        return
-
-    try:
         cluster = _get_cluster(cluster_id)
         # Bucket objects by type — one share_objects call per (type, principals,
         # mode). Types come from the cache only; there is no fallback type,
@@ -999,7 +999,9 @@ async def execute_share(
     # is invisible to the caller and strands the Job row at RUNNING forever.
     # Narrowing it would re-introduce that. It is permitted to swallow ANY
     # exception, and it swallows none of them silently — every one is logged
-    # with a traceback and re-reported as a FAILED job.
+    # with a traceback and re-reported as a FAILED job. Covers the preamble too
+    # (S49) — the cache reads before mark_running, which used to strand the job
+    # at QUEUED. A dead DB still strands the job: mark_failed writes the same DB.
     except Exception as exc:
         logger.exception("execute_share job %s failed: %s", job_id, exc)
         mark_failed(job_id, exc)

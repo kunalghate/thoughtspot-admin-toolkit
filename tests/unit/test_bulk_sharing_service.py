@@ -22,6 +22,7 @@ from ts_admin.models.cache.ts_group import CachedGroup
 from ts_admin.models.cache.ts_metadata import CachedMetadata
 from ts_admin.models.cluster import Cluster
 from ts_admin.models.job import Job
+from ts_admin.models.share_record import ShareRecord
 from ts_admin.models.sync_log import SyncLog
 from ts_admin.ts_client.exceptions import (
     TSInvalidParametersError,
@@ -791,3 +792,69 @@ class TestPostExecuteVerification:
         assert result["verified_failed"] == 0
         assert job.status == "COMPLETE"
         assert "could not be re-read" in result["verification_note"]
+
+
+# ── S49: an exception in the preamble fails the job, never strands it ─────────
+
+
+def _raise_boom(*args, **kwargs):
+    raise RuntimeError("boom")
+
+
+class TestPreambleExceptionsMarkFailed:
+    """A non-refusal exception raised before the target's main work must end the
+    Job FAILED with the exception recorded — not leave it QUEUED/RUNNING until
+    `_recover_stuck_jobs` reaps it at the next restart."""
+
+    def test_an_exception_before_mark_running_fails_the_job_instead_of_leaving_it_queued(
+        self, in_memory_db, patched_env, seeded, monkeypatch
+    ):
+        # Kill line: move execute_share's outer `try:` back below the
+        # SharePermission block — the job stays QUEUED with error=None.
+        import ts_admin.services.bulk_sharing_service as svc
+
+        monkeypatch.setattr(svc, "_resolve_object_map", _raise_boom)
+
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.error is not None
+        assert job.error_type == "RuntimeError"
+        # _resolve_object_map runs before mark_running, so the job never started.
+        assert job.started_at is None
+        with Session(in_memory_db) as s:
+            assert s.exec(select(ShareRecord)).all() == []
+
+    def test_the_same_fixture_completes_when_nothing_raises(self, in_memory_db, patched_env, seeded):
+        # Non-vacuity twin: the fixture above is otherwise a clean success.
+        job_id = _create_job("bulk_share")
+        _execute(job_id, ["lb-1"])
+
+        job = _job_row(job_id)
+        assert job.status == "COMPLETE"
+        assert job.error is None
+
+    def test_dryrun_share_fails_the_job_when_mark_running_raises(self, in_memory_db, patched_env, seeded, monkeypatch):
+        # Kill line: move dryrun_share's `try:` back below mark_running.
+        from ts_admin.services import job_service
+        from ts_admin.services.bulk_sharing_service import dryrun_share
+
+        monkeypatch.setattr(job_service, "mark_running", _raise_boom)
+
+        job_id = _create_job("bulk_share_dryrun")
+        asyncio.run(
+            dryrun_share(
+                job_id=job_id,
+                cluster_id=CLUSTER_ID,
+                org_id=ORG_ID,
+                object_guids=["lb-1"],
+                principal_guids=["g-finance"],
+                mode="READ_ONLY",
+            )
+        )
+
+        job = _job_row(job_id)
+        assert job.status == "FAILED"
+        assert job.error_type == "RuntimeError"

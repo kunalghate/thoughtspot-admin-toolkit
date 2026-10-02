@@ -471,18 +471,18 @@ async def dryrun_transfer(
     from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
 
-    # Same fail-closed guard as the executor, for the same reason, and it must
-    # not raise out of a background task.
     try:
-        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
-    except StaleCacheError as exc:
-        mark_failed(job_id, exc)
-        return
+        # Same fail-closed guard as the executor, for the same reason, and it must
+        # not raise out of a background task.
+        try:
+            require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+        except StaleCacheError as exc:
+            mark_failed(job_id, exc)
+            return
 
-    total = len(object_ids)
-    mark_running(job_id, total)
+        total = len(object_ids)
+        mark_running(job_id, total)
 
-    try:
         # Cache side: what we believe we are about to move, and from whom.
         preview = preview_transfer(
             cluster_id=cluster_id,
@@ -573,91 +573,93 @@ async def execute_transfer(
     from ts_admin.services.sync_status import require_authoritative_metadata
     from ts_admin.ts_client import ThoughtSpotClient
 
-    # Defense in depth. The REAL refusal is in the router, which returns 409
-    # before any Job row exists — this function only ever runs as a background
-    # task, so it is unreachable in practice. It must NOT raise: an exception
-    # escaping a background task is invisible to the caller and would leave the
-    # job QUEUED forever. Mark the job FAILED instead, BEFORE mark_running and
-    # before any UserActionRecord is written.
-    try:
-        require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
-    except StaleCacheError as exc:
-        mark_failed(job_id, exc)
-        return
-
-    total = len(object_ids)
-    mark_running(job_id, total)
-
-    succeeded = 0
-    failed_chunks: list[dict] = []
-    cancelled = False
-
-    # ── Group the selection by its source owner ──────────────────────────────
-    # One group for the Users-page flow (every object is the named user's, by
-    # construction of the preview). For a Metadata-page selection the owner is
-    # read from the cache; an object with no cached row groups under "" rather
-    # than being dropped, so it is still transferred and still accounted for.
-    with Session(_db.get_engine()) as session:
-        if from_user_guid:
-            owner_groups: dict[str, list[str]] = {from_user_guid: list(object_ids)}
-        else:
-            owner_of: dict[str, str] = {}
-            for chunk in _chunks(object_ids, 500):  # SQLite caps IN() at 999
-                rows = session.exec(
-                    select(CachedMetadata).where(
-                        CachedMetadata.cluster_id == cluster_id,
-                        CachedMetadata.org_id == org_id,
-                        col(CachedMetadata.ts_guid).in_(chunk),
-                    )
-                ).all()
-                for row in rows:
-                    owner_of[row.ts_guid] = row.owner_guid
-            owner_groups = {}
-            for guid in object_ids:
-                owner_groups.setdefault(owner_of.get(guid, ""), []).append(guid)
-
-        source_users = (
-            {
-                u.ts_guid: u
-                for u in session.exec(
-                    select(CachedUser).where(
-                        CachedUser.cluster_id == cluster_id,
-                        col(CachedUser.ts_guid).in_([g for g in owner_groups if g]),
-                    )
-                ).all()
-            }
-            if any(owner_groups)
-            else {}
-        )
-        to_user = _resolve_user(session, cluster_id, to_user_identifier)
-
-    # ── One record per source owner ──────────────────────────────────────────
+    # Bound before the try: the handler marks every record written so far
+    # FAILED, including when the record loop itself is what raised (S49).
     record_ids: dict[str, str] = {}
-    with Session(_db.get_engine(), expire_on_commit=False) as session:
-        for owner_guid, guids in owner_groups.items():
-            from_user = source_users.get(owner_guid)
-            record = UserActionRecord(
-                cluster_id=cluster_id,
-                job_id=job_id,
-                org_id=org_id,
-                action_type="transfer",
-                from_user_guid=owner_guid,
-                from_username=from_user.username if from_user else "",
-                from_display_name=from_user.display_name if from_user else "",
-                to_user_guid=to_user.ts_guid if to_user else "",
-                to_username=to_user.username if to_user else to_user_identifier,
-                to_display_name=to_user.display_name if to_user else "",
-                items_total=len(guids),
-                status="PENDING",
-            )
-            record.set_affected([{"ts_guid": oid} for oid in guids[:200]])
-            session.add(record)
-            session.commit()
-            record_ids[owner_guid] = record.id
-
-    per_owner_succeeded: dict[str, int] = {owner: 0 for owner in owner_groups}
-
     try:
+        # Defense in depth. The REAL refusal is in the router, which returns 409
+        # before any Job row exists — this function only ever runs as a background
+        # task, so it is unreachable in practice. It must NOT raise: an exception
+        # escaping a background task is invisible to the caller and would leave the
+        # job QUEUED forever. Mark the job FAILED instead, BEFORE mark_running and
+        # before any UserActionRecord is written.
+        try:
+            require_authoritative_metadata(cluster_id=cluster_id, org_id=org_id)
+        except StaleCacheError as exc:
+            mark_failed(job_id, exc)
+            return
+
+        total = len(object_ids)
+        mark_running(job_id, total)
+
+        succeeded = 0
+        failed_chunks: list[dict] = []
+        cancelled = False
+
+        # ── Group the selection by its source owner ──────────────────────────────
+        # One group for the Users-page flow (every object is the named user's, by
+        # construction of the preview). For a Metadata-page selection the owner is
+        # read from the cache; an object with no cached row groups under "" rather
+        # than being dropped, so it is still transferred and still accounted for.
+        with Session(_db.get_engine()) as session:
+            if from_user_guid:
+                owner_groups: dict[str, list[str]] = {from_user_guid: list(object_ids)}
+            else:
+                owner_of: dict[str, str] = {}
+                for chunk in _chunks(object_ids, 500):  # SQLite caps IN() at 999
+                    rows = session.exec(
+                        select(CachedMetadata).where(
+                            CachedMetadata.cluster_id == cluster_id,
+                            CachedMetadata.org_id == org_id,
+                            col(CachedMetadata.ts_guid).in_(chunk),
+                        )
+                    ).all()
+                    for row in rows:
+                        owner_of[row.ts_guid] = row.owner_guid
+                owner_groups = {}
+                for guid in object_ids:
+                    owner_groups.setdefault(owner_of.get(guid, ""), []).append(guid)
+
+            source_users = (
+                {
+                    u.ts_guid: u
+                    for u in session.exec(
+                        select(CachedUser).where(
+                            CachedUser.cluster_id == cluster_id,
+                            col(CachedUser.ts_guid).in_([g for g in owner_groups if g]),
+                        )
+                    ).all()
+                }
+                if any(owner_groups)
+                else {}
+            )
+            to_user = _resolve_user(session, cluster_id, to_user_identifier)
+
+        # ── One record per source owner ──────────────────────────────────────────
+        with Session(_db.get_engine(), expire_on_commit=False) as session:
+            for owner_guid, guids in owner_groups.items():
+                from_user = source_users.get(owner_guid)
+                record = UserActionRecord(
+                    cluster_id=cluster_id,
+                    job_id=job_id,
+                    org_id=org_id,
+                    action_type="transfer",
+                    from_user_guid=owner_guid,
+                    from_username=from_user.username if from_user else "",
+                    from_display_name=from_user.display_name if from_user else "",
+                    to_user_guid=to_user.ts_guid if to_user else "",
+                    to_username=to_user.username if to_user else to_user_identifier,
+                    to_display_name=to_user.display_name if to_user else "",
+                    items_total=len(guids),
+                    status="PENDING",
+                )
+                record.set_affected([{"ts_guid": oid} for oid in guids[:200]])
+                session.add(record)
+                session.commit()
+                record_ids[owner_guid] = record.id
+
+        per_owner_succeeded: dict[str, int] = {owner: 0 for owner in owner_groups}
+
         cluster = _get_cluster(cluster_id)
         async with ThoughtSpotClient(
             url=cluster.url,
@@ -941,42 +943,45 @@ async def execute_transfer_sharing(
     from ts_admin.ts_client import ThoughtSpotClient
     from ts_admin.ts_client.models import SharePermission
 
-    mark_running(job_id, 0)
-
-    with Session(_db.get_engine()) as session:
-        from_user = session.exec(
-            select(CachedUser).where(
-                CachedUser.cluster_id == cluster_id,
-                CachedUser.ts_guid == from_user_guid,
-            )
-        ).first()
-        to_user = _resolve_user(session, cluster_id, to_user_identifier)
-        if to_user is not None and _is_admin(session, cluster_id, to_user.ts_guid):
-            mark_failed(
-                job_id,
-                f"Refusing to share with {to_user.username!r}: target is a cluster admin",
-            )
-            return
-
-    record = UserActionRecord(
-        cluster_id=cluster_id,
-        job_id=job_id,
-        org_id=org_id,
-        action_type="transfer_sharing",
-        from_user_guid=from_user_guid,
-        from_username=from_user.username if from_user else "",
-        from_display_name=from_user.display_name if from_user else "",
-        to_user_guid=to_user.ts_guid if to_user else "",
-        to_username=to_user.username if to_user else to_user_identifier,
-        to_display_name=to_user.display_name if to_user else "",
-        status="PENDING",
-    )
-    with Session(_db.get_engine(), expire_on_commit=False) as session:
-        session.add(record)
-        session.commit()
-        record_id = record.id
-
+    # Bound before the try so the handler can tell "failed before the record
+    # was written" apart from "failed after" (S49).
+    record_id: str | None = None
     try:
+        mark_running(job_id, 0)
+
+        with Session(_db.get_engine()) as session:
+            from_user = session.exec(
+                select(CachedUser).where(
+                    CachedUser.cluster_id == cluster_id,
+                    CachedUser.ts_guid == from_user_guid,
+                )
+            ).first()
+            to_user = _resolve_user(session, cluster_id, to_user_identifier)
+            if to_user is not None and _is_admin(session, cluster_id, to_user.ts_guid):
+                mark_failed(
+                    job_id,
+                    f"Refusing to share with {to_user.username!r}: target is a cluster admin",
+                )
+                return
+
+        record = UserActionRecord(
+            cluster_id=cluster_id,
+            job_id=job_id,
+            org_id=org_id,
+            action_type="transfer_sharing",
+            from_user_guid=from_user_guid,
+            from_username=from_user.username if from_user else "",
+            from_display_name=from_user.display_name if from_user else "",
+            to_user_guid=to_user.ts_guid if to_user else "",
+            to_username=to_user.username if to_user else to_user_identifier,
+            to_display_name=to_user.display_name if to_user else "",
+            status="PENDING",
+        )
+        with Session(_db.get_engine(), expire_on_commit=False) as session:
+            session.add(record)
+            session.commit()
+            record_id = record.id
+
         cluster = _get_cluster(cluster_id)
         async with ThoughtSpotClient(
             url=cluster.url,
@@ -1119,13 +1124,14 @@ async def execute_transfer_sharing(
     # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("execute_transfer_sharing job %s failed: %s", job_id, exc)
-        with Session(_db.get_engine()) as session:
-            rec = session.get(UserActionRecord, record_id)
-            if rec:
-                rec.status = "FAILED"
-                rec.error = str(exc)[:500]
-                session.add(rec)
-                session.commit()
+        if record_id is not None:
+            with Session(_db.get_engine()) as session:
+                rec = session.get(UserActionRecord, record_id)
+                if rec:
+                    rec.status = "FAILED"
+                    rec.error = str(exc)[:500]
+                    session.add(rec)
+                    session.commit()
         mark_failed(job_id, exc)
 
 
@@ -1336,10 +1342,10 @@ async def dryrun_delete(
     from ts_admin.services.job_service import mark_complete, mark_failed, mark_running
     from ts_admin.ts_client import ThoughtSpotClient
 
-    total = len(user_guids)
-    mark_running(job_id, total)
-
     try:
+        total = len(user_guids)
+        mark_running(job_id, total)
+
         # Cache snapshot: owned-object counts + admin flags (no live call needed).
         snapshot = preview_delete(cluster_id=cluster_id, user_guids=user_guids, org_id=org_id)
 
@@ -1431,59 +1437,62 @@ async def execute_delete(
     )
     from ts_admin.ts_client import ThoughtSpotClient
 
-    identifiers = list(user_identifiers or user_guids)
-    total = len(identifiers)
-    mark_running(job_id, total)
-
-    # Snapshot identities for the record
-    with Session(_db.get_engine()) as session:
-        users = session.exec(
-            select(CachedUser).where(
-                CachedUser.cluster_id == cluster_id,
-                col(CachedUser.ts_guid).in_(user_guids),
-            )
-        ).all()
-    snapshot = [{"ts_guid": u.ts_guid, "username": u.username, "display_name": u.display_name} for u in users]
-
-    # ── Refusals (before any live call, before any record is written) ─────────
+    # Bound before the try so the handler can tell "failed before the record
+    # was written" apart from "failed after" (S49).
+    record_id: str | None = None
     try:
-        cluster = _get_cluster(cluster_id)
-    except ValueError as exc:
-        mark_failed(job_id, exc)
-        return
+        identifiers = list(user_identifiers or user_guids)
+        total = len(identifiers)
+        mark_running(job_id, total)
 
-    refusal = _delete_refusal(
-        cluster_id=cluster_id,
-        service_username=cluster.username,
-        user_guids=user_guids,
-        identifiers=identifiers,
-        confirm_admin_delete=confirm_admin_delete,
-    )
-    if refusal:
-        logger.warning("execute_delete job %s refused: %s", job_id, refusal)
-        mark_failed(job_id, refusal)
-        return
+        # Snapshot identities for the record
+        with Session(_db.get_engine()) as session:
+            users = session.exec(
+                select(CachedUser).where(
+                    CachedUser.cluster_id == cluster_id,
+                    col(CachedUser.ts_guid).in_(user_guids),
+                )
+            ).all()
+        snapshot = [{"ts_guid": u.ts_guid, "username": u.username, "display_name": u.display_name} for u in users]
 
-    record = UserActionRecord(
-        cluster_id=cluster_id,
-        job_id=job_id,
-        org_id=org_id,
-        action_type="delete",
-        items_total=total,
-        status="PENDING",
-    )
-    record.set_affected(snapshot)
-    with Session(_db.get_engine(), expire_on_commit=False) as session:
-        session.add(record)
-        session.commit()
-        record_id = record.id
+        # ── Refusals (before any live call, before any record is written) ─────────
+        try:
+            cluster = _get_cluster(cluster_id)
+        except ValueError as exc:
+            mark_failed(job_id, exc)
+            return
 
-    succeeded = 0
-    succeeded_identifiers: set[str] = set()
-    failed: dict[str, str] = {}  # identifier → last error
-    cancelled = False
+        refusal = _delete_refusal(
+            cluster_id=cluster_id,
+            service_username=cluster.username,
+            user_guids=user_guids,
+            identifiers=identifiers,
+            confirm_admin_delete=confirm_admin_delete,
+        )
+        if refusal:
+            logger.warning("execute_delete job %s refused: %s", job_id, refusal)
+            mark_failed(job_id, refusal)
+            return
 
-    try:
+        record = UserActionRecord(
+            cluster_id=cluster_id,
+            job_id=job_id,
+            org_id=org_id,
+            action_type="delete",
+            items_total=total,
+            status="PENDING",
+        )
+        record.set_affected(snapshot)
+        with Session(_db.get_engine(), expire_on_commit=False) as session:
+            session.add(record)
+            session.commit()
+            record_id = record.id
+
+        succeeded = 0
+        succeeded_identifiers: set[str] = set()
+        failed: dict[str, str] = {}  # identifier → last error
+        cancelled = False
+
         async with ThoughtSpotClient(
             url=cluster.url,
             auth=cluster.build_auth_strategy(org_id=org_id),
@@ -1638,13 +1647,14 @@ async def execute_delete(
     # an escape here strands the Job row at RUNNING; nothing is silent.
     except Exception as exc:
         logger.exception("execute_delete job %s failed: %s", job_id, exc)
-        with Session(_db.get_engine()) as session:
-            rec = session.get(UserActionRecord, record_id)
-            if rec:
-                rec.status = "FAILED"
-                rec.error = str(exc)[:500]
-                session.add(rec)
-                session.commit()
+        if record_id is not None:
+            with Session(_db.get_engine()) as session:
+                rec = session.get(UserActionRecord, record_id)
+                if rec:
+                    rec.status = "FAILED"
+                    rec.error = str(exc)[:500]
+                    session.add(rec)
+                    session.commit()
         mark_failed(job_id, exc)
 
 
